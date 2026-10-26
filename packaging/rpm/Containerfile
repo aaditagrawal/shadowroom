@@ -1,0 +1,9 @@
+# Fedora 44 x86_64, October 26 2026; binary builds run separately without networking.
+FROM registry.fedoraproject.org/fedora@sha256:69e0248a0caa62850846b3c8f46b4d14d3449f12eb5d7639943b89e704607e3f
+RUN dnf -y --setopt=install_weak_deps=False install \
+      rust cargo gcc gcc-c++ make cmake clang binutils pkgconf-pkg-config rpm-build \
+      desktop-file-utils fontconfig-devel freetype-devel wayland-devel libX11-devel \
+      libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel libzstd-devel \
+      openssl-devel alsa-lib-devel lcms2-devel vulkan-loader-devel \
+ && rpm -qa | sort > /release-build-rpms.txt \
+ && dnf clean all

@@ -8,7 +8,7 @@ uv run --no-project python scripts/release-metadata.py
 notes="docs/releases/$RELEASE_TAG.md"
 [[ -f "$notes" ]] || { printf 'Release notes missing: %s\n' "$notes" >&2; exit 1; }
 for pattern in 'dist/*-linux-x86_64.tar.gz' 'dist/*-x86_64.AppImage' \
-    'dist/*-macos-arm64.zip' 'dist/*-source.tar.gz'; do
+    'dist/*-macos-arm64.zip' 'dist/*-source.tar.gz' 'dist/*x86_64.rpm' 'dist/*.src.rpm'; do
     compgen -G "$pattern" >/dev/null || { printf 'Missing release artifact: %s\n' "$pattern" >&2; exit 1; }
 done
 (

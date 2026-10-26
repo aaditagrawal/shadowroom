@@ -29,7 +29,8 @@ controller input, or macOS notarization. Record the systems actually tested.
 4. Generate SHA-256 checksums for the archives. Inspect archive contents for local
    profiles, machine addresses, private photographs, build logs, and experiments.
    `uv run --no-project python scripts/package-source.py` creates a source tarball
-   and checksum from an explicit public-file list, excluding build/local artifacts.
+   and checksum from tracked files under an explicit public-file list, excluding
+   untracked screenshots and build/local artifacts.
 5. On macOS, apply the intended distribution identity and notarization process
    before describing an artifact as signed/notarized for distribution.
 
@@ -45,6 +46,11 @@ The workflow produces:
   `runtime-shaders` avoids requiring the hosted runner's offline Metal compiler.
   The bundle is signed ad hoc and verified, with no notarization claim. CI package
   checks are not interactive macOS GUI or hardware validation.
+- Fedora 44 x86_64 RPM plus its self-contained, vendored source RPM. Compilation
+  runs without container networking and DNF installs the resulting RPM in a
+  disposable Fedora environment. This package uses system codecs and shared
+  libraries, separate from the portable Linux payload. No COPR repository is
+  created or submitted to by this workflow; see [Fedora distribution](FEDORA.md).
 - Public source archive, individual `.sha256` files, and a combined `SHA256SUMS`.
 
 Rust 1.99.1, uv 0.13.5 and action commit IDs are pinned in the workflow. Public

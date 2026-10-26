@@ -201,6 +201,59 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  fedora:
+    name: Fedora 44 x86_64 RPM
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: release-fedora44
+          key: ${{ hashFiles('packaging/rpm/Containerfile') }}
+          workspaces: '. -> .local/ci-rpm/target'
+          cache-on-failure: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Prepare Fedora build dependencies
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: packaging/rpm
+          file: packaging/rpm/Containerfile
+          tags: shadowroom-release-fedora44:ci
+          load: true
+          cache-from: type=gha,scope=shadowroom-fedora44
+          cache-to: type=gha,mode=max,scope=shadowroom-fedora44
+      - name: Source RPM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y rpm
+      - name: Prepare immutable source RPM
+        run: |
+          uv run --no-project python scripts/release-metadata.py
+          uv run --no-project python scripts/rpm-test-prepare.py
+          bash scripts/rpm-build-srpm.sh --output "$PWD/.local/ci-rpm/sources"
+      - name: Build and install Fedora RPM
+        run: scripts/ci-fedora-build.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shadowroom-fedora44-x86_64
+          path: |
+            dist/*.rpm
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   source:
     name: Public source bundle
     needs: core
@@ -230,7 +283,7 @@ jobs:
 
   publish:
     name: Publish verified GitHub release
-    needs: [core, linux, macos, source]
+    needs: [core, linux, macos, fedora, source]
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

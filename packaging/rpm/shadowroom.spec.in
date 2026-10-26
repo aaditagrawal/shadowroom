@@ -1,3 +1,7 @@
+# Cargo's release profile has no DWARF; do not generate empty debugsource RPMs.
+# The complete application and dependency sources remain in the source RPM.
+%global debug_package %{nil}
+
 Name:           shadowroom
 Version:        @VERSION@
 Release:        @RELEASE@%{?dist}
@@ -38,7 +42,9 @@ BuildRequires:  pkgconfig(vulkan)
 Requires:       vulkan-loader
 Requires:       fontconfig
 Requires:       xdg-desktop-portal
+Requires:       xdg-utils
 Recommends:     mesa-vulkan-drivers
+Recommends:     openssh-clients
 Recommends:     LibRaw >= 0.22
 Recommends:     libheif
 
@@ -57,7 +63,7 @@ tar -xzf %{SOURCE1}
 
 %build
 export CARGO_HOME="$PWD/.rpm-cargo-home"
-export CARGO_TARGET_DIR="$PWD/target"
+export CARGO_TARGET_DIR="${SHADOWROOM_RPM_TARGET_DIR:-$PWD/target}"
 export CARGO_BUILD_JOBS="%{_smp_build_ncpus}"
 export CARGO_NET_OFFLINE=true
 # Use Fedora lcms2, rather than the portable release's static copy.
@@ -65,8 +71,9 @@ unset LCMS2_STATIC
 cargo build --frozen --release --features desktop --bins
 
 %install
-install -Dm755 target/release/shadowroom %{buildroot}%{_bindir}/shadowroom
-install -Dm755 target/release/shadowroom-remote %{buildroot}%{_bindir}/shadowroom-remote
+rpm_target_dir="${SHADOWROOM_RPM_TARGET_DIR:-$PWD/target}"
+install -Dm755 "$rpm_target_dir/release/shadowroom" %{buildroot}%{_bindir}/shadowroom
+install -Dm755 "$rpm_target_dir/release/shadowroom-remote" %{buildroot}%{_bindir}/shadowroom-remote
 install -Dm644 packaging/linux/app.shadowroom.Shadowroom.desktop %{buildroot}%{_datadir}/applications/app.shadowroom.Shadowroom.desktop
 install -Dm644 packaging/shadowroom.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/app.shadowroom.Shadowroom.svg
 install -Dm644 packaging/shadowroom-512.png %{buildroot}%{_datadir}/icons/hicolor/512x512/apps/app.shadowroom.Shadowroom.png
@@ -74,11 +81,12 @@ mkdir -p %{buildroot}%{_datadir}/shadowroom
 cp -a assets/controls assets/fonts %{buildroot}%{_datadir}/shadowroom/
 
 %check
+rpm_target_dir="${SHADOWROOM_RPM_TARGET_DIR:-$PWD/target}"
 desktop-file-validate %{buildroot}%{_datadir}/applications/app.shadowroom.Shadowroom.desktop
-target/release/shadowroom --help
-target/release/shadowroom-remote --help
-readelf -n target/release/shadowroom | grep 'Build ID:'
-readelf -n target/release/shadowroom-remote | grep 'Build ID:'
+"$rpm_target_dir/release/shadowroom" --help
+"$rpm_target_dir/release/shadowroom-remote" --help
+readelf -n "$rpm_target_dir/release/shadowroom" | grep 'Build ID:'
+readelf -n "$rpm_target_dir/release/shadowroom-remote" | grep 'Build ID:'
 
 %files
 %license rpm-notices/LICENSE rpm-notices/THIRD_PARTY_NOTICES.md rpm-notices/licenses

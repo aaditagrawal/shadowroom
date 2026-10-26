@@ -27,7 +27,9 @@ source_epoch=$(git -C "$project_root" show -s --format=%ct "$source_sha")
 [[ ! -e "$output" ]] || { printf 'Refusing existing output directory: %s\n' "$output" >&2; exit 1; }
 mkdir -p -- "$output"
 output=$(cd -- "$output" && pwd)
-work=$(mktemp -d)
+# Registry sources can exceed a gigabyte; stage on the output filesystem rather
+# than assuming the user's /tmp quota can accommodate a complete Cargo vendor.
+work=$(mktemp -d "$output/.work.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/source"
 git -C "$project_root" archive "$source_sha" | tar -xf - -C "$work/source"
@@ -49,6 +51,7 @@ tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner -cz
     -C "$work/source" rpm-vendor .cargo/config.toml rpm-notices
 cp "$work/generated/shadowroom.spec" "$output/shadowroom.spec"
 rpmbuild -bs "$output/shadowroom.spec" \
+    --undefine dist \
     --define "_sourcedir $output" --define "_srcrpmdir $output" \
     --define "_builddir $work/rpmbuild"
 cp "$work/generated/SOURCE-PROVENANCE.json" "$output/"
