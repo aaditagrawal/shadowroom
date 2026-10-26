@@ -21,6 +21,15 @@ integrity assertions remain enabled.
 - Cache Cargo dependencies separately for Ubuntu core, macOS core, EL8 Linux
   packages, and macOS packages. Mount the actual cached Linux target directory
   inside the container.
+- Include container/specification and vendor hashes in `shared-key`: the pinned
+  Rust cache action ignores its separate `key` input when `shared-key` is set.
+- Preserve only patched `xattr` dependency artifacts in a separate exact-key
+  cache, saved before the Rust cache removes local path dependencies. Normalize
+  only tracked `vendor/xattr` file mtimes; the key includes all vendor bytes,
+  manifests, toolchain, platform and build configuration, with no fallback keys.
+  Application sources retain normal rebuild behavior. A restored-cache Linux run
+  still rebuilt `xattr` and GPUI in its 194-second release build; measure a
+  successful warm run before attributing savings to this targeted cache.
 - Disable incremental compilation and test/development debug information in CI
   to reduce cache size and linking work.
 - Run desktop unit tests in the release profile already used for native packages,
@@ -32,6 +41,8 @@ integrity assertions remain enabled.
   application binaries. Changed application source must still rebuild.
 - Check installed Ubuntu display/runtime tools before running APT. The first
   hosted package-setup step took 315 seconds; installed tools can be reused.
+  Cache downloaded DEB archives for packages absent from the runner; APT still
+  verifies packages and installs their declared dependencies.
 - Upload already-compressed archives and RPMs without another compression pass.
 - Bound compilation/test concurrency and cancel superseded branch runs while
   allowing an in-progress version-tag release to finish.

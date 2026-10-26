@@ -21,6 +21,9 @@ if [[ ${#missing[@]} == 0 ]]; then
     exit 0
 fi
 printf 'Installing missing runner packages: %s\n' "${missing[*]}"
+archive_cache="$PWD/.local/ci-linux-tools/debs"
+mkdir -p "$archive_cache"
 sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=45 -o Acquire::https::Timeout=45
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y "${missing[@]}"
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -o "Dir::Cache::archives=$archive_cache" \
+    install --no-install-recommends -y "${missing[@]}"
 for tool in "${tools[@]}"; do command -v "$tool" >/dev/null; done

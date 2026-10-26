@@ -80,10 +80,19 @@ jobs:
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          shared-key: release-linux-el8
-          key: ${{ hashFiles('packaging/linux/Containerfile') }}
+          shared-key: release-linux-el8-${{ hashFiles('packaging/linux/Containerfile', 'vendor/**', 'scripts/normalize-xattr-mtimes.py') }}
           workspaces: '. -> .local/ci-linux/target'
           cache-on-failure: true
+      - name: Stabilize tracked xattr source timestamps
+        run: uv run --no-project python scripts/normalize-xattr-mtimes.py
+      - name: Cache patched xattr dependency artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            .local/ci-linux/target/release/deps/*xattr*
+            .local/ci-linux/target/release/.fingerprint/xattr-*
+            .local/ci-linux/target/release/build/xattr-*
+          key: xattr-v1-${{ runner.os }}-${{ runner.arch }}-el8-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'vendor/**', 'packaging/linux/Containerfile', '.github/workflows/ci.yml', 'scripts/ci-linux-build.sh', 'scripts/normalize-xattr-mtimes.py') }}
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: codecs
         with:
@@ -99,6 +108,10 @@ jobs:
           load: true
           cache-from: type=gha,scope=shadowroom-el8
           cache-to: type=gha,mode=max,scope=shadowroom-el8
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .local/ci-linux-tools/debs/*.deb
+          key: linux-display-ubuntu-24.04-${{ hashFiles('scripts/ci-linux-tools.sh') }}
       - name: Linux package and headless display tools
         run: scripts/ci-linux-tools.sh
       - name: Validate version and tag
@@ -175,8 +188,18 @@ jobs:
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          shared-key: release-macos-arm64
+          shared-key: release-macos-arm64-${{ hashFiles('vendor/**', 'scripts/normalize-xattr-mtimes.py') }}
           cache-on-failure: true
+      - name: Stabilize tracked xattr source timestamps
+        run: uv run --no-project python scripts/normalize-xattr-mtimes.py
+      - name: Cache patched xattr dependency artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            target/release/deps/*xattr*
+            target/release/.fingerprint/xattr-*
+            target/release/build/xattr-*
+          key: xattr-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'vendor/**', '.github/workflows/ci.yml', 'scripts/package-macos.sh', 'scripts/normalize-xattr-mtimes.py') }}
       - name: Validate version and tag
         run: uv run --no-project python scripts/release-metadata.py
       - name: Build native desktop and remote agent
@@ -218,8 +241,7 @@ jobs:
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          shared-key: release-fedora44
-          key: ${{ hashFiles('packaging/rpm/Containerfile', 'packaging/rpm/shadowroom.spec.in') }}
+          shared-key: release-fedora44-${{ hashFiles('packaging/rpm/Containerfile', 'packaging/rpm/shadowroom.spec.in', 'vendor/**') }}
           workspaces: '. -> .local/ci-rpm/target'
           cache-on-failure: true
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4

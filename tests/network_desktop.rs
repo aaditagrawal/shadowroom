@@ -4,7 +4,7 @@ use crossbeam_channel::Receiver;
 use shadowroom::{
     catalog::Catalog,
     grouping::{GroupingMode, GroupingOptions, group_photos},
-    media::{MediaPipeline, PreviewKind, RemotePreviewProvider},
+    media::{MediaPipeline, MediaStats, PreviewKind, RemotePreviewProvider},
     model::{ColorLabel, Flag, Photo, PhotoDecision, PhotoSource, RemoteSource},
     network::{HostConfig, HostSnapshot, RemoteCommand},
     remote::{
@@ -304,6 +304,23 @@ fn wait_error(pipeline: &MediaPipeline, photo: &Photo, kind: PreviewKind) -> Str
         thread::sleep(Duration::from_millis(10));
     }
 }
+fn wait_stats(pipeline: &MediaPipeline, ready: impl Fn(&MediaStats) -> bool) -> MediaStats {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let stats = pipeline.stats();
+        // stats() is nonblocking and returns a zero-budget default on lock
+        // contention. Keep the successful snapshot instead of reacquiring it
+        // between the completion check and the assertions.
+        if stats.memory_budget_bytes > 0 && ready(&stats) {
+            return stats;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "media statistics timeout: {stats:?}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
 #[test]
 fn remote_sources_cannot_fall_through_to_local_reads_exports_or_xmp() {
     let dir = tempfile::tempdir().unwrap();
@@ -317,7 +334,7 @@ fn remote_sources_cannot_fall_through_to_local_reads_exports_or_xmp() {
         RemotePreviewProvider::new(dir.path().join("wire")).unwrap(),
     ));
     assert!(wait_error(&pipeline, &photo, PreviewKind::Thumbnail).contains("Unavailable offline"));
-    assert_eq!(pipeline.stats().source_reads, 0);
+    assert_eq!(wait_stats(&pipeline, |_| true).source_reads, 0);
     assert!(
         photo
             .require_local("Reveal in Files")
@@ -510,13 +527,11 @@ fn real_child_provider_deduplicates_caches_and_reports_uncached_offline_kinds() 
     assert_eq!(preview.source_width, 600);
     let after = host.stats();
     assert!(after.received_payload_bytes > before.received_payload_bytes);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while pipeline.stats().decoded == 0 {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(pipeline.stats().decoded, 1);
-    assert_eq!(pipeline.stats().source_reads, 0);
+    let completed = wait_stats(&pipeline, |stats| {
+        stats.decoded > 0 && stats.active == 0 && stats.queued == 0
+    });
+    assert_eq!(completed.decoded, 1);
+    assert_eq!(completed.source_reads, 0);
     let cached = provider
         .fetch(
             photo.remote_source().unwrap(),
@@ -544,7 +559,7 @@ fn real_child_provider_deduplicates_caches_and_reports_uncached_offline_kinds() 
     let preview = wait_preview(&offline, &photo, PreviewKind::Thumbnail);
     assert_eq!(preview.width, 384);
     assert!(wait_error(&offline, &photo, PreviewKind::Full).contains("Unavailable offline"));
-    assert_eq!(offline.stats().source_reads, 0);
+    assert_eq!(wait_stats(&offline, |_| true).source_reads, 0);
 }
 fn wait_host(
     events: &Receiver<IoEvent>,
