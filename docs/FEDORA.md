@@ -67,10 +67,10 @@ unshare --net rpmbuild --rebuild build/rpm-sources/*.src.rpm \
 
 The spec declares the native build dependencies, uses `cargo --frozen` with a
 fresh Cargo home, validates the desktop entry and both CLI entry points, and
-checks executable build IDs. CI should install the resulting main RPM in its
-disposable Fedora environment and run the native acceptance harness before
-publishing it. Include the main `shadowroom-*.x86_64.rpm` and corresponding
-`.src.rpm` in the GitHub release; debuginfo/debugsource RPMs are separate artifacts.
+checks executable build IDs. CI installs the main RPM in a clean, pinned Fedora
+base with weak dependencies disabled and checks both CLI entry points. Include
+the main `shadowroom-*.x86_64.rpm` and corresponding `.src.rpm` in the GitHub
+release. This recipe disables debuginfo and debugsource packages.
 
 For a downloaded, verified GitHub release RPM:
 

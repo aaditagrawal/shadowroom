@@ -9,10 +9,10 @@
   ],
   "runs": [
     {
-      "label": "previous-failed",
+      "label": "original_failure",
       "run_id": 40357926435,
       "attempt": 1,
-      "url": null,
+      "url": "https://github.com/aaditagrawal/shadowroom/actions/runs/40357926435",
       "head_sha": "f53c2225ed71d705bfad93b7234822f70b37f42e",
       "status": "completed",
       "conclusion": "failure",
@@ -150,7 +150,1116 @@
           "steps": []
         }
       ]
+    },
+    {
+      "label": "first_verified",
+      "run_id": 40386475051,
+      "attempt": 1,
+      "url": "https://github.com/aaditagrawal/shadowroom/actions/runs/40386475051/attempts/1",
+      "head_sha": "0d6c94148cf5d878771e40eeabc3984d6f9535de",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_elapsed_seconds": 1239.0,
+      "summed_job_seconds": 2756.0,
+      "jobs": [
+        {
+          "name": "Core / macos-15",
+          "conclusion": "success",
+          "seconds": 105.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 6.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "success",
+              "seconds": 78.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Core / ubuntu-24.04",
+          "conclusion": "success",
+          "seconds": 86.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "success",
+              "seconds": 68.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "macOS arm64 native package",
+          "conclusion": "success",
+          "seconds": 627.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Stabilize tracked xattr source timestamps",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Build native desktop and remote agent",
+              "conclusion": "success",
+              "seconds": 482.0
+            },
+            {
+              "name": "Desktop behavior",
+              "conclusion": "success",
+              "seconds": 74.0
+            },
+            {
+              "name": "Package and verify macOS",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 35.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 3.0
+            }
+          ]
+        },
+        {
+          "name": "Public source bundle",
+          "conclusion": "success",
+          "seconds": 10.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Source archive and checksum",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Linux x86_64 / glibc 2.28",
+          "conclusion": "success",
+          "seconds": 1130.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Stabilize tracked xattr source timestamps",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Prepare public EL8 build image",
+              "conclusion": "success",
+              "seconds": 60.0
+            },
+            {
+              "name": "Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Linux package and headless display tools",
+              "conclusion": "success",
+              "seconds": 321.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Fetch verified public codec and AppImage sources",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Build native desktop and codecs on EL8",
+              "conclusion": "success",
+              "seconds": 677.0
+            },
+            {
+              "name": "Package Linux and AppImage",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Actual AppImage native smoke without FUSE",
+              "conclusion": "success",
+              "seconds": 6.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Prepare public EL8 build image",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 14.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Fedora 44 x86_64 RPM",
+          "conclusion": "success",
+          "seconds": 798.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 6.0
+            },
+            {
+              "name": "Prepare Fedora build dependencies",
+              "conclusion": "success",
+              "seconds": 71.0
+            },
+            {
+              "name": "Source RPM tools",
+              "conclusion": "success",
+              "seconds": 6.0
+            },
+            {
+              "name": "Prepare immutable source RPM",
+              "conclusion": "success",
+              "seconds": 42.0
+            },
+            {
+              "name": "Build and install Fedora RPM",
+              "conclusion": "success",
+              "seconds": 636.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Post Prepare Fedora build dependencies",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 12.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Publish verified GitHub release",
+          "conclusion": "skipped",
+          "seconds": 0.0,
+          "steps": []
+        }
+      ]
+    },
+    {
+      "label": "repeat",
+      "run_id": 40386475051,
+      "attempt": 2,
+      "url": "https://github.com/aaditagrawal/shadowroom/actions/runs/40386475051/attempts/2",
+      "head_sha": "0d6c94148cf5d878771e40eeabc3984d6f9535de",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_elapsed_seconds": 566.0,
+      "summed_job_seconds": 1331.0,
+      "jobs": [
+        {
+          "name": "Core / ubuntu-24.04",
+          "conclusion": "success",
+          "seconds": 79.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "success",
+              "seconds": 56.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Core / macos-15",
+          "conclusion": "success",
+          "seconds": 97.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 5.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "success",
+              "seconds": 72.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Public source bundle",
+          "conclusion": "success",
+          "seconds": 11.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Source archive and checksum",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Fedora 44 x86_64 RPM",
+          "conclusion": "success",
+          "seconds": 465.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 12.0
+            },
+            {
+              "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Prepare Fedora build dependencies",
+              "conclusion": "success",
+              "seconds": 124.0
+            },
+            {
+              "name": "Source RPM tools",
+              "conclusion": "success",
+              "seconds": 5.0
+            },
+            {
+              "name": "Prepare immutable source RPM",
+              "conclusion": "success",
+              "seconds": 36.0
+            },
+            {
+              "name": "Build and install Fedora RPM",
+              "conclusion": "success",
+              "seconds": 254.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Post Prepare Fedora build dependencies",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "macOS arm64 native package",
+          "conclusion": "success",
+          "seconds": 371.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 4.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 8.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 21.0
+            },
+            {
+              "name": "Stabilize tracked xattr source timestamps",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Build native desktop and remote agent",
+              "conclusion": "success",
+              "seconds": 229.0
+            },
+            {
+              "name": "Desktop behavior",
+              "conclusion": "success",
+              "seconds": 85.0
+            },
+            {
+              "name": "Package and verify macOS",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Post Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Linux x86_64 / glibc 2.28",
+          "conclusion": "success",
+          "seconds": 308.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 3.0
+            },
+            {
+              "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 12.0
+            },
+            {
+              "name": "Stabilize tracked xattr source timestamps",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 16.0
+            },
+            {
+              "name": "Prepare public EL8 build image",
+              "conclusion": "success",
+              "seconds": 39.0
+            },
+            {
+              "name": "Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Linux package and headless display tools",
+              "conclusion": "success",
+              "seconds": 15.0
+            },
+            {
+              "name": "Validate version and tag",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Fetch verified public codec and AppImage sources",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Build native desktop and codecs on EL8",
+              "conclusion": "success",
+              "seconds": 189.0
+            },
+            {
+              "name": "Package Linux and AppImage",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Actual AppImage native smoke without FUSE",
+              "conclusion": "success",
+              "seconds": 5.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Prepare public EL8 build image",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/cache@caa296126883cff596d87d8935842f9db880ef25",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Post Cache patched xattr dependency artifacts",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Publish verified GitHub release",
+          "conclusion": "skipped",
+          "seconds": 0.0,
+          "steps": []
+        }
+      ]
     }
   ],
-  "same_commit_successful_comparisons": []
+  "same_commit_successful_comparisons": [
+    {
+      "before": "first_verified",
+      "after": "repeat",
+      "elapsed_reduction_percent": 54.32,
+      "seconds_saved": 673.0
+    }
+  ]
 }

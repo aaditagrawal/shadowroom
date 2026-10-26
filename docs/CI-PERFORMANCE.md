@@ -15,6 +15,35 @@ The ingest tests depended on private JPEG files, and macOS exposed a lexical
 their JPEG/EXIF data and use canonical temporary roots. Core behavior and source
 integrity assertions remain enabled.
 
+## Measured repeat
+
+Two successful attempts of commit `0d6c94148cf5d878771e40eeabc3984d6f9535de`
+ran the same checks and packaging work on October 26, 2026 UTC:
+[first verified run](https://github.com/aaditagrawal/shadowroom/actions/runs/40386475051/attempts/1)
+and [repeat](https://github.com/aaditagrawal/shadowroom/actions/runs/40386475051/attempts/2).
+
+| Measurement | First verified | Repeat |
+| --- | ---: | ---: |
+| Elapsed runner span | 20m39s | 9m26s |
+| Summed job time | 45m56s | 22m11s |
+| Linux package job | 18m50s | 5m08s |
+| macOS package job | 10m27s | 6m11s |
+| Fedora RPM job | 13m18s | 7m45s |
+| Linux display-package setup | 5m21s | 15s |
+
+Elapsed runner span decreased by **54.32%**, or 11m13s. This measures the combined
+effect of cache reuse and hosted-runner variation, not an isolated CPU speedup.
+The first attempt had empty native Cargo, patched-xattr, codec and DEB caches;
+core caches and container-image layers were already warm. It was not a fully
+cold environment. Both attempts passed every required check, including the
+actual AppImage native preview and clean Fedora installation.
+
+The repeat logs confirm Cargo, xattr, codec and DEB cache hits. APT reported
+`0 B/17.6 MB` to download. Linux and macOS no longer compiled `xattr` or GPUI;
+application binaries and desktop-test binaries still compiled. The Fedora RPM's
+separate build tree still compiled its patched xattr/GPUI chain. These results
+do not measure application startup, photo rendering or user-interface latency.
+
 ## Build tuning
 
 - Pin the Rust toolchain and release inputs so cache reuse has a stable basis.
@@ -22,7 +51,8 @@ integrity assertions remain enabled.
   packages, and macOS packages. Mount the actual cached Linux target directory
   inside the container.
 - Include container/specification and vendor hashes in `shared-key`: the pinned
-  Rust cache action ignores its separate `key` input when `shared-key` is set.
+  [Rust cache implementation](https://github.com/Swatinem/rust-cache/blob/e9d7b9f1e587218970671bac74e5511ed9506e6a/src/config.ts)
+  ignores its separate `key` input when `shared-key` is set.
 - Preserve only patched `xattr` dependency artifacts in a separate exact-key
   cache, saved before the Rust cache removes local path dependencies. Normalize
   only tracked `vendor/xattr` file mtimes; the key includes all vendor bytes,
@@ -55,15 +85,16 @@ commit hashes and job/step durations, without runner logs or private files.
 ## Reproduce the timing comparison
 
 Run a full successful workflow, then repeat the same revision after its caches
-have been saved. Record cache hits from the workflow logs. Export both timelines:
+have been saved with `gh run rerun RUN_ID --repo aaditagrawal/shadowroom`.
+Record cache hits from the workflow logs. Export both timelines:
 
 ```sh
 gh run view RUN_ID --repo aaditagrawal/shadowroom --attempt 1 \
-  --json attempt,databaseId,url,headSha,status,conclusion,createdAt,jobs > cold.json
+  --json attempt,databaseId,url,headSha,status,conclusion,createdAt,jobs > first.json
 gh run view RUN_ID --repo aaditagrawal/shadowroom --attempt 2 \
   --json attempt,databaseId,url,headSha,status,conclusion,createdAt,jobs > warm.json
 uv run --no-project python scripts/summarize-actions.py \
-  cold=cold.json warm=warm.json --output actions.json
+  first=first.json warm=warm.json --output actions.json
 ```
 
 Runner elapsed time spans first job start through final job completion and

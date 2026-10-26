@@ -50,9 +50,10 @@ your decisions into the next editor.
 
 [Download v0.1.1](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.1)
 for the Linux x86_64 AppImage/archive, macOS arm64 archive, Fedora 44 RPM, and source release.
-Linux releases target glibc 2.28 or newer and include the documented RAW/HEIF
-codecs; a desktop session and Vulkan driver remain required. The macOS build is
-signed ad hoc and is not notarized. Each asset includes a SHA-256 checksum.
+The portable Linux AppImage and archive target glibc 2.28 or newer and include
+the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
+required. The macOS build is signed ad hoc and is not notarized. Each asset
+includes a SHA-256 checksum.
 
 Install a current stable Rust toolchain and the
 [native prerequisites for your platform](docs/BUILD.md), then build both binaries:
