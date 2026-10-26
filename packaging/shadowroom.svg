@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Shadowroom application mark. Every edge sits on a 64-unit grid (1px at 16px). -->
+  <rect x="64" y="64" width="896" height="896" rx="192" fill="#262626"/>
+  <rect x="96" y="96" width="832" height="832" rx="160" fill="#0f0f0f"/>
+  <path d="M256 256H768V384H384V512H256ZM768 768H256V640H640V512H768Z" fill="#efede7"/>
+  <path d="M448 448H576V576H448Z" fill="#c8a36b"/>
+</svg>

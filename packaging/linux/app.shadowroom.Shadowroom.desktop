@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Shadowroom
+GenericName=Photo Culling
+Comment=Review photographs, select picks, and export without changing originals
+Exec=shadowroom
+Icon=app.shadowroom.Shadowroom
+Terminal=false
+Categories=Graphics;Photography;
+Keywords=photo;photography;culling;RAW;JPEG;
+StartupNotify=true

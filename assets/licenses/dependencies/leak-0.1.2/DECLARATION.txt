@@ -1,0 +1,10 @@
+leak 0.1.2
+Declared license: Apache-2.0 OR MIT
+Authors from published Cargo.toml:
+  Cody P Schafer <dev@codyps.com>
+Upstream: https://github.com/jmesmon/leak.git
+
+The crate archive and the checked upstream repository omit a standalone
+license/copyright text. The accompanying file is the standard SPDX license
+text, not an invented upstream copyright notice. For dual-licensed crates,
+the Apache-2.0 option is reproduced.

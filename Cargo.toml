@@ -1,0 +1,61 @@
+[package]
+name = "shadowroom"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, keyboard-first, non-destructive photo culling workspace"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/aaditagrawal/shadowroom"
+keywords = ["photography", "culling", "raw", "gpui"]
+categories = ["multimedia::images", "gui"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:gpui"]
+# macOS: use Metal's runtime compiler when only Command Line Tools are installed.
+runtime-shaders = ["desktop", "gpui/runtime_shaders"]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp", "bmp"] }
+kamadak-exif = "0.6"
+directories = "6"
+walkdir = "2"
+blake3 = "1"
+crossbeam-channel = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+lcms2 = "6"
+jpeg-decoder = { version = "0.3", default-features = false }
+rand = "0.9"
+memchr = "2"
+libloading = "0.8.9"
+jxl-oxide = { version = "=0.12.6", default-features = false, features = ["lcms2"] }
+jxl-bitstream = "=1.1.0"
+jxl-oxide-common = "=1.0.0"
+jxl-coding = "=1.0.1"
+tiff = "0.11.3"
+# statvfs for preflight filesystem capacity.
+libc = "0.2"
+gpui = { version = "0.2.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "shadowroom"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[patch.crates-io]
+# GPUI's xattr 0.2 dependency predates libc removing Linux's ENOATTR alias.
+xattr = { path = "vendor/xattr" }
+[[bin]]
+name = "shadowroom-remote"
+path = "src/bin/shadowroom-remote.rs"

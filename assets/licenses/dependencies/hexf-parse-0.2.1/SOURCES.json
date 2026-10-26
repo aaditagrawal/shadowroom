@@ -1,0 +1,8 @@
+[
+  {
+    "file": "CC0-1.0.txt",
+    "url": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/CC0-1.0.txt",
+    "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+    "note": "Standard text for the published crate manifest CC0-1.0 declaration. Current upstream license differs and is not substituted."
+  }
+]

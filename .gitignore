@@ -1,0 +1,11 @@
+/target/
+.DS_Store
+*.sqlite*
+/.local/
+/dist/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+/assets/icons/tools/contact-sheet.png
+/assets/icons/tools/contact-sheet.svg

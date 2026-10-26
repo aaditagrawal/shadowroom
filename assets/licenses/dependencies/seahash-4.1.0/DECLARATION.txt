@@ -1,0 +1,12 @@
+seahash 4.1.0
+Declared license: MIT
+Authors from the published Cargo.toml:
+  ticki <ticki@users.noreply.github.com>
+  Tom Almeida <tom@tommoa.me>
+Upstream: https://gitlab.redox-os.org/redox-os/seahash
+Published commit: 94b632aeac099031c373599313d5b5f0acbbaec0
+
+The published crate archive omits a separate license/copyright file; upstream
+GitLab currently rejects unauthenticated retrieval. MIT.txt is the standard
+SPDX MIT license text, not an invented upstream copyright notice. Author
+attribution and the original crate license declaration are retained above.

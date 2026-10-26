@@ -1,0 +1,13 @@
+[
+  {
+    "file": "Apache-2.0.txt",
+    "source": "Standard SPDX Apache-2.0 license text",
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+    "note": "Standard text for declared license, not upstream copyright notice."
+  },
+  {
+    "file": "DECLARATION.txt",
+    "source": "Published crate Cargo.toml",
+    "sha256": "cbd674a6695fd567f19c8d74b63984a07f07da4a159e0447c888f82ed3c394f9"
+  }
+]

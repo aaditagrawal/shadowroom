@@ -1,0 +1,13 @@
+[
+  {
+    "file": "MIT.txt",
+    "source": "Standard SPDX MIT license text",
+    "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+    "note": "Standard text for declared license, not upstream copyright notice."
+  },
+  {
+    "file": "DECLARATION.txt",
+    "source": "Published crate Cargo.toml",
+    "sha256": "e46b408595ab8fd6fc6d8a4c82d474986def8c43fcdc1da66d8189cb9cfc0665"
+  }
+]

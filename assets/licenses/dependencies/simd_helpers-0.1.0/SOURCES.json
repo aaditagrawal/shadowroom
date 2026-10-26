@@ -1,0 +1,8 @@
+[
+  {
+    "file": "LICENSE",
+    "url": "https://raw.githubusercontent.com/lu-zero/simd_helpers/master/LICENSE",
+    "sha256": "d69f24ad84ec2ade64c0b68bdb31b41170e997b158370342056918329cc9af1e",
+    "note": "Upstream current license; published crate commit omitted its standalone text. Crate manifest license and author attribution retained in dependency inventory."
+  }
+]

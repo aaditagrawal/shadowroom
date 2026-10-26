@@ -1,0 +1,8 @@
+[
+  {
+    "file": "LICENSE",
+    "url": "https://raw.githubusercontent.com/SSheldon/malloc_buf/d9a3e539642bd90e07df458d226b19cdfa606863/LICENSE",
+    "sha256": "aced7b57e474a63edb5a724954222bf7659c01ceef0e648a03af799582991db7",
+    "note": "Current upstream commit; published crate omitted standalone license and VCS commit."
+  }
+]

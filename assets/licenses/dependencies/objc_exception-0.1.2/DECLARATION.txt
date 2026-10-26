@@ -1,0 +1,10 @@
+objc_exception 0.1.2
+Declared license: MIT
+Authors from published Cargo.toml:
+  Steven Sheldon
+Upstream: http://github.com/SSheldon/rust-objc-exception
+
+The crate archive and the checked upstream repository omit a standalone
+license/copyright text. The accompanying file is the standard SPDX license
+text, not an invented upstream copyright notice. For dual-licensed crates,
+the Apache-2.0 option is reproduced.

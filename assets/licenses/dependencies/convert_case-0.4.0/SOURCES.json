@@ -1,0 +1,8 @@
+[
+  {
+    "file": "LICENSE",
+    "url": "https://raw.githubusercontent.com/rutrum/convert-case/master/LICENSE",
+    "sha256": "aed7b1758e35afa0cd0fde059d61950747ca11cd0e5e169cb21c11608daed772",
+    "note": "Upstream current license; published crate commit omitted its standalone text. Crate manifest license and author attribution retained in dependency inventory."
+  }
+]

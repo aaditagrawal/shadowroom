@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "name": "Shadowroom · Creator Micro",
+  "transport": "standard_keyboard",
+  "compatibility": "Original Creator Micro: VIA; Micro 2: manually map these shortcuts in Work Louder Input (one dial; no VIA file import).",
+  "assignments": [
+    {
+      "control": "key 1",
+      "keycode": "KC_F13",
+      "keystroke": "f13",
+      "command": "pick",
+      "matrix": [
+        0,
+        1
+      ]
+    },
+    {
+      "control": "key 2",
+      "keycode": "KC_F14",
+      "keystroke": "f14",
+      "command": "reject",
+      "matrix": [
+        0,
+        2
+      ]
+    },
+    {
+      "control": "key 3",
+      "keycode": "KC_F15",
+      "keystroke": "f15",
+      "command": "clear_flag",
+      "matrix": [
+        1,
+        0
+      ]
+    },
+    {
+      "control": "key 4",
+      "keycode": "KC_F16",
+      "keystroke": "f16",
+      "command": "rating_down",
+      "matrix": [
+        1,
+        1
+      ]
+    },
+    {
+      "control": "key 5",
+      "keycode": "KC_F17",
+      "keystroke": "f17",
+      "command": "rating_up",
+      "matrix": [
+        1,
+        2
+      ]
+    },
+    {
+      "control": "key 6",
+      "keycode": "KC_F18",
+      "keystroke": "f18",
+      "command": "grid",
+      "matrix": [
+        1,
+        3
+      ]
+    },
+    {
+      "control": "key 7",
+      "keycode": "KC_F19",
+      "keystroke": "f19",
+      "command": "loupe",
+      "matrix": [
+        2,
+        0
+      ]
+    },
+    {
+      "control": "key 8",
+      "keycode": "KC_F20",
+      "keystroke": "f20",
+      "command": "compare",
+      "matrix": [
+        2,
+        1
+      ]
+    },
+    {
+      "control": "key 9",
+      "keycode": "KC_F21",
+      "keystroke": "f21",
+      "command": "toggle_zoom",
+      "matrix": [
+        2,
+        2
+      ]
+    },
+    {
+      "control": "key 10",
+      "keycode": "KC_F22",
+      "keystroke": "f22",
+      "command": "toggle_histogram",
+      "matrix": [
+        2,
+        3
+      ]
+    },
+    {
+      "control": "key 11",
+      "keycode": "KC_F23",
+      "keystroke": "f23",
+      "command": "previous_group",
+      "matrix": [
+        3,
+        1
+      ]
+    },
+    {
+      "control": "key 12",
+      "keycode": "KC_F24",
+      "keystroke": "f24",
+      "command": "next_group",
+      "matrix": [
+        3,
+        2
+      ]
+    },
+    {
+      "control": "left dial counterclockwise",
+      "keycode": "KC_LEFT",
+      "keystroke": "left",
+      "command": "previous"
+    },
+    {
+      "control": "left dial clockwise",
+      "keycode": "KC_RGHT",
+      "keystroke": "right",
+      "command": "next"
+    },
+    {
+      "control": "left dial press",
+      "keycode": "KC_F21",
+      "keystroke": "f21",
+      "command": "toggle_zoom",
+      "matrix": [
+        0,
+        0
+      ]
+    },
+    {
+      "control": "right dial counterclockwise",
+      "keycode": "KC_F16",
+      "keystroke": "f16",
+      "command": "rating_down"
+    },
+    {
+      "control": "right dial clockwise",
+      "keycode": "KC_F17",
+      "keystroke": "f17",
+      "command": "rating_up"
+    },
+    {
+      "control": "right dial press",
+      "keycode": "KC_F22",
+      "keystroke": "f22",
+      "command": "toggle_histogram",
+      "matrix": [
+        0,
+        3
+      ]
+    }
+  ]
+}

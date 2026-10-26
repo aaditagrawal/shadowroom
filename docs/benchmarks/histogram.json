@@ -1,0 +1,103 @@
+{
+  "cases": [
+    {
+      "after": {
+        "clipping_error_percentage_points": 0.0,
+        "red_clipped_fraction": 1.0,
+        "samples": 98304,
+        "timing": {
+          "p50_ms": 0.17343,
+          "p95_ms": 0.178827
+        }
+      },
+      "before": {
+        "clipping_error_percentage_points": 0.0,
+        "red_clipped_fraction": 1.0,
+        "samples": 98304,
+        "timing": {
+          "p50_ms": 0.16314399999999998,
+          "p95_ms": 0.167542
+        }
+      },
+      "case": "thumbnail_checker",
+      "exact_red_clipped_fraction": 1.0,
+      "height": 256,
+      "width": 384
+    },
+    {
+      "after": {
+        "clipping_error_percentage_points": 0.0,
+        "red_clipped_fraction": 1.0,
+        "samples": 262144,
+        "timing": {
+          "p50_ms": 3.222598,
+          "p95_ms": 3.505001
+        }
+      },
+      "before": {
+        "clipping_error_percentage_points": 100.0,
+        "red_clipped_fraction": 0.0,
+        "samples": 174592,
+        "timing": {
+          "p50_ms": 16.508502,
+          "p95_ms": 17.319657
+        }
+      },
+      "case": "fit_checker",
+      "exact_red_clipped_fraction": 1.0,
+      "height": 1707,
+      "width": 2560
+    },
+    {
+      "after": {
+        "clipping_error_percentage_points": 0.0,
+        "red_clipped_fraction": 1.0,
+        "samples": 262144,
+        "timing": {
+          "p50_ms": 7.959994,
+          "p95_ms": 8.211782000000001
+        }
+      },
+      "before": {
+        "clipping_error_percentage_points": 100.0,
+        "red_clipped_fraction": 0.0,
+        "samples": 174592,
+        "timing": {
+          "p50_ms": 45.195726,
+          "p95_ms": 45.809087
+        }
+      },
+      "case": "full_checker",
+      "exact_red_clipped_fraction": 1.0,
+      "height": 4000,
+      "width": 6000
+    },
+    {
+      "after": {
+        "clipping_error_percentage_points": 0.02233886718749998,
+        "red_clipped_fraction": 0.010223388671875,
+        "samples": 262144,
+        "timing": {
+          "p50_ms": 8.015315000000001,
+          "p95_ms": 8.223759000000001
+        }
+      },
+      "before": {
+        "clipping_error_percentage_points": 1.0,
+        "red_clipped_fraction": 0.0,
+        "samples": 174592,
+        "timing": {
+          "p50_ms": 45.385929,
+          "p95_ms": 45.946518999999995
+        }
+      },
+      "case": "full_sparse_clipping",
+      "exact_red_clipped_fraction": 0.01,
+      "height": 4000,
+      "width": 6000
+    }
+  ],
+  "measured_iterations_per_method": 21,
+  "optimized": true,
+  "workload": "synthetic memory-resident RGB8; histogram only"
+}

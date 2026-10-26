@@ -1,0 +1,57 @@
+[
+  {
+    "file": "LICENSE.APACHE",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/LICENSE.APACHE",
+    "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+  },
+  {
+    "file": "LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/LICENSE.MIT",
+    "sha256": "c7fea58d1cfe49634cd92e54fc10a9d871f4b275321a4cd8c09e449122caaeb4"
+  },
+  {
+    "file": "deno_webgpu/LICENSE.md",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/deno_webgpu/LICENSE.md",
+    "sha256": "932ba4f75e7d7cceb4df9f52cc255c5337a6cc534dea3c42ee827c2aa7cdd656"
+  },
+  {
+    "file": "wgpu-core/LICENSE.APACHE",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-core/LICENSE.APACHE",
+    "sha256": "93322bf14207312d2ac79c0dc02f97f4592bc3c72d9e1a4f6012c21a0f6d816d"
+  },
+  {
+    "file": "wgpu-core/LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-core/LICENSE.MIT",
+    "sha256": "10b693f4060285108e21fbca779818813849a4bb52101b6ec0512e4b0750ba64"
+  },
+  {
+    "file": "wgpu-hal/LICENSE.APACHE",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-hal/LICENSE.APACHE",
+    "sha256": "93322bf14207312d2ac79c0dc02f97f4592bc3c72d9e1a4f6012c21a0f6d816d"
+  },
+  {
+    "file": "wgpu-hal/LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-hal/LICENSE.MIT",
+    "sha256": "10b693f4060285108e21fbca779818813849a4bb52101b6ec0512e4b0750ba64"
+  },
+  {
+    "file": "wgpu-types/LICENSE.APACHE",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-types/LICENSE.APACHE",
+    "sha256": "93322bf14207312d2ac79c0dc02f97f4592bc3c72d9e1a4f6012c21a0f6d816d"
+  },
+  {
+    "file": "wgpu-types/LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu-types/LICENSE.MIT",
+    "sha256": "10b693f4060285108e21fbca779818813849a4bb52101b6ec0512e4b0750ba64"
+  },
+  {
+    "file": "wgpu/LICENSE.APACHE",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu/LICENSE.APACHE",
+    "sha256": "93322bf14207312d2ac79c0dc02f97f4592bc3c72d9e1a4f6012c21a0f6d816d"
+  },
+  {
+    "file": "wgpu/LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/wgpu/LICENSE.MIT",
+    "sha256": "10b693f4060285108e21fbca779818813849a4bb52101b6ec0512e4b0750ba64"
+  }
+]

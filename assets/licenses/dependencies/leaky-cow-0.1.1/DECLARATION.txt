@@ -1,0 +1,10 @@
+leaky-cow 0.1.1
+Declared license: MIT / Apache-2.0
+Authors from published Cargo.toml:
+  Michael Howell <michael@notriddle.com>
+Upstream: https://github.com/notriddle/rust-leaky-cow
+
+The crate archive and the checked upstream repository omit a standalone
+license/copyright text. The accompanying file is the standard SPDX license
+text, not an invented upstream copyright notice. For dual-licensed crates,
+the Apache-2.0 option is reproduced.

@@ -1,0 +1,32 @@
+{
+  "binary_sha256": "df443580aa94f5dc3c89d137fb23987eedb2d20927eb52eb797da68e5c031802",
+  "backend": "native GPUI, Linux X11, scale 1",
+  "captures": [
+    {
+      "file": "review.png",
+      "sha256": "8e58adb479a2eb9f3ff5814a3bb5dbfc12ee5b24041b9e80e7b04138dd6111fa",
+      "view": "loupe"
+    },
+    {
+      "file": "compare.png",
+      "sha256": "9d8baee057d7bb40cb3020283e6f52bfb795e9bce7c145691c1f575d45b33588",
+      "view": "compare"
+    },
+    {
+      "file": "catalog.png",
+      "sha256": "129794b8ee53b469f5e1a1105cdd82a1eb7d4ad4a50b596da9bb0ed670996cbf",
+      "view": "grid"
+    },
+    {
+      "file": "light.png",
+      "sha256": "e2dde2d33b9610431c5060c73147e668776ab74599443d6b67d6b8b6c686de15",
+      "view": "loupe"
+    },
+    {
+      "file": "preferences.png",
+      "sha256": "e2dde2d33b9610431c5060c73147e668776ab74599443d6b67d6b8b6c686de15",
+      "view": "loupe"
+    }
+  ],
+  "originals_unchanged": true
+}
