@@ -30,6 +30,9 @@ integrity assertions remain enabled.
   the remaining Fedora Rust hardening flags and executable build-ID checks.
 - Cache the EL8 build-image layers and verified codec outputs separately from
   application binaries. Changed application source must still rebuild.
+- Check installed Ubuntu display/runtime tools before running APT. The first
+  hosted package-setup step took 315 seconds; installed tools can be reused.
+- Upload already-compressed archives and RPMs without another compression pass.
 - Bound compilation/test concurrency and cancel superseded branch runs while
   allowing an in-progress version-tag release to finish.
 - Publish only after all required checks, native packages and source bundles

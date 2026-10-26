@@ -73,9 +73,13 @@ uv run --no-project python scripts/package-notices.py "$bundle/Contents/Resource
 # Reject Homebrew/local dynamic paths: such a bundle would fail on another Mac.
 otool -L "$bundle/Contents/MacOS/shadowroom" > "$bundle/Contents/Resources/shared-libraries.txt"
 otool -L "$bundle/Contents/MacOS/shadowroom-remote" > "$bundle/Contents/Resources/remote-shared-libraries.txt"
-if tail -n +2 "$bundle/Contents/Resources/"*shared-libraries.txt | grep -E '/opt/homebrew/|/usr/local/|/Users/'; then
-    printf '%s\n' 'Non-system dynamic dependency detected. Rebuild with LCMS2_STATIC=1 or bundle dependencies explicitly.' >&2; exit 1
-fi
+for library_report in "$bundle/Contents/Resources/shared-libraries.txt" "$bundle/Contents/Resources/remote-shared-libraries.txt"; do
+    # otool dependency rows are indented; executable/architecture headers are not.
+    # Read each report directly: multi-file tail emits its own /Users/... headers.
+    if grep -E '^[[:space:]]+.*(/opt/homebrew/|/usr/local/|/Users/)' "$library_report"; then
+        printf 'Non-system dynamic dependency detected in %s. Rebuild with LCMS2_STATIC=1 or bundle dependencies explicitly.\n' "$(basename -- "$library_report")" >&2; exit 1
+    fi
+done
 plutil -lint "$bundle/Contents/Info.plist"
 identity=${SHADOWROOM_CODESIGN_IDENTITY:--}
 codesign --force --sign "$identity" --timestamp=none "$bundle/Contents/MacOS/shadowroom-remote"

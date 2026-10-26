@@ -53,7 +53,9 @@ time_options=()
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
     time_options=(-mkfs-time "$SOURCE_DATE_EPOCH" -all-time "$SOURCE_DATE_EPOCH")
 fi
-mksquashfs "$appdir" "$staging/payload" -noappend -comp zstd -root-owned -no-progress \
+# Older squashfs-tools reject an epoch in both the environment and flags.
+# Pass it explicitly to set every inode time, then remove only the redundant env.
+env -u SOURCE_DATE_EPOCH mksquashfs "$appdir" "$staging/payload" -noappend -comp zstd -root-owned -no-progress \
     -processors "${CARGO_BUILD_JOBS:-2}" "${time_options[@]}" > "$staging/squashfs.log"
 cat -- "$runtime" "$staging/payload" > "$staging/app.AppImage"
 chmod 755 "$staging/app.AppImage"

@@ -100,11 +100,7 @@ jobs:
           cache-from: type=gha,scope=shadowroom-el8
           cache-to: type=gha,mode=max,scope=shadowroom-el8
       - name: Linux package and headless display tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y squashfs-tools desktop-file-utils \
-            libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxcb-shape0 libxcb-xfixes0 \
-            libfontconfig1 libx11-xcb1 xvfb xauth xdotool dbus-x11
+        run: scripts/ci-linux-tools.sh
       - name: Validate version and tag
         id: release
         run: uv run --no-project python scripts/release-metadata.py
@@ -139,6 +135,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shadowroom-linux-x86_64
+          compression-level: 0
           path: |
             dist/*.tar.gz
             dist/*.AppImage
@@ -195,6 +192,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shadowroom-macos-arm64
+          compression-level: 0
           path: |
             dist/*.zip
             dist/*.sha256
@@ -248,6 +246,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shadowroom-fedora44-x86_64
+          compression-level: 0
           path: |
             dist/*.rpm
             dist/*.sha256
@@ -275,6 +274,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: shadowroom-source
+          compression-level: 0
           path: |
             dist/*-source.tar.gz
             dist/*-source.tar.gz.sha256

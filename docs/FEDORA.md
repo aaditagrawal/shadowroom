@@ -90,7 +90,7 @@ to use the owner's Fedora account and API configuration. The following commands
 describe future setup; preparation scripts do not execute them:
 
 ```sh
-copr-cli create shadowroom --chroot fedora-44-x86_64 --chroot fedora-45-x86_64
+copr-cli create shadowroom --chroot fedora-44-x86_64
 copr-cli build aaditagrawal/shadowroom build/rpm-sources/shadowroom-*.src.rpm
 ```
 

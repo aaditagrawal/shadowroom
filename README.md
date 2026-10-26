@@ -49,7 +49,7 @@ your decisions into the next editor.
 ## Get started
 
 [Download v0.1.1](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.1)
-for the Linux x86_64 AppImage/archive, macOS arm64 archive, and source release.
+for the Linux x86_64 AppImage/archive, macOS arm64 archive, Fedora 44 RPM, and source release.
 Linux releases target glibc 2.28 or newer and include the documented RAW/HEIF
 codecs; a desktop session and Vulkan driver remain required. The macOS build is
 signed ad hoc and is not notarized. Each asset includes a SHA-256 checksum.
@@ -93,6 +93,9 @@ controller mapping and calibration guide. Physical controller validation remains
 a hardware test.
 
 ## Performance
+
+These application measurements describe the 0.1.0 release. Build and cache tuning
+for 0.1.1 is documented separately in [CI performance](docs/CI-PERFORMANCE.md).
 
 Measured on an **Intel Core i5-10300H, Fedora Linux 45, native X11/Xwayland**, using
 the optimized release build. Three independent runs each indexed **10,000

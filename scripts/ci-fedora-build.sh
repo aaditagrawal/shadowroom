@@ -5,6 +5,8 @@ project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$project_root"
 engine=${CONTAINER_ENGINE:-docker}
 image=${SHADOWROOM_RPM_BUILD_IMAGE:-shadowroom-release-fedora44:ci}
+runtime_image=$(awk '$1 == "FROM" { print $2; exit }' packaging/rpm/Containerfile)
+[[ $runtime_image == *@sha256:* ]] || { printf '%s\n' 'Fedora runtime base must be pinned by digest.' >&2; exit 1; }
 engine_options=()
 if [[ $(basename "$engine") == podman ]]; then engine_options+=(--userns=keep-id); fi
 rust_sysroot=$(rustc --print sysroot)
@@ -23,12 +25,13 @@ for package in .local/ci-rpm/rpm/RPMS/x86_64/shadowroom-[0-9]*.x86_64.rpm; do
     [[ -f "$package" ]] || { printf '%s\n' 'Main RPM was not built.' >&2; exit 1; }
     cp "$package" dist/
 done
-# DNF resolves the local package's runtime dependencies in a disposable Fedora
-# environment; this does not create a repository or use COPR credentials.
+# DNF resolves runtime dependencies in the clean, pinned Fedora base so installed
+# build dependencies cannot mask missing Requires. This does not use COPR.
 "$engine" run --rm --security-opt label=disable -v "$project_root/dist:/artifacts:ro" \
-    "$image" bash -euo pipefail -c '
+    "$runtime_image" bash -euo pipefail -c '
         dnf -y --setopt=install_weak_deps=False install /artifacts/shadowroom-[0-9]*.x86_64.rpm
         shadowroom --help
         shadowroom-remote --version
+        rpm -q --requires shadowroom
     '
 uv run --no-project python scripts/release-checksums.py dist
