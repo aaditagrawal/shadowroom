@@ -1,6 +1,7 @@
-# Cargo's release profile has no DWARF; do not generate empty debugsource RPMs.
+# Ship the main RPM without unused DWARF or empty debugsource RPMs.
 # The complete application and dependency sources remain in the source RPM.
 %global debug_package %{nil}
+%global rustflags_debuginfo 0
 
 Name:           shadowroom
 Version:        @VERSION@

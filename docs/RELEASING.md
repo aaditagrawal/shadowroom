@@ -77,6 +77,9 @@ source edit. Container layers and the independently keyed codec payload also hav
 caches. Incremental compilation and dev/test debug info are disabled to reduce
 cache size; test assertions and coverage remain enabled. Measure completed job and
 step timings before attributing a speed change to a cache or build setting.
+Desktop unit tests use the same optimized release profile as the native binaries,
+so their GPUI dependencies share build outputs. Core tests retain the default
+debug profile; test assertions remain active in both profiles.
 
 ## Publish a version
 

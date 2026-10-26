@@ -24,7 +24,7 @@ cargo_cache=$(cd "$cargo_cache" && pwd)
     -e CARGO_PROFILE_DEV_DEBUG=0 -e CARGO_PROFILE_TEST_DEBUG=0 -e RUST_TEST_THREADS=2 \
     "$image" bash -euo pipefail -c '
         cargo build --locked --release --features desktop --bins
-        cargo test --locked --bin shadowroom
+        cargo test --release --locked --bin shadowroom
         if [[ ! -f /output/codecs/provenance.json ]]; then
             rm -rf /output/codec-work /output/codecs
             scripts/build-release-codecs.sh /inputs /output/codec-work /output/codecs

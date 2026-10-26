@@ -23,6 +23,11 @@ integrity assertions remain enabled.
   inside the container.
 - Disable incremental compilation and test/development debug information in CI
   to reduce cache size and linking work.
+- Run desktop unit tests in the release profile already used for native packages,
+  avoiding a second GPUI dependency build in the debug profile. The core matrix
+  retains debug coverage and the desktop test assertions remain enabled.
+- Disable unused DWARF generation in the main-only Fedora RPM while preserving
+  the remaining Fedora Rust hardening flags and executable build-ID checks.
 - Cache the EL8 build-image layers and verified codec outputs separately from
   application binaries. Changed application source must still rebuild.
 - Bound compilation/test concurrency and cancel superseded branch runs while
