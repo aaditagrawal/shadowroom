@@ -46,6 +46,10 @@ lockfile digest, minimum Rust version, and dependency license inventory.
 
 The checked-in `vendor/xattr` patch remains in the application source. Registry
 crates use a separate `rpm-vendor` directory and relative Cargo source mapping.
+Locked registry inputs use stable archive timestamps so unchanged build-script
+inputs can reuse dependency caches across application commits. Source0 application
+and path-dependency files retain their source commit timestamps; provenance still
+records the selected revision.
 The license inventory covers the resolved Linux build/development superset;
 it does not claim every listed package is linked into the binaries.
 

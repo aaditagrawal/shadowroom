@@ -44,6 +44,29 @@ application binaries and desktop-test binaries still compiled. The Fedora RPM's
 separate build tree still compiled its patched xattr/GPUI chain. These results
 do not measure application startup, photo rendering or user-interface latency.
 
+## Cross-commit Fedora correction
+
+The [published v0.1.1 run](https://github.com/aaditagrawal/shadowroom/actions/runs/40391316246)
+exposed a separate issue after the identical-commit comparison. Commit `549085d`
+changed only documentation, with the same application and lockfile bytes, and
+restored the same Fedora target cache. Nevertheless, its release compile took
+7m51s and compiled 303 crates, versus 3m18s and five crates in the prior repeat.
+
+The source-RPM preparer assigned every vendored registry file the new application
+commit's timestamp. A small build-script probe reproduced Cargo marking an
+unchanged dependency dirty through `rerun-if-changed`; the rebuild propagated to
+its dependents. The preparer now fixes only locked registry inputs to January 1,
+1980. Source0 application files and patched path dependencies keep their source
+commit timestamps, and changed application source still rebuilds. Generated
+notices and provenance retain the selected source commit.
+
+The Fedora cache namespace also includes `Cargo.lock` and the preparation/build
+scripts, preventing fallback across changed dependency or build-input identities.
+A complete SRPM validation preserved all 37,541 registry files' bytes, modes and
+membership and verified 747 package checksums and 36,794 file checksums. The
+54.32% table above predates this correction; it is not a hosted measurement of
+this additional fix.
+
 ## Build tuning
 
 - Pin the Rust toolchain and release inputs so cache reuse has a stable basis.

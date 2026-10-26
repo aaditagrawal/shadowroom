@@ -47,7 +47,25 @@ version=$(uv run --no-project python "$work/source/scripts/rpm-prepare.py" \
 cp "$work/generated/SOURCE-PROVENANCE.json" "$work/source/rpm-notices/"
 git -C "$project_root" archive --prefix="shadowroom-$version/" "$source_sha" | gzip -n > "$output/shadowroom-$version.tar.gz"
 # Keep the checked-in vendor/xattr patch in Source0 and registry crates separate.
-tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner -czf "$output/shadowroom-$version-vendor.tar.gz" \
+# Locked registry crates are immutable, including files watched by build scripts.
+# Giving them each application commit's epoch reruns those scripts and rebuilds
+# their dependents after an otherwise cacheable documentation-only commit.
+# Only registry inputs get the fixed epoch; Source0/path sources retain ordinary
+# source-commit invalidation and notices/provenance still identify this commit.
+uv run --no-project python - "$work/source/rpm-vendor" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+epoch_ns = 315532800 * 1_000_000_000  # 1980-01-01 UTC.
+for path in (root, *root.rglob("*")):
+    metadata = path.lstat()
+    os.utime(path, ns=(metadata.st_atime_ns, epoch_ns), follow_symlinks=False)
+PY
+# Clamp generated config/notices to the commit epoch, retaining older immutable
+# registry timestamps instead of overriding them with the application's epoch.
+tar --sort=name --mtime="@$source_epoch" --clamp-mtime --owner=0 --group=0 --numeric-owner -czf "$output/shadowroom-$version-vendor.tar.gz" \
     -C "$work/source" rpm-vendor .cargo/config.toml rpm-notices
 cp "$work/generated/shadowroom.spec" "$output/shadowroom.spec"
 rpmbuild -bs "$output/shadowroom.spec" \
