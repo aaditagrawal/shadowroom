@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "repository": "aaditagrawal/shadowroom",
+  "owner": "aaditagrawal",
+  "title": "Shadowroom",
+  "language": "Rust",
+  "color": "#5b9bd5",
+  "highlight": "#d4e5f3",
+  "background": "#0f0f0f",
+  "text": "#e6e6e6",
+  "positionX": 78.125,
+  "positionY": 42.1875,
+  "spread": 100,
+  "strength": 100,
+  "fontSize": 128,
+  "tracking": -4,
+  "titleFont": "Geist",
+  "showLanguage": true,
+  "showOwner": true
+}

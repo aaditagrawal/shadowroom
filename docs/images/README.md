@@ -1,5 +1,11 @@
 # Documentation images
 
+`social-preview.png` is a 1280 × 640 GitHub repository cover exported from
+[Repo Thumb](https://repothumb.coolstuff.work/). Its editable settings are saved in
+[social-preview.repo-thumb.json](social-preview.repo-thumb.json); import this
+recipe into Repo Thumb to regenerate the cover. It uses Geist, Shadowroom's dark
+background and blue accent, and the Rust language mark.
+
 `review.png`, `compare.png`, `catalog.png`, `light.png`, and `preferences.png` are
 actual captures of Shadowroom's native GPUI window on Linux X11/Xwayland at
 1440 × 900, captured on 2026-10-26. No interface elements were composited or
