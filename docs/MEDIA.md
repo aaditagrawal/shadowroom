@@ -9,16 +9,16 @@ deferred on contention or a full queue, and existing work is deduplicated.
 ```rust
 let media = MediaPipeline::new(cache_dir, 512 * 1024 * 1024);
 media.set_disk_budget(8 * 1024 * 1024 * 1024);
-media.request_with_size(&photo.path, photo.modified_at, photo.size_bytes, PreviewKind::Fit);
-let shown = media.best_available(&photo.path, photo.modified_at, photo.size_bytes);
+media.request_photo(&photo, PreviewKind::Fit);
+let shown = media.best_photo(&photo);
 // On an explicit 100% zoom:
-media.request_with_size(&photo.path, photo.modified_at, photo.size_bytes, PreviewKind::Full);
+media.request_photo(&photo, PreviewKind::Full);
 ```
 
 Use the `*_with_size` methods with catalog metadata. Their cache identity includes
 the native path bytes, catalog modification time, byte size, preview kind, and
-pipeline version. Version 8 adds associated-color alpha resampling to the sensor
-RAW/camera-preview separation introduced in version 7 and
+pipeline version. Version 9 uses paired/embedded camera previews for full-size
+inspection and retains the associated-color alpha resampling from version 8. It
 persists `rendered_raw`, `embedded_raw`, and `rendering_note` provenance, including
 on derived previews. Older entries are regenerated. No path canonicalization or
 filesystem stat occurs on the UI thread. Paths supplied by the catalog should be absolute. The smaller contract
@@ -163,7 +163,7 @@ highlight recovery.
 
 ### RAW previews and sensor rendering
 
-Fit/Thumbnail prefer a same-folder, case-insensitive same-stem JPEG companion,
+All preview tiers prefer a same-folder, case-insensitive same-stem JPEG companion,
 then HEIC/HEIF/HIF. Independently cataloged files keep their live IDs. Companion
 size/mtime participate in invalidation and export; RAW capture metadata remains
 authoritative, with a companion filling only missing fields.
@@ -172,10 +172,12 @@ Without a companion, the bounded embedded-JPEG scan selects the largest supporte
 preview in the first 128 MiB, with at most 64 candidates and 32 MiB per candidate.
 It skips JPEG APP/EXIF segments correctly. The retained source is compacted to the
 JPEG plus orientation metadata before pixel decoding. If no supported embedded
-preview is found, Fit/Thumbnail fall back to sensor rendering, then resize.
+preview is found, the pipeline falls back to sensor rendering, then resizes for
+Fit/Thumbnail.
 
-**Full always renders the primary RAW sensor data**, regardless of a companion or
-embedded preview. `src/raw_render.rs` uses the public LibRaw C API; the prepared
+**Full uses the paired JPEG/HEIF or embedded JPEG at that preview's native
+resolution**. Zooming does not trigger RAW development when a camera preview is
+available. With neither kind of preview, `src/raw_render.rs` uses the public LibRaw C API; the prepared
 runtime is LibRaw 0.22.2. Its prepared build excludes JPEG-lossy DNG and optional
 SDK-dependent variants. Rendering demosaics with camera white balance, falling
 back to daylight defaults if as-shot multipliers are unusable. LibRaw applies
@@ -192,9 +194,10 @@ color/provenance fields and a separate `full_error`.
 
 Sensor admission includes 32 bytes per sensor pixel, 16 per output pixel, two
 source lengths for metadata, and 16 MiB fixed workspace; compressed source storage
-is charged separately. A common 24 MP RAW needs about 1.2 GiB, so the desktop's
-512 MiB default can decline Full. Use a 2 GiB media budget for such files, subject
-to the estimate in the actual error. This is conservative admission, **not a hard
+is charged separately. A common 24 MP RAW fallback needs about 1.2 GiB. The desktop
+defaults to automatic memory sizing: a quarter of physical RAM, clamped to
+512 MiB–4 GiB. Existing explicit limits remain honored, and Preferences offers
+Auto as well as manual values. This is conservative admission, **not a hard
 cap on LibRaw's native allocator**. Inputs are limited to 512 MiB, 160 MP and
 65,535 pixels per axis. Cancellation is cooperative at LibRaw progress callbacks
 and stage boundaries.
@@ -283,7 +286,7 @@ Linux decodes the native full image before resizing. Admission charges 40 bytes
 per largest declared coded pixel, two compressed-source lengths and 13 MiB
 metadata/profile overhead; retained source bytes are charged separately. macOS
 charges 20 bytes per source pixel plus 20 per requested thumbnail pixel and the
-same overhead. A 24 MP Linux HEIF can exceed the default 512 MiB even for Fit.
+same overhead. A 24 MP Linux HEIF can exceed a manually selected 512 MiB even for Fit.
 These are conservative estimates, not hard foreign-library allocation bounds.
 
 A prepared EL8/glibc 2.28 codec payload includes LibRaw 0.22.2 and libheif 1.23.5

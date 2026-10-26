@@ -8,7 +8,7 @@ your decisions into the next editor.
 
 ![Shadowroom reviewing a lakeside photograph, with histogram, five-star rating, pick flag, and filmstrip](docs/images/review.png)
 
-**Early release · 0.1.0 · Apache-2.0**
+**Early release · 0.1.1 · Apache-2.0**
 
 [Get started](#get-started) · [Performance](#performance) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md)
 
@@ -48,9 +48,11 @@ your decisions into the next editor.
 
 ## Get started
 
-[Download v0.1.0](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.0)
-for the Linux x86_64 archive and source release. The Linux binary is a Fedora 45
-build and requires compatible system libraries; macOS users can build from source.
+[Download v0.1.1](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.1)
+for the Linux x86_64 AppImage/archive, macOS arm64 archive, and source release.
+Linux releases target glibc 2.28 or newer and include the documented RAW/HEIF
+codecs; a desktop session and Vulkan driver remain required. The macOS build is
+signed ad hoc and is not notarized. Each asset includes a SHA-256 checksum.
 
 Install a current stable Rust toolchain and the
 [native prerequisites for your platform](docs/BUILD.md), then build both binaries:
@@ -74,10 +76,14 @@ the command palette (**Cmd/Ctrl+K**).
 | `←` / `→` | Previous / next photograph |
 | `P` / `X` / `U` | Pick / reject / clear flag |
 | `0`–`5` | Star rating; zero clears |
+| `R` | Reset stars and pick/reject without advancing; keep color label |
 | `6` / `7` / `8` / `9` | Red / yellow / green / blue label |
 | `G` / `L` / `C` | Grid / loupe / compare |
 | `B` | Pin comparison reference |
 | Space or `Z` | Fit / 100% |
+| `+` / `−` | Increase / decrease zoom |
+| `F` | Toggle focus peaking |
+| `F1` | Getting Started guide |
 | Shift+`↓` / Shift+`↑` | Extend / shrink selection by a grid row |
 | `[` / `]` | Previous / next group |
 | Cmd/Ctrl+Z | Undo decision |
@@ -114,11 +120,13 @@ camera-card throughput, or frame presentation. [Methodology, raw samples, and re
 | TIFF / BigTIFF | First page; supported integer/float samples and ICC conversion |
 | JPEG XL | Integer SDR, including 8/16-bit input and straight alpha; first animation frame |
 | HEIC / HEIF / HIF | ImageIO on macOS; libheif with a compatible decoder on Linux |
-| Camera RAW | Paired or embedded preview for Fit; LibRaw sensor rendering for 100% |
+| Camera RAW | Paired JPEG/HEIF or embedded JPEG for Fit and zoom; LibRaw fallback when no preview exists |
 
-RAW camera/variant support depends on LibRaw. A 24 MP sensor render can exceed the
-default 512 MiB media budget; raise it to 2 GiB in Preferences when needed. That
-budget covers admitted media work, not total process RSS.
+Zoom inspection prefers the camera JPEG over RAW sensor development.
+Nearby frames are read ahead for comparison, including while zoomed.
+Automatic preview memory uses a quarter of physical RAM, bounded to 512 MiB–4 GiB;
+manual limits remain available in Preferences. The budget covers admitted media
+work, not total process RSS. RAW fallback support depends on LibRaw.
 
 Display output is **8-bit sRGB**. HDR/wide-gamut output, soft proofing, lens
 corrections, video playback, and AVIF are outside this release. See
@@ -136,6 +144,12 @@ Review decisions never edit or delete source photographs. Copy imports and expor
 write to explicitly selected destinations. XMP export is an explicit interchange
 step; it does not automatically synchronize with another editor. Back up the
 local catalog to preserve decisions independently of your image backups.
+
+The startup **Getting Started** guide explains the workflow, shortcuts, color
+labels, time groups and caching. Reopen it with **F1** or **?**; Preferences → Help
+controls whether it appears at startup. Select a set in Catalog before opening
+Review or Compare to work only on those frames. **Show full folder** leaves that
+subset, and **G** returns to Catalog.
 
 ## Documentation and development
 

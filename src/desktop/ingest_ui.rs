@@ -57,7 +57,7 @@ impl ImportLayout {
     }
 
     fn columns(self) -> usize {
-        ((self.grid - 2. * ui::BAR_INSET + space::SM) / (180. + space::SM))
+        ((self.grid - scrollbar::WIDTH - 2. * ui::BAR_INSET + space::SM) / (180. + space::SM))
             .floor()
             .clamp(1., 6.) as usize
     }
@@ -69,6 +69,8 @@ pub(super) struct ImportUi {
     pub scan: Option<Arc<Scan>>,
     pub items: Vec<IngestGroup>,
     pub selected: HashSet<usize>,
+    focused: Option<usize>,
+    anchor: Option<usize>,
     pub lookup: HashMap<usize, usize>,
     pub photo_lookup: HashMap<i64, usize>,
     pub previews: Vec<Photo>,
@@ -127,6 +129,8 @@ impl ImportUi {
             scan: None,
             items: Vec::new(),
             selected: HashSet::new(),
+            focused: None,
+            anchor: None,
             lookup: HashMap::new(),
             photo_lookup: HashMap::new(),
             previews: Vec::new(),
@@ -199,6 +203,8 @@ impl ImportUi {
     fn clear_items(&mut self) {
         self.items.clear();
         self.selected.clear();
+        self.focused = None;
+        self.anchor = None;
         self.lookup.clear();
         self.photo_lookup.clear();
         self.previews.clear();
@@ -247,6 +253,7 @@ impl ImportUi {
                 .join(";"),
         ];
         self.options = options;
+        self.active_field = None;
         self.changed();
     }
     fn select_count(&mut self, group: &IngestGroup, add: bool) {
@@ -291,6 +298,77 @@ impl ImportUi {
             }
             self.changed();
         }
+    }
+    fn select_position(&mut self, position: usize, extend: bool, range: bool) {
+        let Some(&index) = self.visible.get(position) else {
+            return;
+        };
+        let id = self.items[index].id;
+        let visible_position = |id| self.visible.iter().position(|&i| self.items[i].id == id);
+        let anchor = self
+            .anchor
+            .and_then(visible_position)
+            .or_else(|| self.focused.and_then(visible_position))
+            .unwrap_or(0);
+        if range {
+            // A first Shift-click/arrow starts at the first visible photo.
+            // Keep that anchor when the range subsequently grows or shrinks.
+            self.anchor = Some(self.items[self.visible[anchor]].id);
+        }
+        if range || !extend {
+            let mut wanted: HashSet<_> = if range {
+                self.visible[anchor.min(position)..=anchor.max(position)]
+                    .iter()
+                    .map(|&i| self.items[i].id)
+                    .collect()
+            } else {
+                HashSet::from([id])
+            };
+            if extend {
+                wanted.extend(&self.selected);
+            }
+            let changes: Vec<_> = self
+                .selected
+                .symmetric_difference(&wanted)
+                .copied()
+                .collect();
+            for id in changes {
+                self.toggle(id);
+            }
+        } else {
+            self.toggle(id);
+        }
+        if !range {
+            self.anchor = Some(id);
+        }
+        self.focused = Some(id);
+    }
+    fn navigate(&mut self, key: &str, columns: usize, range: bool) -> Option<usize> {
+        if self.visible.is_empty() {
+            return None;
+        }
+        let focused = self
+            .focused
+            .and_then(|id| self.visible.iter().position(|&i| self.items[i].id == id));
+        let position = focused.unwrap_or(0);
+        let delta = match key {
+            "down" => columns as isize,
+            "up" => -(columns as isize),
+            "right" => 1,
+            "left" => -1,
+            "home" => -(position as isize),
+            "end" => self.visible.len() as isize,
+            _ => return None,
+        };
+        let target = if focused.is_none() && !range && key != "end" {
+            0
+        } else {
+            position
+                .saturating_add_signed(delta)
+                .min(self.visible.len() - 1)
+        };
+        self.select_position(target, false, range);
+        Some(target)
     }
     pub(super) fn invalidate_plan(&mut self) {
         self.changed();
@@ -360,7 +438,11 @@ impl Workspace {
 
     pub(super) fn ingest_layout_state(&self) -> Value {
         let layout = self.ingest_layout();
-        json!({"timeline_width":layout.timeline,"destination_width":layout.destination,"grid_width":layout.grid,"resizing":self.import_ui.resizing.is_some()})
+        json!({"timeline_width":layout.timeline,"destination_width":layout.destination,"grid_width":layout.grid,"resizing":self.import_ui.resizing.is_some(),
+            "columns":self.ingest_columns(),"selected_ids":self.import_ui.selected,"focused_id":self.import_ui.focused,"active_field":self.import_ui.active_field,
+            "active_text":self.import_ui.active_field.map(|i| &self.import_ui.fields[i]),
+            "scroll_offset":f32::from(self.import_ui.scroll.0.borrow().base_handle.offset().y),"visible_rows":self.import_ui.range,
+            "time_groups":self.import_ui.timeline.iter().enumerate().map(|(i,g)|json!({"day":g.day,"total":g.ids.len(),"selected":self.import_ui.timeline_selected.get(i),"state":selection_icon(self.import_ui.timeline_selected.get(i).copied().unwrap_or(0),g.ids.len())})).collect::<Vec<_>>()})
     }
 
     pub(super) fn open_ingest(&mut self, path: PathBuf) {
@@ -909,6 +991,7 @@ impl Workspace {
                         self.import_ui.fields[2] = file.to_string();
                     }
                     self.import_ui.preset_open = false;
+                    self.refocus_ingest_field();
                     self.import_ui.changed();
                 }
             }
@@ -917,6 +1000,7 @@ impl Workspace {
                     self.import_ui.fields[1] = folder.clone();
                     self.import_ui.fields[2] = file.clone();
                     self.import_ui.preset_open = false;
+                    self.refocus_ingest_field();
                     self.import_ui.changed();
                 }
             }
@@ -950,26 +1034,35 @@ impl Workspace {
             }
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
-            let primary = modifiers.control || modifiers.platform;
             if key == "tab" {
-                self.import_ui.active_field = Some((field + 1) % 5);
+                let next = (field + if modifiers.shift { 4 } else { 1 }) % 5;
+                self.import_ui.active_field = Some(next);
+                self.text_edit.focus(&self.import_ui.fields[next]);
             } else if key == "enter" {
                 self.import_ui.active_field = None;
-            } else if key == "backspace" {
-                self.import_ui.fields[field].pop();
-            } else if primary && key == "a" {
-                self.import_ui.fields[field].clear();
-            } else if primary && key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.import_ui.fields[field].push_str(&text.replace(['\n', '\r'], ""));
-                }
-            } else if !primary && !modifiers.alt {
-                if let Some(text) = &event.keystroke.key_char {
-                    self.import_ui.fields[field].push_str(text);
-                }
+            } else if self
+                .text_edit
+                .key(&mut self.import_ui.fields[field], event, cx)
+            {
+                self.import_ui.changed();
             }
-            self.import_ui.changed();
             cx.notify();
+        } else {
+            let key = event.keystroke.key.as_str();
+            let m = event.keystroke.modifiers;
+            let primary = m.control || m.platform;
+            if primary && key == "a" {
+                self.ingest_action("all", cx);
+            } else if !primary && !m.alt && !self.import_ui.visible.is_empty() {
+                let columns = self.ingest_columns();
+                let Some(target) = self.import_ui.navigate(key, columns, m.shift) else {
+                    return true;
+                };
+                self.import_ui
+                    .scroll
+                    .scroll_to_item(target / columns, ScrollStrategy::Center);
+                cx.notify();
+            }
         }
         true
     }
@@ -986,7 +1079,7 @@ impl Workspace {
     fn ingest_grid(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         let columns = self.ingest_columns();
         let rows = self.import_ui.visible.len().div_ceil(columns);
-        uniform_list(
+        let list = uniform_list(
             "ingest-grid",
             rows,
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
@@ -1101,10 +1194,26 @@ impl Workspace {
                                                 .py(px(space::XS))
                                                 .flex()
                                                 .gap(px(space::XS))
-                                                .child(icon(
-                                                    if selected { "selected" } else { "select" },
-                                                    this.icon_muted(),
-                                                ))
+                                                .child(
+                                                    icon(
+                                                        if selected {
+                                                            "selected"
+                                                        } else {
+                                                            "select"
+                                                        },
+                                                        this.icon_muted(),
+                                                    )
+                                                    .id(("ingest-checkbox", index))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.import_ui.toggle(id);
+                                                        this.import_ui.focused = Some(id);
+                                                        this.import_ui.anchor = Some(id);
+                                                        this.import_ui.active_field = None;
+                                                        cx.stop_propagation();
+                                                        cx.notify();
+                                                    })),
+                                                )
                                                 .child(
                                                     div()
                                                         .min_w(px(0.))
@@ -1130,10 +1239,18 @@ impl Workspace {
                                                     }
                                                 )),
                                         )
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.import_ui.toggle(id);
-                                            cx.notify();
-                                        })),
+                                        .on_click(cx.listener(
+                                            move |this, event: &ClickEvent, _, cx| {
+                                                this.import_ui.active_field = None;
+                                                let m = event.modifiers();
+                                                this.import_ui.select_position(
+                                                    row * columns + col,
+                                                    m.control || m.platform,
+                                                    m.shift,
+                                                );
+                                                cx.notify();
+                                            },
+                                        )),
                                 );
                             } else {
                                 line = line.child(div().flex_1());
@@ -1146,7 +1263,8 @@ impl Workspace {
         )
         .track_scroll(self.import_ui.scroll.clone())
         .size_full()
-        .into_any_element()
+        .into_any_element();
+        self.scrollable_list("ingest-scrollbar", &self.import_ui.scroll, list, cx)
     }
     fn ingest_panel_handle(&self, panel: ImportPanel, cx: &gpui::Context<Self>) -> AnyElement {
         let hover = self.hover_bg();
@@ -1353,21 +1471,18 @@ impl Workspace {
                                     .child(
                                         div()
                                             .id(("ingest-day", index))
-                                            .child(format!(
-                                                "{} {}",
-                                                &group.day[8..],
-                                                if this
-                                                    .import_ui
-                                                    .day_counts
-                                                    .get(&group.day)
-                                                    .is_some_and(
-                                                        |(selected, total)| selected == total
-                                                    )
-                                                {
-                                                    "☑"
-                                                } else {
-                                                    "□"
-                                                }
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(space::XS))
+                                            .child(group.day[8..].to_string())
+                                            .child(icon(
+                                                this.import_ui.day_counts.get(&group.day).map_or(
+                                                    "select",
+                                                    |&(selected, total)| {
+                                                        selection_icon(selected, total)
+                                                    },
+                                                ),
+                                                this.icon_muted(),
                                             ))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 let day =
@@ -1393,23 +1508,26 @@ impl Workspace {
                                             })),
                                     ),
                             )
-                            .child(div().text_size(px(11.)).text_color(this.muted()).child(
-                                format!(
-                                        "{} {} · {} files",
-                                        if this
-                                            .import_ui
-                                            .timeline_selected
-                                            .get(index)
-                                            .is_some_and(|selected| *selected == group.ids.len())
-                                        {
-                                            "☑"
-                                        } else {
-                                            "□"
-                                        },
-                                        group.label,
-                                        group.ids.len()
-                                    ),
-                            ))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(this.muted())
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::XS))
+                                    .child(icon(
+                                        selection_icon(
+                                            this.import_ui
+                                                .timeline_selected
+                                                .get(index)
+                                                .copied()
+                                                .unwrap_or(0),
+                                            group.ids.len(),
+                                        ),
+                                        this.icon_muted(),
+                                    ))
+                                    .child(format!("{} · {} files", group.label, group.ids.len())),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let ids = this.import_ui.timeline[index].ids.clone();
                                 let all = ids.iter().all(|id| this.import_ui.selected.contains(id));
@@ -1437,8 +1555,15 @@ impl Workspace {
             }),
         )
         .track_scroll(self.import_ui.timeline_scroll.clone())
+        .size_full()
         .flex_1()
         .min_h(px(0.));
+        let timeline = self.scrollable_list(
+            "ingest-timeline-scrollbar",
+            &self.import_ui.timeline_scroll,
+            timeline.into_any_element(),
+            cx,
+        );
         let mut destination = div()
             .id("ingest-destination")
             .w(px(if focus_destination {
@@ -1501,20 +1626,20 @@ impl Workspace {
                         })
                         .bg(self.bg())
                         .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_normal()
-                        .line_clamp(1)
-                        .child(if self.import_ui.fields[n].is_empty() {
-                            " ".into()
-                        } else if (n == 0 || n == 4) && self.import_ui.active_field != Some(n) {
-                            // Paths: the meaningful part is the end, so elide the start.
-                            tail_ellipsis(&self.import_ui.fields[n], 34)
-                        } else {
-                            self.import_ui.fields[n].clone()
-                        })
+                        .cursor(CursorStyle::IBeam)
+                        .child(self.input_text(
+                            &if (n == 0 || n == 4) && self.import_ui.active_field != Some(n) {
+                                tail_ellipsis(&self.import_ui.fields[n], 34)
+                            } else {
+                                self.import_ui.fields[n].clone()
+                            },
+                            "",
+                            self.import_ui.active_field == Some(n),
+                        ))
                         .tooltip(self.tip(&self.import_ui.fields[n], ""))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.import_ui.active_field = Some(n);
+                            this.text_edit.focus(&this.import_ui.fields[n]);
                             cx.notify();
                         })),
                 );
@@ -1754,7 +1879,7 @@ impl Workspace {
                         Cmd::Ingest("gap".into()),
                         false,
                         cx,
-                    )),
+                    ).tooltip(self.tip("Time grouping: consecutive photos stay together when the gap between captures is at most this value. Click to change it.", ""))),
             )
             .child(timeline);
         let mut body = div()
@@ -2033,6 +2158,8 @@ impl Workspace {
                         } else {
                             this.import_ui.fields[field] = path.to_string_lossy().into_owned();
                         }
+                        this.import_ui.active_field = Some(field);
+                        this.refocus_ingest_field();
                         this.import_ui.changed();
                         cx.notify();
                     });
@@ -2040,6 +2167,11 @@ impl Workspace {
             }
         })
         .detach();
+    }
+    fn refocus_ingest_field(&mut self) {
+        if let Some(field) = self.import_ui.active_field {
+            self.text_edit.focus(&self.import_ui.fields[field]);
+        }
     }
     pub(super) fn ingest_preferences(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let settings = self.preference_settings();
@@ -2134,6 +2266,16 @@ impl Workspace {
     }
 }
 
+fn selection_icon(selected: usize, total: usize) -> &'static str {
+    if selected == 0 {
+        "select"
+    } else if selected == total {
+        "selected"
+    } else {
+        "partial"
+    }
+}
+
 /// "…" + the last `max` characters, on a char boundary.
 fn tail_ellipsis(text: &str, max: usize) -> String {
     let count = text.chars().count();
@@ -2146,7 +2288,103 @@ fn tail_ellipsis(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod responsive_tests {
-    use super::{IMPORT_RESIZE_HANDLE, ImportLayout, space, ui};
+    use super::{IMPORT_RESIZE_HANDLE, ImportLayout, ImportUi, ingest, selection_icon, space, ui};
+
+    fn import_fixture() -> ImportUi {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("photos");
+        std::fs::create_dir(&source).unwrap();
+        for index in 0..12 {
+            image::RgbImage::new(4, 4)
+                .save(source.join(format!("{index:02}.png")))
+                .unwrap();
+        }
+        let catalog = shadowroom::catalog::Catalog::open(&temp.path().join("catalog.db")).unwrap();
+        let scan = ingest::scan(&source, &catalog, |_| {}, &ingest::Control::default()).unwrap();
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        for group in &scan.groups {
+            state.append(group.clone());
+        }
+        state.timeline = ingest::timeline(&scan, 60);
+        state.timeline_counts();
+        state
+    }
+
+    #[test]
+    fn range_selection_counts_shrink_and_survive_filtered_positions() {
+        let mut state = import_fixture();
+        let ids: Vec<_> = state.items.iter().map(|g| g.id).collect();
+        state.select_position(2, false, false);
+        state.select_position(6, false, true);
+        assert_eq!(state.selected, ids[2..=6].iter().copied().collect());
+        assert_eq!(state.photos, 5);
+        assert!(state.timeline_selected.iter().any(|&n| n > 0));
+        assert!(
+            state
+                .day_counts
+                .values()
+                .any(|&(n, total)| selection_icon(n, total) == "partial")
+        );
+        state.select_position(2, false, true);
+        assert_eq!(state.selected, [ids[2]].into_iter().collect());
+        assert_eq!(state.photos, 1);
+        state.visible = vec![2, 4, 6, 8, 10];
+        state.select_position(2, false, true);
+        assert_eq!(
+            state.selected,
+            [ids[2], ids[4], ids[6]].into_iter().collect()
+        );
+        assert_eq!(state.photos, 3);
+        assert_eq!(state.timeline_selected.iter().sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn first_shift_navigation_establishes_an_anchor_and_range_reverses() {
+        let mut state = import_fixture();
+        let ids: Vec<_> = state.items.iter().map(|g| g.id).collect();
+        assert_eq!(state.navigate("down", 3, true), Some(3));
+        assert_eq!(state.anchor, Some(ids[0]));
+        assert_eq!(state.selected, ids[..=3].iter().copied().collect());
+        assert_eq!(state.navigate("down", 3, true), Some(6));
+        assert_eq!(state.selected, ids[..=6].iter().copied().collect());
+        assert_eq!(state.navigate("up", 3, true), Some(3));
+        assert_eq!(state.selected, ids[..=3].iter().copied().collect());
+        assert_eq!(state.photos, 4);
+        assert_eq!(state.timeline_selected.iter().sum::<usize>(), 4);
+        assert_eq!(state.navigate("end", 3, true), Some(11));
+        assert!(state.day_counts.values().all(|&(n, total)| n == total));
+        state.select_position(11, true, false);
+        assert_eq!(state.anchor, Some(ids[11]));
+        assert_eq!(state.photos, 11);
+        state.navigate("left", 3, true);
+        assert_eq!(state.selected, ids[10..].iter().copied().collect());
+        assert_eq!(state.photos, 2);
+    }
+
+    #[test]
+    fn navigation_starts_at_first_visible_photo_and_ignores_hidden_anchors() {
+        let mut state = import_fixture();
+        let ids: Vec<_> = state.items.iter().map(|g| g.id).collect();
+        assert_eq!(state.navigate("down", 3, false), Some(0));
+        assert_eq!(state.selected, [ids[0]].into_iter().collect());
+        state.select_position(2, true, false);
+        assert_eq!(state.selected, [ids[0], ids[2]].into_iter().collect());
+        state.select_position(4, true, false);
+        assert_eq!(
+            state.selected,
+            [ids[0], ids[2], ids[4]].into_iter().collect()
+        );
+        state.anchor = Some(ids[0]);
+        state.visible = vec![2, 4, 6, 8, 10];
+        state.navigate("down", 2, true);
+        assert_eq!(state.anchor, Some(ids[4]));
+        assert_eq!(
+            state.selected,
+            [ids[4], ids[6], ids[8]].into_iter().collect()
+        );
+        state.visible.clear();
+        assert_eq!(state.navigate("end", 3, true), None);
+    }
 
     #[test]
     fn hidden_import_panels_do_not_consume_grid_width() {

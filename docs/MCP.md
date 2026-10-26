@@ -40,7 +40,7 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `duplicates` | `action`, `ids?` | `scan`, `cancel`, or `status`; omitted scan IDs mean all nontrashed catalog photos. IDs are valid only for scan. |
 | `undo` / `redo` | `{}` | Restore the app's decision history |
 | `view` | `mode`, `panel?` | `grid`, `loupe`, `compare`, or `survey`; optional photo panel `review` or `info` |
-| `zoom` | `mode` | `fit`, `full`, or `toggle`; RAW Full requests sensor rendering; reduced fallback and Full failures remain explicit |
+| `zoom` | `mode`, optional `percent` | `fit`, `full` (100%), `toggle`, `in`, `out`, or `custom` with `percent` (12.5–800); prefers paired/embedded JPEGs |
 | `pin` | `id?` | Pin the specified/current image as comparison reference |
 | `filter` | `filter?`, `duplicates_only?`, `min_rating?`, `folder?`, `clear_folder?` | Filter is `all`, `picks`, `unrated`, `rejects`, or `trash`; stars 0–5. Exact duplicate review is optional. |
 | `group` | `mode`, `gap_ms?`, `threshold?` | Modes `off`, `time`, `visual`, `burst`; gap 1–3,600,000 ms; dHash threshold 0–64 |
@@ -55,7 +55,7 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `command` | `name` | Run one allowlisted workspace action below |
 | `quit` | `{}` | Request graceful quit with pending-decision handling |
 
-`command.name` is one of `next`, `previous`, `next_group`, `previous_group`, `next_unreviewed`, `previous_unreviewed`, `resolve_burst`, `toggle_histogram`, `toggle_inspector`, `toggle_sidebar`, `toggle_auto_advance`, `toggle_focus`, `select_all`, `refresh`, `retry_saves`, `retry_preview`, `toggle_histogram_log`, `toggle_compare_sync`, `show_duplicates`, `scan_duplicates_in_view`, `toggle_palette`, `toggle_preferences`, or `show_appearance`. The last opens Preferences directly to Appearance; it does not toggle the panel closed. Commands never accept shell text, executable names, or arbitrary code.
+`command.name` is one of `next`, `previous`, `next_group`, `previous_group`, `next_unreviewed`, `previous_unreviewed`, `resolve_burst`, `toggle_histogram`, `toggle_inspector`, `toggle_sidebar`, `toggle_auto_advance`, `toggle_focus`, `select_all`, `refresh`, `retry_saves`, `retry_preview`, `toggle_histogram_log`, `toggle_compare_sync`, `show_duplicates`, `scan_duplicates_in_view`, `toggle_palette`, `toggle_preferences`, `show_appearance`, `show_rating_filter`, `reset_layout`, `resize_catalog`, `resize_inspector`, `close_overlay`, `getting_started`, `toggle_focus_peaking`, `show_full_folder`, or `reset_decision`. `show_appearance` opens Preferences directly to Appearance. `getting_started` opens the help guide, and `show_full_folder` leaves a selected Review subset. `reset_decision` clears stars and pick/reject together on the selected Catalog photos or the active Review/Compare photo, preserving labels and never auto-advancing; Undo restores the reset as one decision. Commands never accept shell text, executable names, or arbitrary code.
 
 `workspace_state.duplicate_scan` reports job identity, phase, stage, counts, bytes read, cache hits, bounded exact-match groups and errors. Scans can be queued, running, completed, cancelled, failed, or stale. A new scan clears the old displayed results. A known primary/companion path or indexed source-revision change invalidates completed matches and marks them stale until rescanned. `scan_duplicates_in_view` follows the folder-scoped UI action and does nothing when it contains no active photos; `duplicates(action=scan)` with omitted IDs deliberately scans the catalog. `library_list(scope=all)` includes Trash for explicit inspection and restoration.
 
@@ -68,7 +68,12 @@ snapshot means the diagnostic lock was busy; retry. The history is session-local
 and survives successful retries, so it is evidence of earlier failures rather
 than the current availability of a photograph.
 
-`settings_set.settings` accepts the application's known preferences: `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Resource bounds match persistent preferences: memory 64–65,536 MiB and disk 128–1,048,576 MiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request.
+`settings_set.settings` accepts the application's known preferences, including `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `show_getting_started`, `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Memory accepts **0 for Auto** or 64–65,536 MiB; local disk cache accepts 128–1,048,576 MiB. Auto uses a quarter of physical RAM bounded to 512 MiB–4 GiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request. The explicit `settings_set` tool commits immediately; the Preferences dialog keeps a separate draft until Apply.
+
+Opening Review or Compare from Catalog uses its current selection as a navigation
+subset and clears the batch-edit selection, so a decision affects the current
+frame. `workspace_state.review_subset` exposes that set. Returning to Grid restores
+the Catalog selection; `command(name=show_full_folder)` releases the subset.
 
 Import/export acceptance is asynchronous. Read `workspace_state` until the job completes and pending saves are clear; an accepted job is not a claim that files are already indexed or copied. Decision tools follow the desktop's save-status model. Tool timeouts are not a rollback guarantee: inspect workspace state before retrying non-idempotent actions such as navigation, undo, or export.
 

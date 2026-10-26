@@ -216,7 +216,7 @@ impl Agent {
                 "analyze".into(),
                 "revision_sync".into(),
                 "jpeg_preview".into(),
-                "preview_provenance_v2".into(),
+                "preview_jpeg_first_v4".into(),
                 "read_range".into(),
                 "cancel".into(),
                 "read_only".into(),
@@ -711,10 +711,7 @@ impl State {
                     .context("Photo not indexed")?;
                 ensure!(record.key == *key, "Stale photo key; sync metadata again");
                 let path = confined(&root.info.path, &key.relative_path)?;
-                let sensor =
-                    *kind == crate::media::PreviewKind::Full && indexer::is_raw(&key.relative_path);
-                let companion =
-                    *kind != crate::media::PreviewKind::Full && key.companion_path.is_some();
+                let companion = key.companion_path.is_some();
                 let preview_relative = if companion {
                     key.companion_path.as_deref().unwrap()
                 } else {
@@ -742,12 +739,8 @@ impl State {
                     self.jpeg_cache
                         .get(&self.hello.device_id, key, *kind, *max_bytes)?
                 {
-                    // Even a well-formed sidecar must never substitute an embedded
-                    // or legacy image for a Full sensor request.
-                    if !sensor || (cached.rendered_raw && !cached.embedded_raw) {
-                        check(stop)?;
-                        return send(writer, id, true, cached.response(), cached.jpeg);
-                    }
+                    check(stop)?;
+                    return send(writer, id, true, cached.response(), cached.jpeg);
                 }
                 let start = Instant::now();
                 let preview = loop {
@@ -772,10 +765,6 @@ impl State {
                         .request_with_size(&preview_path, modified, size, *kind);
                     thread::sleep(Duration::from_millis(5));
                 };
-                ensure!(
-                    !sensor || (preview.rendered_raw && !preview.embedded_raw),
-                    "Full RAW requires sensor rendering; embedded/paired fallback is unavailable"
-                );
                 ensure!(
                     *kind != crate::media::PreviewKind::Full
                         || (preview.width, preview.height)

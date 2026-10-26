@@ -1,0 +1,96 @@
+Name:           shadowroom
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        Fast, non-destructive photo ingest and culling workspace
+License:        @LICENSES@
+URL:            https://github.com/aaditagrawal/shadowroom
+Source0:        %{name}-%{version}.tar.gz
+Source1:        %{name}-%{version}-vendor.tar.gz
+ExclusiveArch:  x86_64
+
+BuildRequires:  rust >= @RUST_VERSION@
+BuildRequires:  cargo
+BuildRequires:  gcc
+BuildRequires:  gcc-c++
+BuildRequires:  make
+BuildRequires:  cmake
+BuildRequires:  clang
+BuildRequires:  binutils
+BuildRequires:  pkgconf-pkg-config
+BuildRequires:  desktop-file-utils
+BuildRequires:  pkgconfig(fontconfig)
+BuildRequires:  pkgconfig(freetype2)
+BuildRequires:  pkgconfig(wayland-client)
+BuildRequires:  pkgconfig(wayland-cursor)
+BuildRequires:  pkgconfig(wayland-egl)
+BuildRequires:  pkgconfig(x11)
+BuildRequires:  pkgconfig(x11-xcb)
+BuildRequires:  pkgconfig(xcb)
+BuildRequires:  pkgconfig(xcb-shape)
+BuildRequires:  pkgconfig(xcb-xfixes)
+BuildRequires:  pkgconfig(xkbcommon)
+BuildRequires:  pkgconfig(xkbcommon-x11)
+BuildRequires:  pkgconfig(libzstd)
+BuildRequires:  pkgconfig(openssl)
+BuildRequires:  pkgconfig(alsa)
+BuildRequires:  pkgconfig(lcms2)
+BuildRequires:  pkgconfig(vulkan)
+Requires:       vulkan-loader
+Requires:       fontconfig
+Requires:       xdg-desktop-portal
+Recommends:     mesa-vulkan-drivers
+Recommends:     LibRaw >= 0.22
+Recommends:     libheif
+
+%description
+Shadowroom combines verified photo ingest and keyboard-first culling. Review
+paired RAW+JPEG groups, compare fine detail, stage reversible decisions and
+export picks without changing originals. Includes the headless remote agent.
+
+This native Fedora package uses system libraries and optional system codecs.
+It does not bundle an HEVC decoder. Rust source dependencies and license notices
+are included in the corresponding source RPM; compilation is fully offline.
+
+%prep
+%setup -q
+tar -xzf %{SOURCE1}
+
+%build
+export CARGO_HOME="$PWD/.rpm-cargo-home"
+export CARGO_TARGET_DIR="$PWD/target"
+export CARGO_BUILD_JOBS="%{_smp_build_ncpus}"
+export CARGO_NET_OFFLINE=true
+# Use Fedora lcms2, rather than the portable release's static copy.
+unset LCMS2_STATIC
+cargo build --frozen --release --features desktop --bins
+
+%install
+install -Dm755 target/release/shadowroom %{buildroot}%{_bindir}/shadowroom
+install -Dm755 target/release/shadowroom-remote %{buildroot}%{_bindir}/shadowroom-remote
+install -Dm644 packaging/linux/app.shadowroom.Shadowroom.desktop %{buildroot}%{_datadir}/applications/app.shadowroom.Shadowroom.desktop
+install -Dm644 packaging/shadowroom.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/app.shadowroom.Shadowroom.svg
+install -Dm644 packaging/shadowroom-512.png %{buildroot}%{_datadir}/icons/hicolor/512x512/apps/app.shadowroom.Shadowroom.png
+mkdir -p %{buildroot}%{_datadir}/shadowroom
+cp -a assets/controls assets/fonts %{buildroot}%{_datadir}/shadowroom/
+
+%check
+desktop-file-validate %{buildroot}%{_datadir}/applications/app.shadowroom.Shadowroom.desktop
+target/release/shadowroom --help
+target/release/shadowroom-remote --help
+readelf -n target/release/shadowroom | grep 'Build ID:'
+readelf -n target/release/shadowroom-remote | grep 'Build ID:'
+
+%files
+%license rpm-notices/LICENSE rpm-notices/THIRD_PARTY_NOTICES.md rpm-notices/licenses
+%doc README.md CONTRIBUTING.md docs rpm-notices/Cargo.lock rpm-notices/SOURCE-PROVENANCE.json
+%{_bindir}/shadowroom
+%{_bindir}/shadowroom-remote
+%{_datadir}/shadowroom/
+%{_datadir}/applications/app.shadowroom.Shadowroom.desktop
+%{_datadir}/icons/hicolor/scalable/apps/app.shadowroom.Shadowroom.svg
+%{_datadir}/icons/hicolor/512x512/apps/app.shadowroom.Shadowroom.png
+
+%changelog
+* @CHANGELOG_DATE@ Shadowroom maintainers - @VERSION@-@RELEASE@
+- Build committed source @SOURCE_SHA@ with locked, vendored Rust dependencies.
+- Retain dependency and asset notices; use Fedora runtime libraries and codecs.

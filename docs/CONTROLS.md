@@ -11,15 +11,34 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `[` / `]` | Previous / next group |
 | `P` / `X` / `U` | Pick / reject / clear flag |
 | `0`–`5` | Set star rating; zero clears it |
+| `R` | Reset stars and pick/reject together without advancing; keep color label |
 | `G` / `L` (or `E`) / `C` | Grid / loupe / compare |
 | `Z` or Space | Toggle fit / 100% zoom |
 | `=` / `-` | Zoom in / out |
+| Ctrl/Cmd + scroll | Zoom in / out; plain scroll pans while zoomed |
+| `F` | Toggle cyan focus peaking in Review and Compare |
+| `F1` | Open Getting Started |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
 
-Flags and ratings never delete source media. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
+Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
+
+Zoom ranges from 12.5% to 800%; the **−** and **+** buttons change magnification,
+and **Z** restores 100% or Fit. Adjacent frames retain zoom and pan. Focus peaking
+highlights abrupt luminance edges in the displayed preview, including both Compare
+panes. It is a visual aid, not an automatic sharpness verdict, and never changes
+the source or histogram.
+
+Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
+Ctrl/Cmd-click toggles individual frames. Import checkboxes toggle independently.
+Opening Review or Compare from a Catalog selection freezes that set for navigation
+and applies each decision to the current frame. **Show full folder** leaves the
+subset. Returning to Catalog restores the selection.
+
+Text fields show a blinking caret, support arrows, Home/End, Shift selection,
+Backspace/Delete, and Ctrl/Cmd+A/C/X/V. Tab changes import or network-host fields.
 
 `src/controls.rs` defines the authoritative command enum and bindings. The UI maps these commands into actions. Dedicated F13–F24 shortcuts provide a keyboard-layout-independent controller layer:
 

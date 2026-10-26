@@ -1,6 +1,6 @@
 # Build and install
 
-Shadowroom 0.1.0 is an early release for Linux and macOS. Build with a current
+Shadowroom is an early release for Linux and macOS. Build with a current
 stable Rust toolchain. The desktop uses GPUI; the remote agent also runs headless.
 
 ## Linux
@@ -23,6 +23,17 @@ Install your distribution's Vulkan runtime/driver and an `xdg-desktop-portal`
 backend for folder dialogs. LibRaw is required for sensor RAW rendering. HEIF on
 Linux requires libheif and an HEVC decoder such as libde265. These codecs are
 loaded at runtime; see [format support](MEDIA.md).
+
+After building, run the core checks in [Contributing](../CONTRIBUTING.md). On an
+X11/Xwayland desktop, check the feedback workflows against the native app with
+isolated settings and photo fixtures:
+
+```sh
+uv run --no-project python scripts/native-feedback.py --binary target/release/shadowroom
+```
+
+This also needs xdotool, ImageMagick and Tesseract; the contributing guide
+describes repeatable XTEST setup.
 
 For development without root, `scripts/check-linux-local.sh` accepts a
 `SHADOWROOM_SYSROOT` containing extracted development packages under `usr/`.
@@ -78,14 +89,40 @@ records its shared-library dependencies and requires compatible system runtimes.
 Optional codec paths are scoped to the application launcher.
 
 To assemble an AppImage from an existing Linux package, supply an independently
-obtained AppImage runtime and install `mksquashfs`:
+verified AppImage runtime and install `mksquashfs`. The public release inputs can
+be fetched with their committed checksums:
 
 ```sh
-scripts/package-appimage.sh --package dist/shadowroom-0.1.0-linux-x86_64 \
-  --runtime /path/to/runtime-x86_64 --output dist/Shadowroom-0.1.0-x86_64.AppImage
+uv run --no-project python scripts/fetch-release-inputs.py --kind appimage --output .local/release-inputs
+scripts/package-appimage.sh --package dist/shadowroom-0.1.1-linux-x86_64 \
+  --runtime .local/release-inputs/runtime-x86_64 \
+  --runtime-sha256 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d \
+  --runtime-metadata .local/release-inputs --output dist/Shadowroom-0.1.1-x86_64.AppImage
 ```
+
+The [tag workflow](../.github/workflows/ci.yml) builds Linux on AlmaLinux 8 for a
+glibc 2.28 baseline, rebuilding the bundled RAW/HEIF codecs from verified public
+sources. To reproduce that path with Docker or Podman:
+
+```sh
+docker build -f packaging/linux/Containerfile -t shadowroom-release-el8:ci packaging/linux
+uv run --no-project python scripts/fetch-release-inputs.py --output .local/release-inputs
+scripts/ci-linux-build.sh
+CARGO_TARGET_DIR="$PWD/.local/ci-linux/target" scripts/package-linux.sh \
+  --no-build --heif-runtime .local/ci-linux/codecs
+```
+
+For Podman set `CONTAINER_ENGINE=podman` and build/tag the same image. The build
+script mounts the selected `rustc --print sysroot`, host Cargo registry, and the
+same persistent EL8 target directory used by CI. Use Rust 1.99.1 to match CI.
+Ordinary native builds on newer distributions retain their own system-library
+requirements; placing such a binary in an AppImage does not lower its glibc floor.
+See [Releasing](RELEASING.md) for artifact names, notices, cache layout and tag publication.
 
 On macOS, move `Shadowroom.app` from the zip into Applications. The bundle declares
 macOS 12+ and contains the native build architecture. Packaging signs ad hoc by
 default. `SHADOWROOM_CODESIGN_IDENTITY` selects an installed signing identity;
 Apple notarization is a separate release step. Windows packages are not provided.
+Both desktop and remote agent are included in the app bundle. macOS HEIF uses
+system frameworks; sensor RAW fallback still requires a compatible LibRaw
+installation. Camera JPEG/embedded-preview inspection works without LibRaw.

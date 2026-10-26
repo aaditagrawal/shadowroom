@@ -15,6 +15,7 @@ pub enum Command {
     Pick,
     Reject,
     ClearFlag,
+    ResetDecision,
     SetRating(u8),
     RatingDown,
     RatingUp,
@@ -49,6 +50,7 @@ pub fn default_bindings() -> Vec<ShortcutBinding> {
         ("p", Pick),
         ("x", Reject),
         ("u", ClearFlag),
+        ("r", ResetDecision),
         ("g", Grid),
         ("l", Loupe),
         ("e", Loupe),
@@ -333,6 +335,7 @@ mod tests {
         assert_eq!(creator_micro_bindings().len(), 12);
         assert_eq!(command_for_keystroke("F13"), Some(Command::Pick));
         assert_eq!(command_for_keystroke("5"), Some(Command::SetRating(5)));
+        assert_eq!(command_for_keystroke("r"), Some(Command::ResetDecision));
         assert_eq!(command_for_keystroke("unknown"), None);
     }
     #[test]

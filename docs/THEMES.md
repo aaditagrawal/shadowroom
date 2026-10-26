@@ -6,7 +6,7 @@ Shadowroom includes restrained **Shadowroom Dark** and **Shadowroom Light** pale
 
 Click the active theme name in the status bar, open **Preferences → Appearance**
 with **Cmd/Ctrl+,**, or search **Appearance & Themes** in **Cmd/Ctrl+K**. Appearance
-is the first preferences section. Culling, Performance and Controller have their
+is the first preferences section. Culling, Performance, Controller and Help have their
 own sections so a large theme collection does not bury other settings.
 
 Preferences use a separate draft. Choices do not change the running app or write
@@ -92,4 +92,4 @@ Preferences live in the user's configuration directory under `shadowroom/setting
 
 `Settings::save(path)` writes a same-directory temporary file with exclusive creation, flushes and syncs its data, then atomically renames it over the target. Failed writes do not partially replace the existing file. On Unix new snapshots are owner-readable/writable. Saves replace a target symlink itself, rather than following it. This protects one complete snapshot; the desktop holds an exclusive catalog lease to prevent concurrent writable instances.
 
-Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, 8,192 MiB disk preview budget and 512 MiB memory preview budget. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.
+Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, 8,192 MiB disk preview budget, automatic memory sizing, and the startup Getting Started guide enabled. Auto is stored as `memory_budget_mb: 0` and uses a quarter of physical RAM, bounded to 512 MiB–4 GiB; manual limits remain available. Help controls the startup guide, which can also be reopened with F1 or ?. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.

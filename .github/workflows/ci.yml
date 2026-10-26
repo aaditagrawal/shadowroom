@@ -2,6 +2,8 @@ name: Native checks
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -10,11 +12,17 @@ permissions:
 
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always
   LCMS2_STATIC: '1'
+  RUST_VERSION: '1.99.1'
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  RUST_TEST_THREADS: '2'
 
 jobs:
   core:
@@ -24,15 +32,26 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: core-${{ matrix.os }}
+          cache-on-failure: true
+      - name: Validate version and tag
+        run: uv run --no-project python scripts/release-metadata.py
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Core behavior
@@ -42,57 +61,198 @@ jobs:
       - name: Documentation links
         run: uv run --no-project python scripts/check-docs.py
 
-  desktop:
-    name: Desktop and package / ${{ matrix.os }}
+  linux:
+    name: Linux x86_64 / glibc 2.28
     needs: core
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v7
-      - name: Linux native dependencies
-        if: runner.os == 'Linux'
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: release-linux-el8
+          key: ${{ hashFiles('packaging/linux/Containerfile') }}
+          workspaces: '. -> .local/ci-linux/target'
+          cache-on-failure: true
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: codecs
+        with:
+          path: .local/ci-linux/codecs
+          key: codecs-linux-x86_64-${{ hashFiles('packaging/linux/Containerfile', 'packaging/release-inputs.json', 'scripts/build-release-codecs.sh') }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Prepare public EL8 build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: packaging/linux
+          file: packaging/linux/Containerfile
+          tags: shadowroom-release-el8:ci
+          load: true
+          cache-from: type=gha,scope=shadowroom-el8
+          cache-to: type=gha,mode=max,scope=shadowroom-el8
+      - name: Linux package and headless display tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential clang libclang-dev pkg-config cmake \
-            libfontconfig1-dev libfreetype-dev libwayland-dev \
-            libx11-xcb-dev libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libssl-dev libzstd-dev \
-            libvulkan-dev libasound2-dev desktop-file-utils
-      - name: macOS Metal prerequisites
-        if: runner.os == 'macOS'
-        run: |
-          xcode-select -p
-          xcrun --sdk macosx --find metal
-          xcrun --sdk macosx --find metallib
-      - name: Build native desktop
-        run: cargo build --locked --release --features desktop --bins
-      - name: Desktop behavior
-        run: cargo test --locked --features desktop --bin shadowroom
-      - name: Package Linux
-        if: runner.os == 'Linux'
+          sudo apt-get install --no-install-recommends -y squashfs-tools desktop-file-utils \
+            libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxcb-shape0 libxcb-xfixes0 \
+            libfontconfig1 libx11-xcb1 xvfb xauth xdotool dbus-x11
+      - name: Validate version and tag
+        id: release
+        run: uv run --no-project python scripts/release-metadata.py
+      - name: Fetch verified public codec and AppImage sources
+        run: uv run --no-project python scripts/fetch-release-inputs.py --output .local/release-inputs
+      - name: Build native desktop and codecs on EL8
+        run: scripts/ci-linux-build.sh
+      - name: Package Linux and AppImage
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.local/ci-linux/target
+          SOURCE_DATE_EPOCH: ${{ steps.release.outputs.source_date_epoch }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           desktop-file-validate packaging/linux/app.shadowroom.Shadowroom.desktop
-          scripts/package-linux.sh --no-build
-          dist/shadowroom-*/bin/shadowroom --help
-      - name: Package macOS
-        if: runner.os == 'macOS'
+          scripts/package-linux.sh --no-build --heif-runtime .local/ci-linux/codecs
+          scripts/package-appimage.sh --package "dist/shadowroom-$RELEASE_VERSION-linux-x86_64" \
+            --runtime .local/release-inputs/runtime-x86_64 \
+            --runtime-sha256 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d \
+            --runtime-metadata .local/release-inputs \
+            --output "dist/Shadowroom-$RELEASE_VERSION-x86_64.AppImage"
+          uv run --no-project python scripts/release-checksums.py dist
+      - name: Actual AppImage native smoke without FUSE
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          GPUI_X11_SCALE_FACTOR: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
-          scripts/package-macos.sh --no-build
-          dist/Shadowroom-*/Shadowroom.app/Contents/MacOS/shadowroom --help
-      - uses: actions/upload-artifact@v7
+          xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
+            uv run --no-project python scripts/native-appimage-smoke.py \
+              --binary "dist/Shadowroom-$RELEASE_VERSION-x86_64.AppImage" \
+              --output .local/ci-appimage-smoke
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: shadowroom-${{ runner.os }}-${{ runner.arch }}
+          name: shadowroom-linux-x86_64
           path: |
             dist/*.tar.gz
-            dist/*.zip
+            dist/*.AppImage
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: linux-native-evidence
+          path: |
+            .local/ci-appimage-smoke/report.json
+            .local/ci-appimage-smoke/failure.txt
+            .local/ci-appimage-smoke/native.stderr
+            .local/ci-appimage-smoke/native.stdout
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    name: macOS arm64 native package
+    needs: core
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: release-macos-arm64
+          cache-on-failure: true
+      - name: Validate version and tag
+        run: uv run --no-project python scripts/release-metadata.py
+      - name: Build native desktop and remote agent
+        run: cargo build --locked --release --features runtime-shaders --bins
+      - name: Desktop behavior
+        run: cargo test --locked --features runtime-shaders --bin shadowroom
+      - name: Package and verify macOS
+        run: |
+          scripts/package-macos.sh --no-build --runtime-shaders
+          dist/Shadowroom-*/Shadowroom.app/Contents/MacOS/shadowroom --help
+          dist/Shadowroom-*/Shadowroom.app/Contents/MacOS/shadowroom-remote --version
+          uv run --no-project python scripts/release-checksums.py dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shadowroom-macos-arm64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  source:
+    name: Public source bundle
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - name: Source archive and checksum
+        run: |
+          uv run --no-project python scripts/release-metadata.py
+          uv run --no-project python scripts/package-source.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shadowroom-source
+          path: |
+            dist/*-source.tar.gz
+            dist/*-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish verified GitHub release
+    needs: [core, linux, macos, source]
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: shadowroom-*
+          path: dist
+          merge-multiple: true
+      - name: Validate archives and publish preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/publish-github-release.sh

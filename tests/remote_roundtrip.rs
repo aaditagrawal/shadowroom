@@ -53,17 +53,20 @@ fn start_options(options: AgentOptions, cache: &Path) -> Running {
         worker: Some(worker),
     }
 }
-fn fixture(root: &Path, name: &str, source: &str) -> PathBuf {
+fn fixture(root: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(root).unwrap();
     let dest = root.join(name);
-    if Path::new(source).exists() {
-        fs::copy(source, &dest).unwrap();
-    } else {
-        let image = image::RgbImage::from_fn(600, 400, |x, y| {
-            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
-        });
-        image.save(&dest).unwrap();
-    }
+    // Every host exercises identical generated inputs, including developer
+    // machines with unrelated photo fixtures in their temporary directories.
+    let seed = name.bytes().fold(0u8, u8::wrapping_add);
+    let image = image::RgbImage::from_fn(600, 400, |x, y| {
+        image::Rgb([
+            (x % 256) as u8 ^ seed,
+            (y % 256) as u8,
+            ((x + y) % 256) as u8,
+        ])
+    });
+    image.save(&dest).unwrap();
     dest
 }
 #[test]
@@ -71,17 +74,25 @@ fn index_sync_preview_cache_offline_and_incremental_revisions() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("photos");
     let cache = temp.path().join("client-cache");
-    let source = fixture(
-        &root,
-        "shoot.jpg",
-        "/tmp/shadowroom-test-shoot/DSC_0001.jpg",
-    );
-    fixture(&root, "ui.jpg", "/tmp/shadowroom-ui-fixture/DSC_0002.jpg");
+    let source = fixture(&root, "shoot.jpg");
+    fixture(&root, "ui.jpg");
     let state = temp.path().join("agent-state");
     let running = start(&state, &root, &cache);
     let host = &running.host;
     let hello = host.hello();
     assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
+    assert!(
+        hello
+            .capabilities
+            .iter()
+            .any(|capability| capability == "preview_jpeg_first_v4")
+    );
+    assert!(
+        !hello
+            .capabilities
+            .iter()
+            .any(|capability| capability == "preview_provenance_v2")
+    );
     let roots = host.list_roots().unwrap();
     assert_eq!(roots.len(), 1);
     let id = &roots[0].id;
@@ -467,11 +478,7 @@ fn local_child_and_reconnect() {
     use shadowroom::remote::ConnectionSpec;
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("photos");
-    fixture(
-        &root,
-        "photo.jpg",
-        "/tmp/shadowroom-ui-fixture/DSC_0001.jpg",
-    );
+    fixture(&root, "photo.jpg");
     let spec = ConnectionSpec::Local {
         program: PathBuf::from(env!("CARGO_BIN_EXE_shadowroom-remote")),
         args: vec![
@@ -505,11 +512,7 @@ fn bounded_streams_deliver_more_than_mailbox_capacity_and_kind_sizes() {
     for i in 0..40 {
         image.save(root.join(format!("tiny-{i:03}.jpg"))).unwrap();
     }
-    fixture(
-        &root,
-        "large.jpg",
-        "/tmp/shadowroom-ui-fixture/DSC_0001.jpg",
-    );
+    fixture(&root, "large.jpg");
     let state = temp.path().join("state");
     let running = start(&state, &root, &temp.path().join("cache"));
     let id = running.host.list_roots().unwrap().remove(0).id;
@@ -598,8 +601,8 @@ fn analyze_fills_perceptual_hashes_without_preview_requests() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("photos");
     let cache = temp.path().join("client-cache");
-    fixture(&root, "a.jpg", "/tmp/shadowroom-test-shoot/DSC_0001.jpg");
-    fixture(&root, "b.jpg", "/tmp/shadowroom-ui-fixture/DSC_0002.jpg");
+    fixture(&root, "a.jpg");
+    fixture(&root, "b.jpg");
     let running = start(&temp.path().join("agent-state"), &root, &cache);
     let host = &running.host;
     assert!(host.hello().capabilities.iter().any(|c| c == "analyze"));
@@ -711,24 +714,31 @@ fn cache_preserves_raw_provenance_and_rejects_legacy_full_keys() {
     let temp = TempDir::new().unwrap();
     let key = cache_test_key();
     let kind = PreviewKind::Full;
-    // Exact pre-sensor client key: identical protocol/device/photo/kind, no
-    // representation revision. A paired Full image must no longer be found.
+    // Neither unversioned nor sensor-only v3 representations may satisfy v4.
     let old_hash =
         blake3::hash(&serde_json::to_vec(&(PROTOCOL_VERSION, "device", &key, kind)).unwrap())
             .to_hex()
             .to_string();
+    let sensor_hash =
+        blake3::hash(&serde_json::to_vec(&(PROTOCOL_VERSION, 3u32, "device", &key, kind)).unwrap())
+            .to_hex()
+            .to_string();
     let bytes = cache_test_jpeg();
-    let old_meta = serde_json::json!({
-        "key": old_hash,
-        "jpeg_hash": blake3::hash(&bytes).to_hex().to_string(),
-        "width": 64, "height": 48
-    });
-    fs::write(temp.path().join(format!("{old_hash}.jpg")), &bytes).unwrap();
-    fs::write(
-        temp.path().join(format!("{old_hash}.json")),
-        serde_json::to_vec(&old_meta).unwrap(),
-    )
-    .unwrap();
+    for hash in [old_hash, sensor_hash] {
+        let old_meta = serde_json::json!({
+            "key": hash,
+            "jpeg_hash": blake3::hash(&bytes).to_hex().to_string(),
+            "width": 64, "height": 48,
+            "rendered_raw": true,
+            "rendering_note": "obsolete sensor-only Full"
+        });
+        fs::write(temp.path().join(format!("{hash}.jpg")), &bytes).unwrap();
+        fs::write(
+            temp.path().join(format!("{hash}.json")),
+            serde_json::to_vec(&old_meta).unwrap(),
+        )
+        .unwrap();
+    }
     let cache = PreviewCache::new(temp.path().into()).unwrap();
     assert!(
         cache
@@ -778,7 +788,7 @@ fn cache_preserves_raw_provenance_and_rejects_legacy_full_keys() {
 }
 
 #[test]
-fn paired_fit_survives_restart_but_full_never_uses_companion_or_old_cache() {
+fn paired_jpeg_full_survives_restart_and_is_available_offline() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("photos");
     let state = temp.path().join("state");
@@ -820,12 +830,6 @@ fn paired_fit_survives_restart_but_full_never_uses_companion_or_old_cache() {
         .to_string();
     fs::write(old_dir.join(format!("{old_hash}.jpg")), &fit.jpeg).unwrap();
     let device = running.host.hello().device_id;
-    // Also seed a valid new-format sidecar with explicitly non-sensor data.
-    // The agent must enforce Full semantics on cache hits, not trust filenames.
-    PreviewCache::new(state.join(format!("jpeg-v{PREVIEW_CACHE_VERSION}")))
-        .unwrap()
-        .put(&device, &key, PreviewKind::Full, &fit)
-        .unwrap();
     drop(running);
     let restarted = start(&state, &root, &temp.path().join("fresh-cache"));
     let server_hit = restarted
@@ -836,25 +840,30 @@ fn paired_fit_survives_restart_but_full_never_uses_companion_or_old_cache() {
     assert_eq!(server_hit.jpeg, fit.jpeg);
     assert_eq!(server_hit.rendering_note, fit.rendering_note);
     assert!(!server_hit.rendered_raw && !server_hit.embedded_raw);
-    // Invalid primary must fail Full even though both cache versions and the
-    // companion contain decodable JPEGs. No native LibRaw dependency needed.
+    // Full inspection uses the companion even when the RAW cannot be decoded.
+    let full = restarted
+        .host
+        .preview(&key, PreviewKind::Full, MAX_PAYLOAD)
+        .unwrap();
+    assert_eq!((full.width, full.height), (120, 80));
+    assert!(!full.rendered_raw && !full.embedded_raw);
     assert!(
-        restarted
-            .host
-            .preview(&key, PreviewKind::Full, MAX_PAYLOAD)
-            .is_err()
+        full.rendering_note
+            .as_deref()
+            .unwrap()
+            .contains("paired companion")
     );
-    assert!(
-        RemoteHost::offline_preview(
-            temp.path().join("fresh-cache"),
-            &device,
-            &key,
-            PreviewKind::Full,
-            MAX_PAYLOAD
-        )
-        .unwrap()
-        .is_none()
-    );
+    let cached_full = RemoteHost::offline_preview(
+        temp.path().join("fresh-cache"),
+        &device,
+        &key,
+        PreviewKind::Full,
+        MAX_PAYLOAD,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(cached_full.cache_hit);
+    assert_eq!(cached_full.jpeg, full.jpeg);
     restarted.host.disconnect();
     let offline = restarted
         .host
@@ -862,6 +871,73 @@ fn paired_fit_survives_restart_but_full_never_uses_companion_or_old_cache() {
         .unwrap();
     assert!(offline.cache_hit);
     assert_eq!(offline.rendering_note, fit.rendering_note);
+    drop(restarted);
+
+    // Server cache hits must still validate the paired source fingerprint.
+    fs::write(root.join("paired.jpg"), b"changed companion").unwrap();
+    let changed = start(&state, &root, &temp.path().join("uncached-client"));
+    let error = changed
+        .host
+        .preview(&key, PreviewKind::Full, MAX_PAYLOAD)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Preview source changed"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn embedded_jpeg_full_retains_native_dimensions_and_provenance_across_restart() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("photos");
+    let state = temp.path().join("state");
+    let cache = temp.path().join("cache");
+    fs::create_dir(&root).unwrap();
+    let mut raw = b"not sensor data; embedded camera preview follows".to_vec();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image::RgbImage::from_pixel(
+            320,
+            200,
+            image::Rgb([40u8, 80, 160]),
+        ))
+        .unwrap();
+    raw.extend_from_slice(&jpeg);
+    fs::write(root.join("embedded.nef"), raw).unwrap();
+    let running = start(&state, &root, &cache);
+    let root_id = running.host.list_roots().unwrap().remove(0).id;
+    running.host.index(&root_id, |_| {}).unwrap();
+    let records = running.host.photos(&root_id, 0).unwrap().records;
+    assert_eq!(records.len(), 1);
+    let key = &records[0].key;
+    assert!(key.companion_path.is_none());
+    let full = running
+        .host
+        .preview(key, PreviewKind::Full, MAX_PAYLOAD)
+        .unwrap();
+    assert_eq!((full.width, full.height), (320, 200));
+    assert!(full.embedded_raw && !full.rendered_raw);
+    assert!(
+        full.rendering_note
+            .as_deref()
+            .unwrap()
+            .contains("embedded RAW preview")
+    );
+    let device = running.host.hello().device_id;
+    drop(running);
+    let restarted = start(&state, &root, &temp.path().join("fresh-cache"));
+    let server_hit = restarted
+        .host
+        .preview(key, PreviewKind::Full, MAX_PAYLOAD)
+        .unwrap();
+    assert_eq!(server_hit.jpeg, full.jpeg);
+    assert_eq!(server_hit.rendering_note, full.rendering_note);
+    assert!(server_hit.embedded_raw && !server_hit.rendered_raw);
+    let offline = RemoteHost::offline_preview(cache, &device, key, PreviewKind::Full, MAX_PAYLOAD)
+        .unwrap()
+        .unwrap();
+    assert!(offline.cache_hit && offline.embedded_raw && !offline.rendered_raw);
+    assert_eq!(offline.jpeg, full.jpeg);
 }
 
 #[test]
@@ -951,7 +1027,7 @@ fn full_jpeg_has_exact_dimensions_visible_encoding_note_and_no_budget_resize() {
 
 #[test]
 #[ignore = "requires native LibRaw and generated CC0 sensor-bayer-orientation-{1,6}.dng fixtures"]
-fn native_sensor_full_is_primary_and_provenance_survives_both_caches() {
+fn native_unpaired_sensor_fallback_provenance_survives_both_caches() {
     let fixture_dir = std::env::var_os("SHADOWROOM_REMOTE_SENSOR_FIXTURE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -968,9 +1044,6 @@ fn native_sensor_full_is_primary_and_provenance_survives_both_caches() {
             root.join("sensor.dng"),
         )
         .expect("generate the CC0 sensor fixtures before this native test");
-        image::RgbImage::from_pixel(120, 80, image::Rgb([20u8, 160, 40]))
-            .save(root.join("sensor.jpg"))
-            .unwrap();
         let running = start(&state, &root, &client_cache);
         let root_id = running.host.list_roots().unwrap().remove(0).id;
         running.host.index(&root_id, |_| {}).unwrap();
@@ -986,7 +1059,7 @@ fn native_sensor_full_is_primary_and_provenance_survives_both_caches() {
             .host
             .preview(&key, PreviewKind::Fit, MAX_PAYLOAD)
             .unwrap();
-        assert_eq!((fit.width, fit.height), (120, 80));
+        assert_eq!((fit.width, fit.height), dimensions);
         let full = running
             .host
             .preview(&key, PreviewKind::Full, MAX_PAYLOAD)
@@ -1002,8 +1075,7 @@ fn native_sensor_full_is_primary_and_provenance_survives_both_caches() {
         assert!(!note.contains("paired companion"));
         let jpeg = image::load_from_memory(&full.jpeg).unwrap();
         assert_eq!((jpeg.width(), jpeg.height()), dimensions);
-        // Once Full exists, losing the companion cannot block a Full cache hit.
-        fs::remove_file(root.join("sensor.jpg")).unwrap();
+        // The agent and offline caches retain the fallback's provenance.
         drop(running);
         let restarted = start(&state, &root, &temp.path().join("new-cache"));
         let server_hit = restarted

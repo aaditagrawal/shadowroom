@@ -17,7 +17,7 @@ spec.loader.exec_module(smoke)
 
 
 class Run(smoke.NativeRun):
-    def __init__(self, binary, env, root, number):
+    def __init__(self, binary, env, root, number, dismiss_guide=True):
         self.stdout = (root / f"native-{number}.stdout.log").open("wb")
         self.stderr = (root / f"native-{number}.stderr.log").open("wb")
         self.process = subprocess.Popen([str(binary)], env=env, stdout=self.stdout, stderr=self.stderr)
@@ -33,6 +33,8 @@ class Run(smoke.NativeRun):
         smoke.wait_for(ready, 20, "private native endpoint")
         self.client = smoke.MCP(binary, env, root, number)
         self.client.initialize()
+        if dismiss_guide:
+            self.client.call("command", {"name": "close_overlay"})
 
 
 def exercise(args, root, report):

@@ -198,6 +198,7 @@ impl Draft {
             Cmd::Threshold(threshold) => s.visual_threshold = *threshold,
             Cmd::Memory(mb) => s.memory_budget_mb = *mb,
             Cmd::Disk(mb) => s.cache_budget_mb = *mb,
+            Cmd::StartupGuide(enabled) => s.show_getting_started = *enabled,
             Cmd::Theme(name) if self.themes.iter().any(|t| t.name == *name) => {
                 s.theme = name.clone();
                 s.extra.insert("theme_mode".into(), json!("manual"));

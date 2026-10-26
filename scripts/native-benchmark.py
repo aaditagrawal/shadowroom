@@ -132,7 +132,8 @@ def exercise(args, root, report):
     configuration = root / "config/shadowroom"
     configuration.mkdir(parents=True)
     (configuration / "settings.json").write_text(json.dumps({"auto_discover_drives": False,
-        "auto_advance": False, "grouping_mode": "off", "view_mode": "grid",
+        "auto_advance": False, "show_getting_started": False,
+        "grouping_mode": "off", "view_mode": "grid",
         "memory_budget_mb": args.memory_mb, "cache_budget_mb": 128}))
     report["environment"] = {"platform": platform.platform(), "cpu": platform.processor(),
         "logical_cpus": os.cpu_count(), "binary": str(binary), "binary_bytes": binary.stat().st_size,
@@ -244,6 +245,7 @@ def exercise(args, root, report):
 
         # Warm a small distant loupe working set, then reverse over the same paths.
         client.call("view", {"mode": "loupe"})
+        client.call("command", {"name": "show_full_folder"})
         client.call("zoom", {"mode": "fit"})
         navigation = ids[len(ids) // 2:len(ids) // 2 + min(12, len(ids) // 2)]
         before_forward = settle()

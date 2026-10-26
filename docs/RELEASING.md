@@ -1,9 +1,10 @@
 # Release process
 
-Shadowroom uses the version in `Cargo.toml` for native package names. Prepare a
-release candidate locally, review its README/screenshots/measurements, then publish
-the approved revision. CI runs checks and retains package artifacts; it does not
-publish a GitHub Release automatically.
+Shadowroom uses the version in `Cargo.toml` for native package names. The
+[Native checks workflow](../.github/workflows/ci.yml) checks branches and pull
+requests, retains native artifacts, and publishes a preview GitHub Release after
+a matching `v<VERSION>` tag passes every required job. Ordinary branch pushes and
+pull requests never publish releases.
 
 ## Validate the source
 
@@ -32,14 +33,60 @@ controller input, or macOS notarization. Record the systems actually tested.
 5. On macOS, apply the intended distribution identity and notarization process
    before describing an artifact as signed/notarized for distribution.
 
-## Publish after review
+## Automated artifacts and build inputs
+
+The workflow produces:
+
+- Linux x86_64 directory archive and AppImage, compiled in the public, digest-pinned
+  [AlmaLinux 8 builder](../packaging/linux/Containerfile), with a glibc 2.28 baseline.
+  Native desktop and agent checks run inside that environment. An Xvfb/software
+  Vulkan smoke check opens the actual AppImage without FUSE on the Ubuntu runner.
+- macOS arm64 `.app` archive containing both the desktop and remote agent.
+  `runtime-shaders` avoids requiring the hosted runner's offline Metal compiler.
+  The bundle is signed ad hoc and verified, with no notarization claim. CI package
+  checks are not interactive macOS GUI or hardware validation.
+- Public source archive, individual `.sha256` files, and a combined `SHA256SUMS`.
+
+Rust 1.99.1, uv 0.13.5 and action commit IDs are pinned in the workflow. Public
+codec archives and the dated AppImage runtime are SHA-256 pinned in
+[release-inputs.json](../packaging/release-inputs.json). The fetch helper verifies
+existing cached inputs as well as fresh downloads. The Linux runtime includes
+LibRaw 0.22.2, libheif 1.23.5 and libde265 1.0.18, their original source archives,
+licenses, exact build script, container definition, installed RPM inventory and
+payload checksums. It disables external HEIF plugins/encoders and optional RAW SDKs.
+JPEG-lossy DNG support is excluded. macOS HEIF remains system-native; sensor RAW
+fallback requires a compatible separately installed LibRaw.
+
+The AppImage carries the pinned runtime's notices and source/build instructions.
+Its runtime is deliberately a dated release rather than mutable `continuous`.
+`SOURCE_DATE_EPOCH` fixes the squashfs timestamps in CI. These are reproducible
+build instructions and versioned inputs, not a claim that different OS package
+mirrors or toolchains always produce byte-identical native executables.
+
+Core caches separate Ubuntu and macOS targets; release caches separate EL8 and
+macOS targets. The EL8 target directory restored on the host is the same directory
+mounted into the container, and the host Cargo registry is shared with the build.
+Dependency caches are keyed by toolchain/lock/configuration rather than every app
+source edit. Container layers and the independently keyed codec payload also have
+caches. Incremental compilation and dev/test debug info are disabled to reduce
+cache size; test assertions and coverage remain enabled. Measure completed job and
+step timings before attributing a speed change to a cache or build setting.
+
+## Publish a version
 
 Commit only the source tree, documentation, benchmark JSON, and documentation
 images. Keep `target/`, `.local/`, `dist/`, catalogs, and codec build work out of Git.
 Retain `Cargo.lock`, `vendor/xattr`, and all attribution files.
 
-After the repository owner approves the candidate, create the GitHub repository
-if needed, push the reviewed source, and let CI validate that exact revision.
-Create a version tag and GitHub Release with the native archives, their SHA-256
-checksums, and release notes describing supported platforms and known limits.
-Use actual successful CI/native results in those notes.
+Update `Cargo.toml` and `Cargo.lock`, and write `docs/releases/v<VERSION>.md` with
+the actual platform support, changes and known limitations. Push the reviewed
+source and check the branch run before tagging that revision. The tag must exactly
+match `v` plus the Cargo package version; mismatches fail before packaging.
+
+Only the publish job receives `contents: write`. GitHub's per-job `GITHUB_TOKEN`
+supplies release access; no personal publishing token is required. After all
+platform jobs pass, it downloads their artifacts, verifies their checksums,
+creates a draft preview release, uploads the archives, then publishes it. A failed
+upload leaves a draft which a rerun can resume. Already published release assets
+are refused rather than silently replaced; use a new version for changed bytes.
+Existing historical tags and releases remain unchanged.

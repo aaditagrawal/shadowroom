@@ -58,7 +58,13 @@ if [[ -n "$heif_runtime" ]]; then
         [[ -f "$heif_runtime/$required" ]] || { printf 'Missing HEIF runtime file: %s\n' "$required" >&2; exit 1; }
     done
     [[ -f "$heif_runtime/lib/libheif.so.1" || -f "$heif_runtime/plugins/libheif-libde265.so" ]] || { printf '%s\n' 'HEIF runtime needs bundled libheif or a compatible decoder plugin.' >&2; exit 1; }
-    [[ -d "$heif_runtime/sources" && -n $(find "$heif_runtime/sources" -name '*.src.rpm' -print -quit) ]] || { printf '%s\n' 'HEIF runtime must include corresponding source RPMs.' >&2; exit 1; }
+    # Native upstream-source builds and the older prepared SourceRPM payloads
+    # both retain corresponding sources and the instructions used to build them.
+    for source_name in libde265 libheif; do
+        [[ -d "$heif_runtime/sources" && -n $(find "$heif_runtime/sources" -maxdepth 1 \
+            \( -name "$source_name-*.tar.gz" -o -name "$source_name-*.src.rpm" -o -name "$source_name-freeworld-*.src.rpm" \) -print -quit) ]] \
+            || { printf 'Codec runtime requires corresponding %s source.\n' "$source_name" >&2; exit 1; }
+    done
     if [[ -f "$heif_runtime/lib/libraw_r.so" ]]; then
         for required in licenses/libraw/LICENSE.LGPL licenses/libraw/LICENSE.CDDL; do
             [[ -f "$heif_runtime/$required" ]] || { printf 'Missing LibRaw license/source: %s\n' "$required" >&2; exit 1; }

@@ -217,7 +217,7 @@ def main():
             )
             key("Down")
             s.require(
-                not run.state()["selection"], "Plain navigation did not clear the range"
+                run.state()["selection"] == [run.state()["selected_id"]], "Plain navigation did not collapse the range to its focused frame"
             )
             record(
                 f"row selection extends and shrinks with {stride} columns at {width}px"

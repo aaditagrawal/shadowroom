@@ -9,9 +9,9 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
-// Independent of framing: v2 rejects Full entries produced from paired/embedded
-// previews before genuine sensor rendering and persisted provenance existed.
-pub const PREVIEW_CACHE_VERSION: u32 = 3;
+// Independent of framing: v4 prefers paired/embedded JPEGs for full inspection.
+// Invalidate previous sensor-only Full entries on both client and agent.
+pub const PREVIEW_CACHE_VERSION: u32 = 4;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_HEADER: usize = 256 * 1024;
 pub const MAX_PAYLOAD: usize = MAX_FRAME - MAX_HEADER - 4;

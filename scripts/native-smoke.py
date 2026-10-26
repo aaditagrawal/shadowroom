@@ -193,6 +193,7 @@ class NativeRun:
         require(stat.S_IMODE(manifest.stat().st_mode) == 0o600, "Descriptor must be owner-only (0600)")
         self.client = MCP(binary, environment, root, number)
         self.client.initialize()
+        self.client.call("command", {"name": "close_overlay"})
         wait_for(lambda: self.state()["total"] == 6 and not self.state()["indexing"], 20, "six BMP photographs")
 
     def state(self):

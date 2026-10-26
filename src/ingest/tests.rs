@@ -14,7 +14,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        // Ingest stores resolved paths; keep expected paths identical on
+        // systems whose temporary directory includes a symlink (macOS /var).
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = temp.path().join("card");
         fs::create_dir(&source).unwrap();
         let catalog = Catalog::open(&temp.path().join("catalog.sqlite3")).unwrap();

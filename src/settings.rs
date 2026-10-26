@@ -27,6 +27,7 @@ pub struct Settings {
     pub auto_discover_drives: bool,
     pub cache_budget_mb: usize,
     pub memory_budget_mb: usize,
+    pub show_getting_started: bool,
     pub last_photo_id: Option<i64>,
     pub view_mode: String,
     pub show_inspector: bool,
@@ -66,7 +67,8 @@ impl Default for Settings {
             auto_advance: true,
             auto_discover_drives: true,
             cache_budget_mb: 8192,
-            memory_budget_mb: 512,
+            memory_budget_mb: 0,
+            show_getting_started: true,
             last_photo_id: None,
             view_mode: "loupe".into(),
             show_inspector: true,
@@ -153,7 +155,9 @@ impl Settings {
         }
         self.burst_gap_ms = self.burst_gap_ms.clamp(1, 3_600_000);
         self.visual_threshold = self.visual_threshold.min(64);
-        self.memory_budget_mb = self.memory_budget_mb.clamp(64, 65_536);
+        if self.memory_budget_mb != 0 {
+            self.memory_budget_mb = self.memory_budget_mb.clamp(64, 65_536);
+        }
         self.cache_budget_mb = self.cache_budget_mb.clamp(128, 1_048_576);
         self.min_rating = self.min_rating.min(5);
         self.sidebar_width = self.sidebar_width.clamp(180, 480);
@@ -178,11 +182,39 @@ impl Settings {
             .saturating_mul(1024 * 1024)
     }
     pub fn memory_budget_bytes(&self) -> usize {
-        self.memory_budget_mb.saturating_mul(1024 * 1024)
+        if self.memory_budget_mb == 0 {
+            automatic_memory_budget()
+        } else {
+            self.memory_budget_mb.saturating_mul(1024 * 1024)
+        }
     }
     pub fn cache_budget_bytes(&self) -> usize {
         self.cache_budget_mb.saturating_mul(1024 * 1024)
     }
+}
+
+/// Use a quarter of physical RAM, bounded to 512 MiB–4 GiB. Resolve once;
+/// querying the OS never becomes part of the frame/render workload.
+fn automatic_memory_budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        #[cfg(unix)]
+        {
+            // SAFETY: sysconf has no pointer arguments or process side effects.
+            let (pages, page_size) = unsafe {
+                (
+                    libc::sysconf(libc::_SC_PHYS_PAGES),
+                    libc::sysconf(libc::_SC_PAGESIZE),
+                )
+            };
+            if pages > 0 && page_size > 0 {
+                return ((pages as u64).saturating_mul(page_size as u64) / 4)
+                    .clamp(512 * 1024 * 1024, 4 * 1024 * 1024 * 1024)
+                    as usize;
+            }
+        }
+        1024 * 1024 * 1024
+    })
 }
 
 pub fn settings_path() -> Result<PathBuf> {
@@ -379,7 +411,11 @@ mod tests {
         )
         .unwrap();
         let settings = Settings::load(&path).unwrap();
-        assert_eq!(settings.memory_budget_mb, 64);
+        assert_eq!(settings.memory_budget_mb, 0);
+        assert!(
+            (512 * 1024 * 1024..=4 * 1024 * 1024 * 1024).contains(&settings.memory_budget_bytes())
+        );
+        assert!(settings.show_getting_started);
         assert_eq!(settings.visual_threshold, 64);
         assert_eq!(settings.grouping_mode, "burst");
         assert_eq!(settings.interface_font, "Geist Mono");

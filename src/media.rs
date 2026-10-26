@@ -19,9 +19,9 @@ use image::{DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, imageops
 use lcms2::{ColorSpaceSignature, Intent, PixelFormat, Profile, Transform};
 use serde::{Deserialize, Serialize};
 
-// v8 fixes resampling of straight-alpha previews, including TIFF/JXL paths.
-const CACHE_VERSION: u32 = 8;
-const CACHE_MAGIC: &[u8; 8] = b"SHDWRM08";
+// v9 uses paired/embedded JPEGs for full-size inspection as well as Fit.
+const CACHE_VERSION: u32 = 9;
+const CACHE_MAGIC: &[u8; 8] = b"SHDWRM09";
 const QUEUE_CAPACITY: usize = 160;
 const ERROR_CAPACITY: usize = 128;
 const RECENT_ERROR_CAPACITY: usize = 32;
@@ -152,14 +152,9 @@ struct RemoteMediaSource {
     height: u32,
 }
 fn photo_key(photo: &crate::model::Photo, kind: PreviewKind) -> Key {
-    let sensor = kind == PreviewKind::Full && is_raw(&photo.path);
-    let companion = !sensor && photo.companion_path.is_some();
+    let companion = photo.companion_path.is_some();
     let mut key = make_key(
-        if sensor {
-            &photo.path
-        } else {
-            photo.preview_path()
-        },
+        photo.preview_path(),
         if companion {
             photo.companion_modified_at
         } else {
@@ -635,7 +630,7 @@ impl MediaPipeline {
         let touched = state.tick();
         for kind in [PreviewKind::Full, PreviewKind::Fit, PreviewKind::Thumbnail] {
             key.kind = kind;
-            key.source.sensor_raw = kind == PreviewKind::Full && is_raw(&key.source.path);
+            key.source.sensor_raw = false;
             if let Some(entry) = state.previews.get_mut(&key) {
                 entry.touched = touched;
                 entry.fresh = false;
@@ -705,6 +700,27 @@ impl MediaPipeline {
             state.errors.remove(&key);
         }
         self.request_key(key);
+    }
+    /// Retry a speculative admission failure when this photo becomes visible.
+    /// Missing/corrupt sources stay failed until an explicit user retry.
+    /// Returns true only when a memory error was cleared. Mutex contention is
+    /// nonblocking, so the foreground caller may try again on a later frame.
+    pub fn retry_photo_memory_error(&self, photo: &crate::model::Photo, kind: PreviewKind) -> bool {
+        let key = photo_key(photo, kind);
+        let Ok(mut state) = self.shared.state.try_lock() else {
+            return false;
+        };
+        if !state
+            .errors
+            .get(&key)
+            .is_some_and(|error| error.message.to_ascii_lowercase().contains("memory"))
+        {
+            return false;
+        }
+        state.errors.remove(&key);
+        drop(state);
+        self.request_key(key);
+        true
     }
     /// O(bounded errors), called on connection changes, never per frame.
     pub fn retry_remote_errors(&self) {
@@ -816,7 +832,7 @@ fn make_key(path: &Path, modified: i64, size: u64, kind: PreviewKind) -> Key {
     Key {
         source: SourceKey {
             remote: None,
-            sensor_raw: kind == PreviewKind::Full && is_raw(path),
+            sensor_raw: false,
             path: path.to_path_buf(),
             modified,
             size,
@@ -1080,9 +1096,7 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
         state.stats.decoded += 1;
         for preview in previews {
             let mut source = task.key.source.clone();
-            // Reduced sensor renders may satisfy a later ordinary preview
-            // request. Full keeps a distinct compressed-source identity.
-            source.sensor_raw = preview.kind == PreviewKind::Full && is_raw(&source.path);
+            source.sensor_raw = false;
             let key = Key {
                 source,
                 kind: preview.kind,
@@ -1135,7 +1149,11 @@ fn process_remote_task(
     preview.rendered_raw = result.rendered_raw;
     preview.embedded_raw = result.embedded_raw;
     preview.rendering_note = result.rendering_note;
-    if !preview.rendered_raw && remote.width > 0 && remote.height > 0 {
+    if task.key.kind != PreviewKind::Full
+        && !preview.rendered_raw
+        && remote.width > 0
+        && remote.height > 0
+    {
         preview.source_width = remote.width;
         preview.source_height = remote.height;
     }
@@ -1157,7 +1175,7 @@ fn process_remote_task(
     }
     for preview in previews {
         let mut source = task.key.source.clone();
-        source.sensor_raw = preview.kind == PreviewKind::Full && is_raw(&source.path);
+        source.sensor_raw = false;
         let key = Key {
             source,
             kind: preview.kind,
@@ -1262,7 +1280,7 @@ fn source_bytes(shared: &Arc<Shared>, key: &SourceKey, task: &Task) -> Result<Ar
 }
 
 fn decode_working_bytes(bytes: &[u8], path: &Path, kind: PreviewKind) -> Result<usize> {
-    if is_raw(path) && (kind == PreviewKind::Full || extract_raw_jpeg(bytes).is_none()) {
+    if is_raw(path) && extract_raw_jpeg(bytes).is_none() {
         return Ok(crate::raw_render::inspect(bytes)?.working_bytes);
     }
     if crate::jxl::is_jxl(path) {
@@ -1661,7 +1679,7 @@ fn decode_preview_bytes_budget(
     kind: PreviewKind,
     budget: usize,
 ) -> Result<Preview> {
-    if is_raw(path) && (kind == PreviewKind::Full || extract_raw_jpeg(bytes).is_none()) {
+    if is_raw(path) && extract_raw_jpeg(bytes).is_none() {
         let decoded = crate::raw_render::decode(bytes, budget)?;
         let note = format!(
             "LibRaw {} · {}",
@@ -2857,7 +2875,7 @@ mod tests {
     }
 
     #[test]
-    fn full_raw_uses_primary_and_reduced_paired_preview_still_displays() {
+    fn full_and_fit_prefer_paired_jpeg_without_opening_invalid_raw() {
         let directory = tempfile::tempdir().unwrap();
         let primary = directory.path().join("frame.erf");
         let companion = directory.path().join("frame.jpg");
@@ -2874,13 +2892,13 @@ mod tests {
             ..Default::default()
         };
         let full = photo_key(&photo, PreviewKind::Full);
-        assert_eq!(full.source.path, primary);
-        assert!(full.source.sensor_raw);
+        assert_eq!(full.source.path, companion);
+        assert!(!full.source.sensor_raw);
         let fit = photo_key(&photo, PreviewKind::Fit);
         assert_eq!(fit.source.path, companion);
         assert!(!fit.source.sensor_raw);
         let pipeline = MediaPipeline::new(directory.path().join("cache"), 64 * 1024 * 1024);
-        pipeline.request_photo(&photo, PreviewKind::Fit);
+        pipeline.request_photo(&photo, PreviewKind::Full);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let preview = loop {
             if let Some(preview) = pipeline.best_photo(&photo) {
@@ -2892,9 +2910,27 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
-        assert_eq!(preview.kind, PreviewKind::Fit);
+        assert_eq!(preview.kind, PreviewKind::Full);
         assert!(!preview.rendered_raw);
         assert_eq!((preview.width, preview.height), (320, 200));
+    }
+
+    #[test]
+    fn full_raw_inspection_uses_native_embedded_jpeg_without_libraw() {
+        let jpeg = jpeg(1024, 768);
+        let mut raw = b"not sensor data; only an embedded camera JPEG follows".to_vec();
+        raw.extend_from_slice(&jpeg);
+        let preview = decode_preview_bytes_budget(
+            &raw,
+            Path::new("frame.nef"),
+            PreviewKind::Full,
+            32 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(preview.embedded_raw);
+        assert!(!preview.rendered_raw);
+        assert_eq!((preview.width, preview.height), (1024, 768));
+        assert_eq!((preview.source_width, preview.source_height), (1024, 768));
     }
 
     #[test]
@@ -4226,7 +4262,23 @@ mod tests {
         size: u64,
         kind: PreviewKind,
     ) -> Arc<Preview> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        await_preview_with_timeout(
+            pipeline,
+            path,
+            size,
+            kind,
+            std::time::Duration::from_secs(15),
+        )
+    }
+
+    fn await_preview_with_timeout(
+        pipeline: &MediaPipeline,
+        path: &Path,
+        size: u64,
+        kind: PreviewKind,
+        timeout: std::time::Duration,
+    ) -> Arc<Preview> {
+        let deadline = std::time::Instant::now() + timeout;
         loop {
             pipeline.request_with_size(path, 1, size, kind);
             if let Some(preview) = pipeline.get_with_size(path, 1, size, kind) {
@@ -4378,6 +4430,141 @@ mod tests {
                     .unwrap_or("RSS unavailable")
             );
         }
+    }
+
+    #[test]
+    fn twenty_megapixel_jpeg_comparison_fits_explicit_512_mib_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        // A normal 20 MP camera frame, rather than a small image standing in
+        // for it. Keep both source previews and both display copies alive.
+        let dimensions = (5472, 3648);
+        let encoded = jpeg(dimensions.0, dimensions.1);
+        let paths = [
+            temp.path().join("first.jpg"),
+            temp.path().join("second.jpg"),
+        ];
+        for path in &paths {
+            fs::write(path, &encoded).unwrap();
+        }
+        let budget = 512 * 1024 * 1024;
+        let pipeline = MediaPipeline::new(temp.path().join("cache"), budget);
+        let mut held = Vec::new();
+        for path in &paths {
+            // This verifies memory admission, not decode latency. Debug builds
+            // under concurrent CI/compiler load can take >15 s for 20 MP.
+            let preview = await_preview_with_timeout(
+                &pipeline,
+                path,
+                encoded.len() as u64,
+                PreviewKind::Full,
+                std::time::Duration::from_secs(60),
+            );
+            assert_eq!((preview.width, preview.height), dimensions);
+            assert!(!preview.rendered_raw);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let reservation = loop {
+                if let Some(reservation) = pipeline.reserve_display_bytes(preview.rgba.len()) {
+                    break reservation;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "display admission timeout"
+                );
+                thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let mut display = preview.rgba.clone();
+            for pixel in display.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            held.push((preview, display, reservation));
+        }
+        let state = pipeline.shared.state.lock().unwrap();
+        assert_eq!(held.len(), 2);
+        assert_eq!(
+            state.display,
+            2 * dimensions.0 as usize * dimensions.1 as usize * 4
+        );
+        assert!(state.memory + state.inflight <= budget);
+        assert!(state.stats.peak_estimated_bytes <= budget);
+        assert_eq!(state.stats.source_reads, 2);
+        assert!(state.recent_errors.is_empty());
+    }
+
+    #[test]
+    fn foreground_retry_recovers_memory_failure_but_keeps_corrupt_source_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("next.jpg");
+        let encoded = jpeg(320, 200);
+        fs::write(&path, &encoded).unwrap();
+        let photo = crate::model::Photo {
+            path: path.clone(),
+            size_bytes: encoded.len() as u64,
+            modified_at: 1,
+            ..Default::default()
+        };
+        let budget = 4 * 1024 * 1024;
+        let pipeline = MediaPipeline::new(temp.path().join("cache"), budget);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let occupied = loop {
+            if let Some(reservation) = pipeline.reserve_display_bytes(budget) {
+                break reservation;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "display contention timeout"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        };
+        pipeline.request_photo(&photo, PreviewKind::Full);
+        loop {
+            pipeline.request_photo(&photo, PreviewKind::Full);
+            if let Some(error) = pipeline.photo_error(&photo, PreviewKind::Full) {
+                assert!(error.message.to_ascii_lowercase().contains("memory"));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "admission failure timeout"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(occupied);
+        while !pipeline.retry_photo_memory_error(&photo, PreviewKind::Full) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retry contention timeout"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let preview = await_preview(&pipeline, &path, encoded.len() as u64, PreviewKind::Full);
+        assert_eq!((preview.width, preview.height), (320, 200));
+
+        let corrupt = crate::model::Photo {
+            path: temp.path().join("corrupt.jpg"),
+            size_bytes: 4,
+            modified_at: 1,
+            ..Default::default()
+        };
+        fs::write(&corrupt.path, b"\xff\xd8\xff\xd9").unwrap();
+        pipeline.request_photo(&corrupt, PreviewKind::Full);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let original_error = loop {
+            pipeline.request_photo(&corrupt, PreviewKind::Full);
+            if let Some(error) = pipeline.photo_error(&corrupt, PreviewKind::Full) {
+                break error.message;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "corrupt-source failure timeout"
+            );
+            thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(!pipeline.retry_photo_memory_error(&corrupt, PreviewKind::Full));
+        assert_eq!(
+            pipeline.shared.state.lock().unwrap().errors[&photo_key(&corrupt, PreviewKind::Full)]
+                .message,
+            original_error,
+        );
     }
 
     #[test]

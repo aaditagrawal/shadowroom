@@ -4,6 +4,13 @@ Insert a mounted card, or choose **Import from Card/Folder…** from the command
 
 The timeline groups files by month, day and time, initially using a 60-minute gap. Click a time group to select/deselect it; its day control selects/deselects that day's groups. All/None and Show all/New only control the selection. Previously imported files start unchecked and dimmed; their tooltip shows the import date and destination. A RAW and its JPEG/HEIF companion share a checkbox, sequence number and destination stem. XMP, AAE, THM, WAV, MP3, LOG and LRV companions travel with their group. A standalone LRV is a video.
 
+**Gap: 60 min** means neighboring capture times within 60 minutes belong to the
+same time section; a larger gap starts another section. Its tooltip explains the
+control. Day/time checkboxes show a dash when only some members are selected.
+Shift+Arrow and Shift-click extend a range from the selection anchor, and
+Ctrl/Cmd-click toggles a single tile. The grid and timeline have draggable
+scrollbars for reaching distant rows directly.
+
 Choose a library root, optional backup roots, folder and filename templates, and a job code. The destination column shows a real selected file's example path and projected free space. Backup paths can be added with the picker or entered separated by semicolons. The preset menu includes Original names, Date folders, Date+job and Date_time_sequence. Save a custom preset under the job code (or “Custom”); Save as defaults also remembers destinations and the job-code MRU. Fields accept typing, Backspace, paste, Ctrl/Cmd+A to replace the field, Tab and Enter. Template edits refresh the example after a short debounce; stale plans cannot enable Start.
 
 For **shoot → import → cull**, select the new shoot, start Import, and wait for all destinations to verify. The status bar reports copying/verifying/indexing, groups, throughput and ETA. Pause/Resume and Cancel remain available with the pane closed. Committed destination groups appear in Grid scoped to the imported folder, ready for picks and ratings; finalization failures can still leave the job marked failed. Open Import History for durable job results and inspect the manifest for exact destination paths and BLAKE3 digests.

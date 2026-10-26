@@ -798,7 +798,7 @@ fn build_tool_definitions() -> Vec<Value> {
         "interface_font":{"type":"string","minLength":1,"maxLength":128},"theme":{"type":"string","minLength":1,"maxLength":256},
         "theme_mode":{"type":"string","enum":["manual","system","zed"]},"theme_light":{"type":"string","minLength":1,"maxLength":256},"theme_dark":{"type":"string","minLength":1,"maxLength":256},
         "grouping_mode":modes,"burst_gap_ms":{"type":"integer","minimum":1,"maximum":3600000},"visual_threshold":{"type":"integer","minimum":0,"maximum":64},
-        "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"type":"integer","minimum":64,"maximum":65536},
+        "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"anyOf":[{"type":"integer","enum":[0]},{"type":"integer","minimum":64,"maximum":65536}]},"show_getting_started":{"type":"boolean"},
         "last_photo_id":{"type":["integer","null"],"minimum":1},"view_mode":{"type":"string","enum":["grid","loupe","compare","survey"]},"show_inspector":{"type":"boolean"},"show_sidebar":{"type":"boolean"},"sidebar_width":{"type":"integer","minimum":180,"maximum":480},"inspector_width":{"type":"integer","minimum":240,"maximum":480},"min_rating":rating,"filter":{"type":"string","enum":["all","picks","unrated","rejects","trash"]}
     }});
     let ingest_options = json!({"type":"object","additionalProperties":false,"properties":{
@@ -1052,8 +1052,8 @@ fn build_tool_definitions() -> Vec<Value> {
         ),
         tool(
             "zoom",
-            "Show fit or full/100% preview, or toggle between them. RAW Full requests sensor rendering and reports any reduced fallback explicitly.",
-            json!({"mode":{"type":"string","enum":["fit","full","toggle"]}}),
+            "Set Fit, 100%, custom magnification, or step in/out. Inspection prefers paired or embedded JPEGs; sources remain unchanged.",
+            json!({"mode":{"type":"string","enum":["fit","full","toggle","in","out","custom"]},"percent":{"type":"number","minimum":12.5,"maximum":800}}),
             &["mode"],
             false,
         ),
@@ -1137,7 +1137,7 @@ fn build_tool_definitions() -> Vec<Value> {
         tool(
             "command",
             "Execute an allowlisted workspace action; this is not a shell or arbitrary-command interface.",
-            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector"]}}),
+            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","show_full_folder","reset_decision"]}}),
             &["name"],
             false,
         ),
@@ -1192,6 +1192,14 @@ fn validate_schema(
     schema: &Value,
     location: &str,
 ) -> std::result::Result<(), String> {
+    if let Some(options) = schema.get("anyOf").and_then(Value::as_array) {
+        if !options
+            .iter()
+            .any(|option| validate_schema(value, option, location).is_ok())
+        {
+            return Err(format!("{location}: outside allowed alternatives"));
+        }
+    }
     let matches_type = |kind: &str| match kind {
         "object" => value.is_object(),
         "array" => value.is_array(),
@@ -1379,6 +1387,15 @@ mod tests {
     }
     #[test]
     fn argument_limits_and_unknown_commands_are_enforced() {
+        assert!(
+            normalize_arguments(
+                "settings_set",
+                json!({"settings":{"memory_budget_mb":0,"show_getting_started":false}})
+            )
+            .is_ok()
+        );
+        assert!(normalize_arguments("zoom", json!({"mode":"custom","percent":175})).is_ok());
+        assert!(normalize_arguments("zoom", json!({"mode":"custom","percent":900})).is_err());
         assert!(normalize_arguments("library_list", json!({"limit":1001})).is_err());
         assert!(normalize_arguments("rate", json!({"rating":6})).is_err());
         assert!(normalize_arguments("select", json!({})).is_err());

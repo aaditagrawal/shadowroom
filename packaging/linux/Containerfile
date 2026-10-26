@@ -1,0 +1,10 @@
+# Public AlmaLinux 8 image, October 2026; x86_64 release ABI baseline is glibc 2.28.
+FROM docker.io/library/almalinux@sha256:e6d31b01fca10ed4f914e84e1139c3a40d6acf3d8346224a32f3e5649b1a3f7d
+RUN dnf -y install dnf-plugins-core \
+ && dnf config-manager --set-enabled powertools \
+ && dnf -y install gcc gcc-c++ gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ \
+      make cmake pkgconf-pkg-config python3 git file clang which xz zlib-devel \
+      libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
+      libX11-devel fontconfig-devel freetype-devel vulkan-loader-devel libzstd-devel \
+ && rpm -qa | sort > /release-build-rpms.txt \
+ && dnf clean all

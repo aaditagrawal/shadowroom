@@ -760,6 +760,8 @@ impl RemoteHost {
             frame.payload.starts_with(&[0xff, 0xd8]),
             "Preview is not JPEG"
         );
+        // Older agents explicitly promised sensor-only Full. Keep validating
+        // that contract; v4 agents advertise JPEG-first inspection instead.
         if kind == PreviewKind::Full
             && crate::indexer::is_raw(&key.relative_path)
             && self

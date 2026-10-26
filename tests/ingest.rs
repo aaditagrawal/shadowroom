@@ -9,7 +9,7 @@ use shadowroom::{
 };
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -26,7 +26,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        // Ingest resolves destination roots. Use the same identity on macOS,
+        // where the system temp directory can be /var -> /private/var.
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = temp.path().join("card");
         fs::create_dir(&source).unwrap();
         let catalog = Catalog::open(&temp.path().join("catalog.sqlite3")).unwrap();
@@ -37,19 +39,29 @@ impl Fixture {
         }
     }
     fn jpeg(&self, name: &str) -> PathBuf {
-        // Real fixture bytes are copied into the test-owned tree, never edited in place.
-        let source = ["/tmp/shadowroom-test-shoot", "/tmp/shadowroom-ui-fixture"]
-            .iter()
-            .flat_map(|p| fs::read_dir(p).into_iter().flatten())
-            .flatten()
-            .find(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|x| x.eq_ignore_ascii_case("jpg"))
-            })
-            .expect("fixture JPEGs must be available");
         let path = self.source.join(name);
-        fs::copy(source.path(), &path).unwrap();
+        let seed = name.bytes().fold(0u8, u8::wrapping_add);
+        let pixels = image::RgbImage::from_fn(64, 48, |x, y| {
+            image::Rgb([
+                (x * 3 + y * 5) as u8 ^ seed,
+                (x * 7 + y) as u8,
+                (x + y * 9) as u8,
+            ])
+        });
+        let mut encoded = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 90)
+            .encode_image(&pixels)
+            .unwrap();
+        // Valid, generated JPEG pixels and EXIF exercise metadata preservation
+        // without a developer's private photos or an optional native codec.
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(fixture_metadata_tiff());
+        let mut jpeg = encoded[..2].to_vec();
+        jpeg.extend_from_slice(&[0xff, 0xe1]);
+        jpeg.extend_from_slice(&u16::try_from(app1.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend(app1);
+        jpeg.extend_from_slice(&encoded[2..]);
+        fs::write(&path, jpeg).unwrap();
         path
     }
     fn scan(&self) -> ingest::Scan {
@@ -80,34 +92,45 @@ impl Fixture {
             .collect()
     }
 }
-fn fake_raw(path: &Path) {
-    // TIFF IFD0 with bounded, out-of-line DateTimeOriginal, Model and Make.
-    let fields: [(u16, &[u8]); 5] = [
-        (0x9003, b"2026:10:12 02:30:04\0"),
-        (0x9291, b"123\0"),
-        (0x0110, b"Test Camera\0"),
-        (0x010f, b"Test Make\0"),
-        (0xa431, b"SER123\0"),
-    ];
-    let offset = 8 + 2 + fields.len() * 12 + 4;
-    let mut bytes = b"II*\0\x08\0\0\0".to_vec();
-    bytes.extend_from_slice(&(fields.len() as u16).to_le_bytes());
-    let mut strings = Vec::new();
-    for (tag, text) in fields {
-        bytes.extend_from_slice(&tag.to_le_bytes());
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
-        if text.len() <= 4 {
-            let mut inline = [0u8; 4];
-            inline[..text.len()].copy_from_slice(text);
-            bytes.extend_from_slice(&inline);
-        } else {
-            bytes.extend_from_slice(&((offset + strings.len()) as u32).to_le_bytes());
-            strings.extend_from_slice(text);
-        }
+fn fixture_metadata_tiff() -> Vec<u8> {
+    // Let the EXIF writer put camera fields in IFD0 and capture/serial/lens
+    // fields in the proper Exif sub-IFD, just as real camera metadata does.
+    use exif::{Field, In, Tag, Value, experimental::Writer};
+    let ascii = |text: &str| Value::Ascii(vec![text.as_bytes().to_vec()]);
+    let fields = [
+        (Tag::ImageWidth, Value::Long(vec![64])),
+        (Tag::ImageLength, Value::Long(vec![48])),
+        (Tag::Orientation, Value::Short(vec![6])),
+        (Tag::Make, ascii("Test Make")),
+        (Tag::Model, ascii("Test Camera")),
+        (Tag::LensModel, ascii("Test 85mm")),
+        (Tag::BodySerialNumber, ascii("SER123")),
+        (Tag::DateTimeOriginal, ascii("2026:10:12 02:30:04")),
+        (Tag::SubSecTimeOriginal, ascii("123")),
+        (Tag::OffsetTimeOriginal, ascii("+05:30")),
+        (Tag::PhotographicSensitivity, Value::Short(vec![800])),
+        (
+            Tag::ExposureTime,
+            Value::Rational(vec![exif::Rational { num: 1, denom: 125 }]),
+        ),
+    ]
+    .map(|(tag, value)| Field {
+        tag,
+        ifd_num: In::PRIMARY,
+        value,
+    });
+    let mut writer = Writer::new();
+    for field in &fields {
+        writer.push_field(field);
     }
-    bytes.extend_from_slice(&[0; 4]);
-    bytes.extend_from_slice(&strings);
+    let mut metadata = Cursor::new(Vec::new());
+    writer.write(&mut metadata, true).unwrap();
+    metadata.into_inner()
+}
+fn fake_raw(path: &Path) {
+    // Metadata-bearing TIFF/RAW fixture. Ingest verifies unchanged bytes; it
+    // does not develop sensor pixels or depend on a platform RAW decoder.
+    let mut bytes = fixture_metadata_tiff();
     bytes.resize(1024 * 64, 0);
     fs::write(path, bytes).unwrap();
 }
@@ -192,6 +215,9 @@ fn pure_plan_live_example_shared_stem_and_sidecars() {
     assert_eq!(scan.groups.len(), 1);
     assert!(scan.groups[0].companion.is_some());
     assert_eq!(scan.groups[0].sidecars.len(), 2);
+    assert_eq!(scan.groups[0].photo.camera, "Test Camera");
+    assert_eq!(scan.groups[0].make, "Test Make");
+    assert_eq!(scan.groups[0].serial, "SER123");
     let mut options = f.options();
     options.folder_template = "{YYYY}/{date}{_job}".into();
     options.file_template = "{date}_{time}_{seq_session:4}_{seq_day:3}_{seq_stored:5}".into();
@@ -397,6 +423,21 @@ fn corrupt_backup_rolls_back_raw_jpeg_sidecar_and_counters() {
 fn backup_fanout_both_verified_mtime_preserved_manifest_and_persistent_sequence() {
     let f = Fixture::new();
     let source = f.jpeg("A.jpg");
+    let source_photo = &f.scan().groups[0].photo;
+    assert_eq!((source_photo.width, source_photo.height), (64, 48));
+    assert_eq!(source_photo.orientation, 6);
+    assert_eq!(source_photo.camera, "Test Camera");
+    assert_eq!(source_photo.lens, "Test 85mm");
+    assert_eq!(source_photo.iso, Some(800));
+    assert_eq!(source_photo.captured_offset.as_deref(), Some("+05:30"));
+    assert_eq!(
+        source_photo.captured_at,
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2026-10-12T02:30:04.123+05:30")
+                .unwrap()
+                .timestamp_millis()
+        )
+    );
     let before = fs::metadata(&source).unwrap().modified().unwrap();
     let mut plan = f.plan();
     plan.options.backup_roots = vec![f.temp.path().join("backup")];
@@ -412,6 +453,8 @@ fn backup_fanout_both_verified_mtime_preserved_manifest_and_persistent_sequence(
             expected
         );
         assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), before);
+        let decoded = image::open(path).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (64, 48));
     }
     let json: serde_json::Value =
         serde_json::from_slice(&fs::read(report.progress.manifest.unwrap()).unwrap()).unwrap();
@@ -880,16 +923,11 @@ fn worker_scan_plan_start_poll_history_and_unsupported_eject_without_gui() {
 #[test]
 fn second_fixture_jpeg_and_readonly_source_dest_symlink_never_overwritten() {
     let f = Fixture::new();
-    let jpeg = fs::read_dir("/tmp/shadowroom-ui-fixture")
-        .unwrap()
-        .flatten()
-        .find(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("jpg"))
-        })
-        .unwrap();
-    fs::copy(jpeg.path(), f.source.join("A.jpg")).unwrap();
+    let source = f.jpeg("A.jpg");
+    let original = fs::read(&source).unwrap();
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&source, permissions).unwrap();
     let plan = f.plan();
     fs::create_dir(&plan.options.library_root).unwrap();
     #[cfg(unix)]
@@ -900,7 +938,11 @@ fn second_fixture_jpeg_and_readonly_source_dest_symlink_never_overwritten() {
         let report = execute(&plan, &f.catalog, &Control::default(), |_| {}).unwrap();
         assert_eq!(report.progress.completed, 1);
         assert_eq!(fs::read(&keep).unwrap(), b"keep");
-        assert!(plan.options.library_root.join("A-1.jpg").exists());
+        assert_eq!(
+            fs::read(plan.options.library_root.join("A-1.jpg")).unwrap(),
+            original
+        );
+        assert_eq!(fs::read(&source).unwrap(), original);
     }
 }
 

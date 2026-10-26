@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "method": "GitHub Actions completed job and step timestamps exported by gh run view",
+  "limitations": [
+    "Runner elapsed time spans the first job start to the last job completion, including dependency waits. Summed job seconds counts parallel jobs separately.",
+    "These are wall-clock workflow measurements, not CPU execution times, application startup or photo-review benchmarks.",
+    "Cache transfer, network, hosted runner variation and scheduling can affect results; a rerun is not an isolated cache microbenchmark.",
+    "Failed historical runs document the original failures and are excluded from speed comparisons. Same-commit successful runs are compared; cache warmth must be established separately from their logs."
+  ],
+  "runs": [
+    {
+      "label": "previous-failed",
+      "run_id": 40357926435,
+      "attempt": 1,
+      "url": null,
+      "head_sha": "f53c2225ed71d705bfad93b7234822f70b37f42e",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_elapsed_seconds": 98.0,
+      "summed_job_seconds": 174.0,
+      "jobs": [
+        {
+          "name": "Core / ubuntu-24.04",
+          "conclusion": "failure",
+          "seconds": 98.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run actions/checkout@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@stable",
+              "conclusion": "success",
+              "seconds": 9.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "failure",
+              "seconds": 83.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Core / macos-15",
+          "conclusion": "failure",
+          "seconds": 76.0,
+          "steps": [
+            {
+              "name": "Set up job",
+              "conclusion": "success",
+              "seconds": 2.0
+            },
+            {
+              "name": "Run actions/checkout@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Run dtolnay/rust-toolchain@stable",
+              "conclusion": "success",
+              "seconds": 7.0
+            },
+            {
+              "name": "Run astral-sh/setup-uv@v7",
+              "conclusion": "success",
+              "seconds": 0.0
+            },
+            {
+              "name": "Formatting",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Core behavior",
+              "conclusion": "failure",
+              "seconds": 61.0
+            },
+            {
+              "name": "Package script syntax",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Documentation links",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run astral-sh/setup-uv@v7",
+              "conclusion": "skipped",
+              "seconds": 0.0
+            },
+            {
+              "name": "Post Run actions/checkout@v7",
+              "conclusion": "success",
+              "seconds": 1.0
+            },
+            {
+              "name": "Complete job",
+              "conclusion": "success",
+              "seconds": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Desktop and package / ${{ matrix.os }}",
+          "conclusion": "skipped",
+          "seconds": 0.0,
+          "steps": []
+        }
+      ]
+    }
+  ],
+  "same_commit_successful_comparisons": []
+}

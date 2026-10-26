@@ -34,15 +34,17 @@ if [[ $runtime_shaders -eq 1 ]]; then build_features=desktop,runtime-shaders; fi
 cd -- "$project_root"
 if [[ $skip_build -eq 0 ]]; then
     if [[ $profile == release ]]; then
-        LCMS2_STATIC=1 "$cargo_bin" build --locked --release --features "$build_features" --bin shadowroom
+        LCMS2_STATIC=1 "$cargo_bin" build --locked --release --features "$build_features" --bins
     else
-        LCMS2_STATIC=1 "$cargo_bin" build --locked --features "$build_features" --bin shadowroom
+        LCMS2_STATIC=1 "$cargo_bin" build --locked --features "$build_features" --bins
     fi
 fi
 metadata=$("$cargo_bin" metadata --format-version 1 --no-deps --locked)
 target_root=$(printf '%s' "$metadata" | uv run --no-project python -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 binary="$target_root/$profile/shadowroom"
 [[ -x "$binary" ]] || { printf 'Binary missing: %s\n' "$binary" >&2; exit 1; }
+remote_binary="$target_root/$profile/shadowroom-remote"
+[[ -x "$remote_binary" ]] || { printf 'Remote agent missing: %s\n' "$remote_binary" >&2; exit 1; }
 version=$(printf '%s' "$metadata" | uv run --no-project python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="shadowroom"))')
 architecture=$(uname -m)
 package="Shadowroom-$version-macos-$architecture"
@@ -54,6 +56,7 @@ trap 'rm -rf -- "$staging"' EXIT
 bundle="$staging/$package/Shadowroom.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources" "$staging/Shadowroom.iconset"
 install -m 755 "$binary" "$bundle/Contents/MacOS/shadowroom"
+install -m 755 "$remote_binary" "$bundle/Contents/MacOS/shadowroom-remote"
 cp packaging/macos/Info.plist "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$bundle/Contents/Info.plist"
@@ -69,11 +72,13 @@ cp README.md CONTRIBUTING.md "$bundle/Contents/Resources/"
 uv run --no-project python scripts/package-notices.py "$bundle/Contents/Resources" --cargo "$cargo_bin" --features "$build_features"
 # Reject Homebrew/local dynamic paths: such a bundle would fail on another Mac.
 otool -L "$bundle/Contents/MacOS/shadowroom" > "$bundle/Contents/Resources/shared-libraries.txt"
-if tail -n +2 "$bundle/Contents/Resources/shared-libraries.txt" | grep -E '/opt/homebrew/|/usr/local/|/Users/'; then
+otool -L "$bundle/Contents/MacOS/shadowroom-remote" > "$bundle/Contents/Resources/remote-shared-libraries.txt"
+if tail -n +2 "$bundle/Contents/Resources/"*shared-libraries.txt | grep -E '/opt/homebrew/|/usr/local/|/Users/'; then
     printf '%s\n' 'Non-system dynamic dependency detected. Rebuild with LCMS2_STATIC=1 or bundle dependencies explicitly.' >&2; exit 1
 fi
 plutil -lint "$bundle/Contents/Info.plist"
 identity=${SHADOWROOM_CODESIGN_IDENTITY:--}
+codesign --force --sign "$identity" --timestamp=none "$bundle/Contents/MacOS/shadowroom-remote"
 codesign --force --sign "$identity" --timestamp=none "$bundle"
 codesign --verify --deep --strict "$bundle"
 ditto -c -k --sequesterRsrc --keepParent "$bundle" "$staging/$package.zip"

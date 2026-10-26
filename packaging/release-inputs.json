@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "inputs": [
+    {
+      "kind": "codecs",
+      "name": "LibRaw-0.22.2.tar.gz",
+      "url": "https://www.libraw.org/data/LibRaw-0.22.2.tar.gz",
+      "sha256": "de86b035655accff8d4010f1a221fdf50d353cb7b1422ba26f14a0db92612cfa",
+      "license": "LGPL-2.1-only OR CDDL-1.0"
+    },
+    {
+      "kind": "codecs",
+      "name": "libheif-1.23.5.tar.gz",
+      "url": "https://github.com/strukturag/libheif/releases/download/v1.23.5/libheif-1.23.5.tar.gz",
+      "sha256": "fd9036064c4432f0550d15072ddf34956a248279ee9aeaff0fba3fa0f77d8f1a",
+      "license": "LGPL-3.0-or-later"
+    },
+    {
+      "kind": "codecs",
+      "name": "libde265-1.0.18.tar.gz",
+      "url": "https://github.com/strukturag/libde265/releases/download/v1.0.18/libde265-1.0.18.tar.gz",
+      "sha256": "800478f3bf35f0621b14928ceb317579f3e8b23de4bd2aac29b6cb8be962bbd8",
+      "license": "LGPL-3.0-or-later"
+    },
+    {
+      "kind": "appimage",
+      "name": "runtime-x86_64",
+      "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+      "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
+      "source_commit": "dd6cebedcbddde9c82f89b011e8e1d40b6e43868"
+    },
+    {
+      "kind": "appimage",
+      "name": "appimage-runtime-LICENSE",
+      "url": "https://raw.githubusercontent.com/AppImage/type2-runtime/dd6cebedcbddde9c82f89b011e8e1d40b6e43868/LICENSE",
+      "sha256": "aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1"
+    },
+    {
+      "kind": "appimage",
+      "name": "appimage-runtime-source.tar.gz",
+      "url": "https://github.com/AppImage/type2-runtime/archive/dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz",
+      "sha256": "f5fec23be76e50e2445ed2d018bac49b367490fc483c62c4637e99ec705d27ba"
+    }
+  ]
+}

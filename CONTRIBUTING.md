@@ -28,6 +28,10 @@ application process. Run them on an X11/Xwayland desktop with `DISPLAY` set:
 uv run --no-project python scripts/native-smoke.py --binary target/release/shadowroom
 uv run --no-project python scripts/native-extended.py \
   --binary target/release/shadowroom --agent target/release/shadowroom-remote
+uv run --no-project python scripts/native-feedback.py \
+  --binary target/release/shadowroom
+uv run --no-project python scripts/native-reset.py \
+  --binary target/release/shadowroom
 ```
 
 Other `native-*.py` scripts cover specific media, ingest, packaging, and recovery
@@ -38,6 +42,18 @@ for Python tooling. It is not an application runtime dependency.
 Shift+Up/Down selection with real XTEST events. It additionally needs xdotool,
 ImageMagick, and Tesseract; an authenticated Xvfb with a software Vulkan driver
 provides repeatable input delivery when a compositor restricts injection.
+
+`native-feedback.py` uses the same X11/XTEST, ImageMagick and Tesseract setup to
+exercise the startup guide, selected Review subset, draggable Catalog/import
+scrollbars, partial time-group selection, caret blinking and editing, JPEG-first
+zoom, neighboring-frame read-ahead and focus peaking. It creates private fixtures
+and records evidence under a fresh temporary directory
+(or a new `--output` directory). Run it against the newly built desktop binary.
+
+`native-reset.py` checks R, the Reset button, the command palette and automation;
+atomic Undo/Redo; label preservation; no automatic advance; Catalog/Review/Compare
+selection scope; text-input isolation; and durable restart. It uses the same
+X11/XTEST and OCR prerequisites and creates its own disposable sources.
 
 ## Source layout
 
