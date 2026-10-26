@@ -3,9 +3,9 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import tomllib
+from pathlib import Path
 
 
 def main():
@@ -16,7 +16,9 @@ def main():
         raise SystemExit(f"Release tag {tag!r} must match Cargo.toml v{version}")
     values = {
         "version": version,
-        "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+        "commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
         "source_date_epoch": subprocess.check_output(
             ["git", "show", "-s", "--format=%ct", "HEAD"], cwd=root, text=True
         ).strip(),
@@ -24,8 +26,9 @@ def main():
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with Path(output).open("a") as destination:
-            for name, value in values.items():
-                destination.write(f"{name}={value}\n")
+            destination.writelines(
+                f"{name}={value}\n" for name, value in values.items()
+            )
     print(json.dumps(values))
 
 

@@ -11,8 +11,10 @@ def main():
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     artifacts = sorted(
-        path for path in args.directory.iterdir()
-        if path.is_file() and path.name.endswith((".tar.gz", ".zip", ".AppImage", ".rpm"))
+        path
+        for path in args.directory.iterdir()
+        if path.is_file()
+        and path.name.endswith((".tar.gz", ".zip", ".AppImage", ".rpm"))
     )
     if not artifacts:
         raise SystemExit("No release archives found")
