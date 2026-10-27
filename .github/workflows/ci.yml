@@ -58,6 +58,8 @@ jobs:
         run: cargo test --locked --no-default-features
       - name: Package script syntax
         run: bash -n scripts/*.sh
+      - name: COPR publisher safety
+        run: uv run --no-project python -m unittest discover -s scripts/tests -p test_copr_publish.py
       - name: Documentation links
         run: uv run --no-project python scripts/check-docs.py
 
