@@ -8,7 +8,7 @@ your decisions into the next editor.
 
 ![Shadowroom reviewing a lakeside photograph, with histogram, five-star rating, pick flag, and filmstrip](docs/images/review.png)
 
-**Early release · 0.1.2 · Apache-2.0**
+**Early release · 0.1.3 · Apache-2.0**
 
 [Get started](#get-started) · [Performance](#performance) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md)
 
@@ -49,7 +49,7 @@ your decisions into the next editor.
 
 ## Get started
 
-[Download v0.1.2](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.2)
+[Download v0.1.3](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.3)
 for the Linux x86_64 AppImage/archive, macOS arm64 archive, Fedora 44 RPM, and source release.
 The portable Linux AppImage and archive target glibc 2.28 or newer and include
 the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
