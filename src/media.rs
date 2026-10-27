@@ -3438,8 +3438,29 @@ mod tests {
             } else {
                 [PreviewKind::Thumbnail, PreviewKind::Fit]
             };
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
             for kind in kinds {
-                pipeline.request_with_size(&path, 1, encoded.len() as u64, kind);
+                let key = make_key(&path, 1, encoded.len() as u64, kind);
+                // Source locks stop decoding, but workers can still contend for
+                // the queue lock. Admit both requests before releasing them.
+                loop {
+                    pipeline.request_with_size(&path, 1, encoded.len() as u64, kind);
+                    if pipeline
+                        .shared
+                        .state
+                        .lock()
+                        .unwrap()
+                        .pending
+                        .contains_key(&key)
+                    {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "Concurrent {kind:?} request was not admitted"
+                    );
+                    std::thread::yield_now();
+                }
             }
             drop(guards);
             let fit = await_preview(&pipeline, &path, encoded.len() as u64, PreviewKind::Fit);
@@ -3454,9 +3475,9 @@ mod tests {
                 thumbnail.rgba,
                 derive_preview(&fit, PreviewKind::Thumbnail).rgba
             );
-            let stats = pipeline.stats();
-            assert_eq!(stats.source_reads, 1);
-            assert_eq!(stats.decoded, 1);
+            let state = pipeline.shared.state.lock().unwrap();
+            assert_eq!(state.stats.source_reads, 1);
+            assert_eq!(state.stats.decoded, 1);
         }
     }
 
@@ -4415,12 +4436,15 @@ mod tests {
                     );
                 }
             }
-            let stats = pipeline.stats();
-            assert!(stats.memory_bytes + stats.inflight_bytes <= budget);
+            {
+                let state = pipeline.shared.state.lock().unwrap();
+                assert!(state.memory + state.inflight <= budget);
+            }
             assert!(std::time::Instant::now() < deadline);
             thread::sleep(std::time::Duration::from_millis(5));
         }
-        let stats = pipeline.stats();
+        // UI statistics may return a default snapshot on lock contention.
+        let stats = pipeline.shared.state.lock().unwrap().stats;
         assert!(stats.peak_estimated_bytes <= budget);
         assert_eq!(stats.source_reads, 2);
         if let Ok(status) = fs::read_to_string("/proc/self/status") {
@@ -4718,8 +4742,9 @@ mod tests {
         fs::write(&path, &cache).unwrap();
         assert!(read_disk_with_limit(&pipeline.shared, &key, 512 * 1024).is_none());
         assert!(!path.exists());
-        assert_eq!(pipeline.stats().decoded, 0);
-        assert_eq!(pipeline.stats().disk_hits, 0);
+        let state = pipeline.shared.state.lock().unwrap();
+        assert_eq!(state.stats.decoded, 0);
+        assert_eq!(state.stats.disk_hits, 0);
     }
 
     #[test]
@@ -4810,7 +4835,11 @@ mod tests {
             600_000
         );
         drop(state);
-        assert_eq!(pipeline.stats().display_bytes, 0);
+        {
+            let mut state = pipeline.shared.state.lock().unwrap();
+            settle_display(&pipeline.shared, &mut state);
+            assert_eq!(state.display, 0);
+        }
         let replacement = loop {
             if let Some(token) = pipeline.reserve_display_bytes(900_000) {
                 break token;
@@ -4818,7 +4847,16 @@ mod tests {
             thread::yield_now();
         };
         assert_eq!(replacement.bytes(), 900_000);
-        assert!(pipeline.stats().peak_estimated_bytes <= 1_000_000);
+        assert!(
+            pipeline
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .stats
+                .peak_estimated_bytes
+                <= 1_000_000
+        );
     }
 
     #[test]
