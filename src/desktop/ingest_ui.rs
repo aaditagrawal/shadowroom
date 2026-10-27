@@ -2135,6 +2135,19 @@ impl Workspace {
             .into_any_element()
     }
     fn ingest_picker(&mut self, field: usize, cx: &mut gpui::Context<Self>) {
+        if cfg!(target_os = "linux") {
+            let initial = if field == 4 {
+                self.import_ui.fields[field].split(';').next().unwrap_or("")
+            } else {
+                &self.import_ui.fields[field]
+            };
+            self.show_path_picker(
+                super::folder_picker::Purpose::Ingest(field),
+                PathBuf::from(initial),
+                cx,
+            );
+            return;
+        }
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -2168,7 +2181,21 @@ impl Workspace {
         })
         .detach();
     }
-    fn refocus_ingest_field(&mut self) {
+    pub(super) fn apply_ingest_path(&mut self, field: usize, path: &std::path::Path) {
+        if field >= self.import_ui.fields.len() {
+            return;
+        }
+        if field == 4 && !self.import_ui.fields[4].is_empty() {
+            self.import_ui.fields[4].push(';');
+            self.import_ui.fields[4].push_str(&path.to_string_lossy());
+        } else {
+            self.import_ui.fields[field] = path.to_string_lossy().into_owned();
+        }
+        self.import_ui.active_field = Some(field);
+        self.refocus_ingest_field();
+        self.import_ui.changed();
+    }
+    pub(super) fn refocus_ingest_field(&mut self) {
         if let Some(field) = self.import_ui.active_field {
             self.text_edit.focus(&self.import_ui.fields[field]);
         }

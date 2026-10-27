@@ -10,8 +10,16 @@ keywords = ["photography", "culling", "raw", "gpui"]
 categories = ["multimedia::images", "gui"]
 
 [features]
-default = ["desktop"]
+default = ["desktop", "native-color", "native-codecs"]
 desktop = ["dep:gpui"]
+# Load packaged/system LibRaw and Linux libheif for full codec coverage.
+native-codecs = ["dep:libloading"]
+# Optional established ICC backend for comparison and unsupported Rust profiles.
+native-color = ["dep:lcms2", "jxl-oxide/lcms2"]
+# Select with --no-default-features; native-color takes precedence if both are enabled.
+rust-color = []
+# Experimental self-contained HEIC decoder; native fallback retains full coverage.
+rust-heif = ["dep:heifer"]
 # macOS: use Metal's runtime compiler when only Command Line Tools are installed.
 runtime-shaders = ["desktop", "gpui/runtime_shaders"]
 
@@ -27,12 +35,13 @@ walkdir = "2"
 blake3 = "1"
 crossbeam-channel = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
-lcms2 = "6"
+lcms2 = { version = "6", optional = true }
+moxcms = { version = "=0.8.1", features = ["extended_range", "options"] }
 jpeg-decoder = { version = "0.3", default-features = false }
 rand = "0.9"
 memchr = "2"
-libloading = "0.8.9"
-jxl-oxide = { version = "=0.12.6", default-features = false, features = ["lcms2"] }
+libloading = { version = "0.8.9", optional = true }
+jxl-oxide = { version = "=0.12.6", default-features = false, features = ["moxcms"] }
 jxl-bitstream = "=1.1.0"
 jxl-oxide-common = "=1.0.0"
 jxl-coding = "=1.0.1"
@@ -41,6 +50,9 @@ tiff = "0.11.3"
 libc = "0.2"
 gpui = { version = "0.2.2", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+heifer = { version = "=0.2.0", optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Use Foundation's typed ownership/out-parameter bindings for native OS Trash.
 # Both versions already belong to GPUI's pinned dependency graph.
@@ -48,6 +60,8 @@ objc2 = "=0.6.5"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
 
 [dev-dependencies]
+# Independent fixture generation/reference, including when native-color is disabled.
+lcms2 = "6"
 tempfile = "3"
 
 [[bin]]

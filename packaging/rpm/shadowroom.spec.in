@@ -23,7 +23,6 @@ BuildRequires:  clang
 BuildRequires:  binutils
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  desktop-file-utils
-BuildRequires:  glib2
 BuildRequires:  pkgconfig(fontconfig)
 BuildRequires:  pkgconfig(freetype2)
 BuildRequires:  pkgconfig(wayland-client)
@@ -43,11 +42,12 @@ BuildRequires:  pkgconfig(lcms2)
 BuildRequires:  pkgconfig(vulkan)
 Requires:       vulkan-loader
 Requires:       fontconfig
-Requires:       glib2
-Requires:       xdg-desktop-portal
 Requires:       xdg-utils
 Recommends:     mesa-vulkan-drivers
 Recommends:     openssh-clients
+# Optional drive ejection invokes gio; file/Trash dialogs do not need GLib.
+Recommends:     glib2
+Recommends:     xdg-desktop-portal
 Recommends:     LibRaw >= 0.22
 Recommends:     libheif
 

@@ -42,8 +42,12 @@ changed or missing file cancels the operation instead of silently deleting a
 replacement. Symbolic-link photo/sidecar entries are refused. Source-folder
 aliases are resolved before confirmation.
 
-OS Trash availability depends on the platform and drive. Linux uses GIO (GLib)
-and reports an error if that support is unavailable. **Failure never falls back to permanent
+OS Trash availability depends on the platform and drive. Linux writes FreeDesktop
+Trash storage directly, without GLib/GIO, with per-volume restore metadata and
+owner-only real Trash directories. Trusted home/data-home aliases are resolved;
+symlinks in Trash storage itself are refused. Kernels/filesystems without atomic
+no-replace rename support report unsupported Trash rather than emulating a move
+with a racy link/unlink pair. **Failure never falls back to permanent
 deletion.** Physical file operations run sequentially, with sidecars and
 companions before originals, and stop at the first failure. Earlier operations
 may already have succeeded: the UI reports completed/failed counts and errors,

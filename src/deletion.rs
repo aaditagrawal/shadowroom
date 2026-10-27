@@ -1,7 +1,7 @@
 //! Explicit, frozen plans for removing local photo groups from disk.
 //!
-//! OS Trash is delegated to the native desktop service and never falls back to
-//! permanent deletion. Plans capture regular-file identities before confirmation
+//! OS Trash uses FreeDesktop storage on Linux and native services on macOS,
+//! and never falls back to permanent deletion. Plans capture identities before confirmation
 //! and revalidate them before making changes; directories are never removed.
 use crate::model::Photo;
 use anyhow::{Context, Result, bail, ensure};
@@ -11,6 +11,9 @@ use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
 };
+
+#[cfg(target_os = "linux")]
+mod linux_trash;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -208,7 +211,16 @@ impl DeletionPlan {
     }
     pub fn execute(&self) -> DeletionReport {
         self.execute_with(|file, parent| match self.mode {
-            DeletionMode::SystemTrash => system_trash(&file.path),
+            DeletionMode::SystemTrash => {
+                #[cfg(target_os = "linux")]
+                {
+                    linux_trash::trash(file, parent)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    system_trash(&file.path)
+                }
+            }
             DeletionMode::Permanent => remove_regular_at(parent, &file.path),
         })
     }
@@ -513,64 +525,6 @@ fn remove_regular_at(_parent: &File, _path: &Path) -> Result<()> {
     bail!("Permanent deletion is unsupported on this platform")
 }
 
-#[cfg(target_os = "linux")]
-fn system_trash(path: &Path) -> Result<()> {
-    use std::{
-        ffi::{CStr, CString, c_char, c_int, c_void},
-        os::unix::ffi::OsStrExt,
-    };
-    #[repr(C)]
-    struct GError {
-        domain: u32,
-        code: c_int,
-        message: *mut c_char,
-    }
-    type NewFile = unsafe extern "C" fn(*const c_char) -> *mut c_void;
-    type Trash = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut GError) -> c_int;
-    type Unref = unsafe extern "C" fn(*mut c_void);
-    type FreeError = unsafe extern "C" fn(*mut GError);
-    // GIO uses the desktop's per-volume FreeDesktop Trash implementation. Its
-    // failure is returned verbatim; no deletion fallback or shell is involved.
-    // GIO registers process-global GTypes and callbacks: unloading it between
-    // photo groups would leave their function pointers referring to freed code.
-    static LIBRARY: std::sync::OnceLock<std::result::Result<libloading::Library, String>> =
-        std::sync::OnceLock::new();
-    let library = LIBRARY.get_or_init(|| unsafe { libloading::Library::new("libgio-2.0.so.0") }
-        .map_err(|error| format!("Operating system Trash is unavailable (install GIO): {error}; no files were permanently deleted")))
-        .as_ref().map_err(|error| anyhow::anyhow!("{error}"))?;
-    let name = CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: these are public GLib/GIO C ABI signatures, loaded from the live
-    // library. Every owned GFile/GError is released; the library remains loaded.
-    unsafe {
-        let new_file = library.get::<NewFile>(b"g_file_new_for_path\0")?;
-        let trash = library.get::<Trash>(b"g_file_trash\0")?;
-        let unref = library.get::<Unref>(b"g_object_unref\0")?;
-        let free_error = library.get::<FreeError>(b"g_error_free\0")?;
-        let file = new_file(name.as_ptr());
-        ensure!(
-            !file.is_null(),
-            "Could not open operating system Trash file handle"
-        );
-        let mut error = std::ptr::null_mut();
-        let succeeded = trash(file, std::ptr::null_mut(), &mut error) != 0;
-        unref(file);
-        let message = if error.is_null() {
-            "The operating system could not trash this file".into()
-        } else {
-            CStr::from_ptr((*error).message)
-                .to_string_lossy()
-                .into_owned()
-        };
-        if !error.is_null() {
-            free_error(error);
-        }
-        ensure!(
-            succeeded,
-            "{message}; no permanent-delete fallback was used"
-        );
-    }
-    Ok(())
-}
 #[cfg(target_os = "macos")]
 fn system_trash(path: &Path) -> Result<()> {
     system_trash_with_destination(path).map(|_| ())

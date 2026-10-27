@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
@@ -99,6 +99,7 @@ impl<R: Read> Read for CountingReader<R> {
 type Delivery = std::result::Result<Frame<Response>, String>;
 type Pending = Arc<Mutex<HashMap<u64, Sender<Delivery>>>>;
 struct Session {
+    hello: OnceLock<Hello>,
     writer: Mutex<Option<Sender<(u64, Request)>>>,
     pending: Pending,
     closed: Arc<AtomicBool>,
@@ -120,6 +121,7 @@ impl Session {
         let closed = Arc::new(AtomicBool::new(false));
         let (write_tx, write_rx) = crossbeam_channel::bounded::<(u64, Request)>(MAX_IN_FLIGHT);
         let session = Arc::new(Self {
+            hello: OnceLock::new(),
             writer: Mutex::new(Some(write_tx)),
             pending: pending.clone(),
             closed: closed.clone(),
@@ -320,6 +322,14 @@ impl Drop for PendingRequest {
 pub struct PreviewCache {
     dir: PathBuf,
     lru: Arc<super::cache::DiskLru>,
+    // Hash device IDs so renderer metadata and preview paths use the same safe
+    // filenames. Loaded once; UI-facing namespace lookups perform no disk I/O.
+    renderers: Arc<Mutex<HashMap<String, Option<String>>>>,
+}
+#[derive(Serialize, Deserialize)]
+struct DeviceRenderer {
+    device_id: String,
+    namespace: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
@@ -398,21 +408,133 @@ impl PreviewCache {
             dir.clone(),
             2 * 1024 * 1024 * 1024,
         ));
-        Ok(Self { dir, lru })
+        let mut renderers = HashMap::new();
+        let metadata_dir = dir.join("renderers");
+        let metadata_exists = match fs::symlink_metadata(&metadata_dir) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.is_dir(),
+                    "Renderer metadata is not a regular directory"
+                );
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata_exists {
+            for entry in fs::read_dir(&metadata_dir)? {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_none_or(|extension| extension != "renderer")
+                {
+                    continue;
+                }
+                let Some(hash) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    continue;
+                }
+                let record = crate::fsutil::read_bounded(&path, 4096)
+                    .and_then(|bytes| Ok(serde_json::from_slice::<DeviceRenderer>(&bytes)?));
+                let namespace = match record {
+                    Ok(record)
+                        if blake3::hash(record.device_id.as_bytes()).to_hex().as_str() == hash
+                            && record
+                                .namespace
+                                .as_ref()
+                                .is_none_or(|name| !name.is_empty() && name.len() <= 512) =>
+                    {
+                        record.namespace
+                    }
+                    // Corrupt identity metadata must miss, never fall back to a
+                    // potentially obsolete legacy rendering for this device.
+                    _ => Some("invalid-renderer-metadata".into()),
+                };
+                renderers.insert(hash.to_owned(), namespace);
+            }
+        }
+        Ok(Self {
+            dir,
+            lru,
+            renderers: Arc::new(Mutex::new(renderers)),
+        })
     }
     pub fn set_budget(&self, bytes: u64) -> Result<()> {
         self.lru.set_budget(bytes)
     }
-    fn key(device_id: &str, key: &PhotoKey, kind: PreviewKind) -> Result<String> {
-        Ok(blake3::hash(&serde_json::to_vec(&(
-            PROTOCOL_VERSION,
-            PREVIEW_CACHE_VERSION,
-            device_id,
-            key,
-            kind,
-        ))?)
-        .to_hex()
-        .to_string())
+    pub(crate) fn rendering_namespace(&self, device_id: &str) -> Option<String> {
+        self.renderers
+            .lock()
+            .unwrap()
+            .get(blake3::hash(device_id.as_bytes()).to_hex().as_str())
+            .cloned()
+            .flatten()
+    }
+    pub(crate) fn remember_renderer(&self, device_id: &str, namespace: Option<&str>) {
+        self.renderers.lock().unwrap().insert(
+            blake3::hash(device_id.as_bytes()).to_hex().to_string(),
+            namespace.map(str::to_owned),
+        );
+    }
+    fn set_renderer(&self, device_id: &str, namespace: Option<&str>) -> Result<()> {
+        ensure!(
+            device_id.len() <= 2048
+                && namespace.is_none_or(|name| !name.is_empty() && name.len() <= 512),
+            "Remote rendering identifier exceeds cache metadata bounds"
+        );
+        let record = DeviceRenderer {
+            device_id: device_id.into(),
+            namespace: namespace.map(str::to_owned),
+        };
+        let metadata_dir = self.dir.join("renderers");
+        fs::create_dir_all(&metadata_dir)?;
+        ensure!(
+            fs::symlink_metadata(&metadata_dir)?.is_dir(),
+            "Renderer metadata is not a regular directory"
+        );
+        let bytes = serde_json::to_vec(&record)?;
+        ensure!(
+            bytes.len() <= 4096,
+            "Remote rendering metadata exceeds cache bounds"
+        );
+        atomic_write(
+            &metadata_dir.join(format!(
+                "{}.renderer",
+                blake3::hash(device_id.as_bytes()).to_hex()
+            )),
+            &bytes,
+        )?;
+        self.remember_renderer(device_id, namespace);
+        Ok(())
+    }
+    fn key(
+        device_id: &str,
+        key: &PhotoKey,
+        kind: PreviewKind,
+        namespace: Option<&str>,
+    ) -> Result<String> {
+        let bytes = match namespace {
+            Some(namespace) => serde_json::to_vec(&(
+                PROTOCOL_VERSION,
+                PREVIEW_CACHE_VERSION,
+                device_id,
+                key,
+                kind,
+                namespace,
+            ))?,
+            // Preserve v4 sidecars from legacy agents that cannot advertise a
+            // renderer. New agents always use the namespaced form above.
+            None => serde_json::to_vec(&(
+                PROTOCOL_VERSION,
+                PREVIEW_CACHE_VERSION,
+                device_id,
+                key,
+                kind,
+            ))?,
+        };
+        Ok(blake3::hash(&bytes).to_hex().to_string())
     }
     pub fn get(
         &self,
@@ -421,7 +543,18 @@ impl PreviewCache {
         kind: PreviewKind,
         max_bytes: usize,
     ) -> Result<Option<PreviewResult>> {
-        let hash = Self::key(device_id, key, kind)?;
+        let namespace = self.rendering_namespace(device_id);
+        self.get_for_renderer(device_id, key, kind, max_bytes, namespace.as_deref())
+    }
+    pub(crate) fn get_for_renderer(
+        &self,
+        device_id: &str,
+        key: &PhotoKey,
+        kind: PreviewKind,
+        max_bytes: usize,
+        namespace: Option<&str>,
+    ) -> Result<Option<PreviewResult>> {
+        let hash = Self::key(device_id, key, kind, namespace)?;
         let path = self.dir.join(format!("{hash}.jpg"));
         let meta_path = self.dir.join(format!("{hash}.json"));
         let read = || -> Result<PreviewResult> {
@@ -463,8 +596,19 @@ impl PreviewCache {
         kind: PreviewKind,
         preview: &PreviewResult,
     ) -> Result<()> {
+        let namespace = self.rendering_namespace(device_id);
+        self.put_for_renderer(device_id, key, kind, preview, namespace.as_deref())
+    }
+    pub(crate) fn put_for_renderer(
+        &self,
+        device_id: &str,
+        key: &PhotoKey,
+        kind: PreviewKind,
+        preview: &PreviewResult,
+        namespace: Option<&str>,
+    ) -> Result<()> {
         validate_preview(preview)?;
-        let hash = Self::key(device_id, key, kind)?;
+        let hash = Self::key(device_id, key, kind, namespace)?;
         let meta = CacheEntry {
             key: hash.clone(),
             jpeg_hash: blake3::hash(&preview.jpeg).to_hex().to_string(),
@@ -488,6 +632,7 @@ impl PreviewCache {
 struct Inner {
     spec: Option<ConnectionSpec>,
     session: Mutex<Option<Arc<Session>>>,
+    reconnecting: Mutex<()>,
     hello: Mutex<Option<Hello>>,
     counters: Arc<Counters>,
     cache: PreviewCache,
@@ -519,6 +664,7 @@ impl RemoteHost {
             inner: Arc::new(Inner {
                 spec: Some(spec),
                 session: Mutex::new(None),
+                reconnecting: Mutex::new(()),
                 hello: Mutex::new(None),
                 counters: Arc::new(Counters::default()),
                 cache,
@@ -541,6 +687,7 @@ impl RemoteHost {
             inner: Arc::new(Inner {
                 spec: None,
                 session: Mutex::new(Some(session)),
+                reconnecting: Mutex::new(()),
                 hello: Mutex::new(None),
                 counters,
                 cache: PreviewCache::new(cache_dir)?,
@@ -553,6 +700,7 @@ impl RemoteHost {
     /// Reopen a disconnected child with bounded exponential backoff. Operations
     /// are never replayed implicitly; the caller decides when to retry an index.
     pub fn reconnect(&self, attempts: usize) -> Result<()> {
+        let _reconnecting = self.inner.reconnecting.lock().unwrap();
         let spec = self
             .inner
             .spec
@@ -584,10 +732,22 @@ impl RemoteHost {
         Err(last)
     }
     fn negotiate(&self) -> Result<()> {
-        let response = self.one(Request::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            app_version: env!("CARGO_PKG_VERSION").into(),
-        })?;
+        let session = self
+            .inner
+            .session
+            .lock()
+            .unwrap()
+            .clone()
+            .context("Remote is disconnected")?;
+        let mut request = session.start_request(
+            Request::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").into(),
+            },
+            self.inner.timeout,
+        )?;
+        let response = request.recv()?;
+        ensure!(response.header.done, "Unexpected streaming hello response");
         let Response::Hello(hello) = response.header.message else {
             bail!("Unexpected hello response");
         };
@@ -595,6 +755,13 @@ impl RemoteHost {
             hello.protocol_version == PROTOCOL_VERSION,
             "Protocol version mismatch"
         );
+        self.inner
+            .cache
+            .set_renderer(&hello.device_id, hello.rendering_namespace())?;
+        session
+            .hello
+            .set(hello.clone())
+            .map_err(|_| anyhow::anyhow!("Hello already negotiated"))?;
         *self.inner.hello.lock().unwrap() = Some(hello);
         Ok(())
     }
@@ -726,19 +893,50 @@ impl RemoteHost {
         max_bytes: usize,
         cancelled: impl Fn() -> bool,
     ) -> Result<PreviewResult> {
+        let namespace = self.hello().rendering_namespace().map(str::to_owned);
+        self.preview_for_renderer(key, kind, max_bytes, namespace.as_deref(), cancelled)
+    }
+    pub(crate) fn preview_for_renderer(
+        &self,
+        key: &PhotoKey,
+        kind: PreviewKind,
+        max_bytes: usize,
+        namespace: Option<&str>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<PreviewResult> {
         ensure!(
             max_bytes > 0 && max_bytes <= MAX_PAYLOAD,
             "Preview byte budget outside bounds"
         );
-        let device = self.hello().device_id;
-        if let Some(preview) = self.inner.cache.get(&device, key, kind, max_bytes)? {
+        let session = self.inner.session.lock().unwrap().clone();
+        let hello = match &session {
+            Some(session) => session
+                .hello
+                .get()
+                .cloned()
+                .context("Remote negotiation is incomplete")?,
+            None => self.hello(),
+        };
+        ensure!(
+            hello.rendering_namespace() == namespace,
+            "Remote rendering configuration changed; request the preview again"
+        );
+        let device = hello.device_id;
+        if let Some(preview) = self
+            .inner
+            .cache
+            .get_for_renderer(&device, key, kind, max_bytes, namespace)?
+        {
             return Ok(preview);
         }
-        let mut pending = self.request(Request::Preview {
-            key: key.clone(),
-            kind,
-            max_bytes,
-        })?;
+        let mut pending = session.context("Remote is disconnected")?.start_request(
+            Request::Preview {
+                key: key.clone(),
+                kind,
+                max_bytes,
+            },
+            self.inner.timeout,
+        )?;
         let frame = pending.recv_cancellable(cancelled)?;
         ensure!(frame.header.done, "Unexpected streaming preview response");
         let Response::Preview {
@@ -764,8 +962,7 @@ impl RemoteHost {
         // that contract; v4 agents advertise JPEG-first inspection instead.
         if kind == PreviewKind::Full
             && crate::indexer::is_raw(&key.relative_path)
-            && self
-                .hello()
+            && hello
                 .capabilities
                 .iter()
                 .any(|c| c == "preview_provenance_v2")
@@ -795,7 +992,11 @@ impl RemoteHost {
         };
         // put validates JPEG dimensions, pixel count and provenance at the
         // shared network/cache boundary before publishing either file.
-        self.inner.cache.put(&device, key, kind, &preview)?;
+        // Pin publication to the session that produced these pixels, even if a
+        // reconnect negotiated another renderer while this request completed.
+        self.inner
+            .cache
+            .put_for_renderer(&device, key, kind, &preview, namespace)?;
         Ok(preview)
     }
     pub fn read_range(&self, root: &str, path: &Path, offset: u64, len: u32) -> Result<Vec<u8>> {
@@ -836,5 +1037,263 @@ impl RemoteHost {
         max_bytes: usize,
     ) -> Result<Option<PreviewResult>> {
         PreviewCache::new(cache_dir)?.get(device_id, key, kind, max_bytes)
+    }
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    use super::*;
+
+    fn key() -> PhotoKey {
+        PhotoKey {
+            root_id: "root".into(),
+            volume_id: "volume".into(),
+            relative_path: "photo.jpg".into(),
+            size_bytes: 123,
+            modified_at: 456,
+            companion_path: None,
+            companion_size_bytes: 0,
+            companion_modified_at: 0,
+        }
+    }
+    fn preview(value: u8) -> PreviewResult {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::RgbImage::from_pixel(2, 2, image::Rgb([value; 3])))
+            .unwrap();
+        PreviewResult {
+            jpeg,
+            width: 2,
+            height: 2,
+            cache_hit: false,
+            rendered_raw: false,
+            embedded_raw: false,
+            rendering_note: Some(format!("renderer {value}")),
+        }
+    }
+
+    #[test]
+    fn renderer_switch_invalidates_cache_and_offline_restart_keeps_latest_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::new(temp.path().into()).unwrap();
+        let key = key();
+        let first = preview(25);
+        let second = preview(225);
+        cache.set_renderer("device", Some("renderer-a")).unwrap();
+        cache.put("device", &key, PreviewKind::Fit, &first).unwrap();
+        cache.set_renderer("device", Some("renderer-b")).unwrap();
+        assert!(
+            cache
+                .get("device", &key, PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .is_none()
+        );
+        cache
+            .put("device", &key, PreviewKind::Fit, &second)
+            .unwrap();
+        // A late completion from the previous session cannot change either the
+        // active namespace or the bytes now selected for this same photo.
+        cache
+            .put_for_renderer("device", &key, PreviewKind::Fit, &first, Some("renderer-a"))
+            .unwrap();
+        assert_eq!(
+            cache
+                .get("device", &key, PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .unwrap()
+                .jpeg,
+            second.jpeg
+        );
+        drop(cache);
+        let offline = RemoteHost::offline_preview(
+            temp.path().into(),
+            "device",
+            &key,
+            PreviewKind::Fit,
+            MAX_PAYLOAD,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(offline.jpeg, second.jpeg);
+        let reopened = PreviewCache::new(temp.path().into()).unwrap();
+        reopened.set_budget(0).unwrap();
+        drop(reopened);
+        let reopened = PreviewCache::new(temp.path().into()).unwrap();
+        assert_eq!(
+            reopened.rendering_namespace("device").as_deref(),
+            Some("renderer-b")
+        );
+        // LRU eviction removes representations, never the identity needed to
+        // select later offline entries after another app restart.
+        assert!(
+            reopened
+                .get("device", &key, PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .is_none()
+        );
+        reopened
+            .put_for_renderer("device", &key, PreviewKind::Fit, &first, Some("renderer-a"))
+            .unwrap();
+        assert!(
+            reopened
+                .get("device", &key, PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .is_none()
+        );
+        reopened.set_renderer("device", None).unwrap();
+        reopened
+            .put("device", &key, PreviewKind::Fit, &first)
+            .unwrap();
+        drop(reopened);
+        assert_eq!(
+            RemoteHost::offline_preview(
+                temp.path().into(),
+                "device",
+                &key,
+                PreviewKind::Fit,
+                MAX_PAYLOAD
+            )
+            .unwrap()
+            .unwrap()
+            .jpeg,
+            first.jpeg
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renderer_metadata_rejects_symlinks_and_oversized_records_without_legacy_fallback() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("cache");
+        let cache = PreviewCache::new(root.clone()).unwrap();
+        cache
+            .put("device", &key(), PreviewKind::Fit, &preview(25))
+            .unwrap();
+        cache.set_renderer("device", Some("renderer-a")).unwrap();
+        let path = root
+            .join("renderers")
+            .join(format!("{}.renderer", blake3::hash(b"device").to_hex()));
+        fs::write(&path, vec![b'x'; 4097]).unwrap();
+        let reopened = PreviewCache::new(root.clone()).unwrap();
+        assert!(
+            reopened
+                .get("device", &key(), PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .is_none()
+        );
+        let external = temp.path().join("external");
+        let contents = serde_json::to_vec(&DeviceRenderer {
+            device_id: "device".into(),
+            namespace: Some("outside".into()),
+        })
+        .unwrap();
+        fs::write(&external, &contents).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&external, &path).unwrap();
+        let reopened = PreviewCache::new(root.clone()).unwrap();
+        assert_eq!(
+            reopened.rendering_namespace("device").as_deref(),
+            Some("invalid-renderer-metadata")
+        );
+        reopened.set_renderer("device", Some("renderer-b")).unwrap();
+        assert_eq!(fs::read(&external).unwrap(), contents);
+        let other_root = temp.path().join("other-cache");
+        let other = PreviewCache::new(other_root.clone()).unwrap();
+        symlink(root.join("renderers"), other_root.join("renderers")).unwrap();
+        assert!(PreviewCache::new(other_root).is_err());
+        assert!(other.set_renderer("device", Some("renderer-c")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renegotiating_same_device_renderer_fetches_new_pixels_instead_of_cached_ones() {
+        use std::os::unix::net::UnixStream;
+        fn peer(namespace: Option<&str>, value: u8) -> (UnixStream, thread::JoinHandle<usize>) {
+            let (client, mut server) = UnixStream::pair().unwrap();
+            let capability = namespace.map(|name| format!("{RENDERING_CAPABILITY_PREFIX}{name}"));
+            let worker = thread::spawn(move || {
+                let mut previews = 0;
+                while let Some(frame) = read_frame::<Request>(&mut server).unwrap() {
+                    let (response, payload) = match frame.header.message {
+                        Request::Hello { .. } => (
+                            Response::Hello(Hello {
+                                protocol_version: PROTOCOL_VERSION,
+                                app_version: "test".into(),
+                                device_id: "same-device".into(),
+                                hostname: "test".into(),
+                                os: "linux".into(),
+                                arch: "x86_64".into(),
+                                capabilities: capability.clone().into_iter().collect(),
+                            }),
+                            vec![],
+                        ),
+                        Request::Preview { .. } => {
+                            previews += 1;
+                            let image = preview(value);
+                            (image.response(), image.jpeg)
+                        }
+                        Request::Cancel { .. } => continue,
+                        other => panic!("unexpected request {other:?}"),
+                    };
+                    write_frame(
+                        &mut server,
+                        &Frame::new(frame.header.id, true, response, payload),
+                    )
+                    .unwrap();
+                }
+                previews
+            });
+            (client, worker)
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (client, first_worker) = peer(Some("renderer-a"), 25);
+        let first_control = client.try_clone().unwrap();
+        let host = RemoteHost::from_io(
+            client.try_clone().unwrap(),
+            client,
+            temp.path().into(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let first = host.preview(&key(), PreviewKind::Fit, MAX_PAYLOAD).unwrap();
+        assert!(!first.cache_hit);
+        host.disconnect();
+        first_control.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(first_worker.join().unwrap(), 1);
+        let (client, second_worker) = peer(Some("renderer-b"), 225);
+        let second_control = client.try_clone().unwrap();
+        let session = Session::start(
+            client.try_clone().unwrap(),
+            client,
+            None,
+            host.inner.counters.clone(),
+        );
+        *host.inner.session.lock().unwrap() = Some(session);
+        host.negotiate().unwrap();
+        let second = host.preview(&key(), PreviewKind::Fit, MAX_PAYLOAD).unwrap();
+        assert!(!second.cache_hit);
+        assert_ne!(first.jpeg, second.jpeg);
+        assert!(
+            host.preview(&key(), PreviewKind::Fit, MAX_PAYLOAD)
+                .unwrap()
+                .cache_hit
+        );
+        host.disconnect();
+        second_control.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(second_worker.join().unwrap(), 1);
+        assert_eq!(
+            RemoteHost::offline_preview(
+                temp.path().into(),
+                "same-device",
+                &key(),
+                PreviewKind::Fit,
+                MAX_PAYLOAD
+            )
+            .unwrap()
+            .unwrap()
+            .jpeg,
+            second.jpeg
+        );
     }
 }

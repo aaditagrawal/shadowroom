@@ -5,6 +5,6 @@ RUN dnf -y install dnf-plugins-core \
  && dnf -y install gcc gcc-c++ gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ \
       make cmake pkgconf-pkg-config python3 git file clang which xz zlib-devel \
       libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
-      libX11-devel fontconfig-devel freetype-devel vulkan-loader-devel libzstd-devel glib2 \
+      libX11-devel fontconfig-devel freetype-devel vulkan-loader-devel libzstd-devel \
  && rpm -qa | sort > /release-build-rpms.txt \
  && dnf clean all

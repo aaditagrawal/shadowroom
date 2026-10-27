@@ -4,6 +4,7 @@
 | --- | --- |
 | [Getting started](../README.md) | Screenshots, features, shortcuts, and performance |
 | [Build and install](BUILD.md) | Linux/macOS prerequisites, packages, and codecs |
+| [Linux portability](PORTABILITY.md) | Bundled features, Rust backends, software frontend, and ABI checks |
 | [Import a shoot](INGEST.md) | Copy planning, naming, backup, verification, and eject |
 | [Export](EXPORT.md) | Copy picks, XMP sidecars, collisions, and failures |
 | [Keyboard and controllers](CONTROLS.md) | Shortcuts and Creator Micro mapping |

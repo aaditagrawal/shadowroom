@@ -16,12 +16,35 @@ use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use image::RgbaImage;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, imageops::FilterType};
-use lcms2::{ColorSpaceSignature, Intent, PixelFormat, Profile, Transform};
 use serde::{Deserialize, Serialize};
 
-// v9 uses paired/embedded JPEGs for full-size inspection as well as Fit.
-const CACHE_VERSION: u32 = 9;
-const CACHE_MAGIC: &[u8; 8] = b"SHDWRM09";
+// v10 isolates output from selectable ICC engines. Each backend has its own
+// cache directory: switching builds must never reuse another engine's colors.
+const CACHE_VERSION: u32 = 10;
+const CACHE_MAGIC: &[u8; 8] = b"SHDWRM10";
+
+/// Stable identity for every build choice that can alter preview pixels or
+/// provenance. Bump CACHE_VERSION when changing rendering without a release.
+pub(crate) fn rendering_namespace() -> String {
+    rendering_namespace_for(
+        cfg!(feature = "native-color"),
+        cfg!(feature = "native-codecs"),
+        cfg!(feature = "rust-heif"),
+    )
+}
+
+fn rendering_namespace_for(native_color: bool, native_codecs: bool, rust_heif: bool) -> String {
+    format!(
+        "previews-v{CACHE_VERSION}-{}-{}-{}-icc-{}-native-{}-rust-heif-{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        if native_color { "lcms" } else { "moxcms" },
+        u8::from(native_codecs),
+        u8::from(rust_heif),
+    )
+}
+
 const QUEUE_CAPACITY: usize = 160;
 const ERROR_CAPACITY: usize = 128;
 const RECENT_ERROR_CAPACITY: usize = 32;
@@ -148,6 +171,7 @@ struct SourceKey {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct RemoteMediaSource {
     source: crate::model::RemoteSource,
+    rendering_namespace: Option<String>,
     width: u32,
     height: u32,
 }
@@ -175,6 +199,7 @@ fn photo_key(photo: &crate::model::Photo, kind: PreviewKind) -> Key {
         };
         key.source.remote = Some(RemoteMediaSource {
             source: source.clone(),
+            rendering_namespace: None,
             width,
             height,
         });
@@ -448,6 +473,7 @@ struct Shared {
     generation: AtomicU64,
     cancel_requested: AtomicBool,
     cache_dir: PathBuf,
+    rendering_namespace: String,
     disk_budget: AtomicU64,
     disk_bytes: AtomicU64,
     disk_write: Mutex<DiskState>,
@@ -513,7 +539,10 @@ impl MediaPipeline {
             stop: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             cancel_requested: AtomicBool::new(false),
+            // Renderer identities salt filenames rather than directory names,
+            // so switching app versions/backends shares one disk quota/LRU.
             cache_dir: cache_dir.join(format!("previews-v{CACHE_VERSION}")),
+            rendering_namespace: rendering_namespace(),
             disk_budget: AtomicU64::new(DEFAULT_DISK_BUDGET),
             disk_bytes: AtomicU64::new(0),
             disk_write: Mutex::new(DiskState::default()),
@@ -666,15 +695,26 @@ impl MediaPipeline {
     pub fn set_remote_provider(&self, provider: Arc<RemotePreviewProvider>) {
         let _ = self.shared.remote.set(provider);
     }
+    fn photo_key(&self, photo: &crate::model::Photo, kind: PreviewKind) -> Key {
+        let mut key = photo_key(photo, kind);
+        if let Some(remote) = &mut key.source.remote {
+            remote.rendering_namespace = self
+                .shared
+                .remote
+                .get()
+                .and_then(|provider| provider.rendering_namespace(&remote.source.device_id));
+        }
+        key
+    }
     pub fn request_photo(&self, photo: &crate::model::Photo, kind: PreviewKind) {
-        self.request_key(photo_key(photo, kind));
+        self.request_key(self.photo_key(photo, kind));
     }
     pub fn get_photo(
         &self,
         photo: &crate::model::Photo,
         kind: PreviewKind,
     ) -> Option<Arc<Preview>> {
-        self.get_key(photo_key(photo, kind))
+        self.get_key(self.photo_key(photo, kind))
     }
     pub fn best_photo(&self, photo: &crate::model::Photo) -> Option<Arc<Preview>> {
         [PreviewKind::Full, PreviewKind::Fit, PreviewKind::Thumbnail]
@@ -691,11 +731,11 @@ impl MediaPipeline {
             .try_lock()
             .ok()?
             .errors
-            .get(&photo_key(photo, kind))
+            .get(&self.photo_key(photo, kind))
             .cloned()
     }
     pub fn retry_photo(&self, photo: &crate::model::Photo, kind: PreviewKind) {
-        let key = photo_key(photo, kind);
+        let key = self.photo_key(photo, kind);
         if let Ok(mut state) = self.shared.state.try_lock() {
             state.errors.remove(&key);
         }
@@ -706,7 +746,7 @@ impl MediaPipeline {
     /// Returns true only when a memory error was cleared. Mutex contention is
     /// nonblocking, so the foreground caller may try again on a later frame.
     pub fn retry_photo_memory_error(&self, photo: &crate::model::Photo, kind: PreviewKind) -> bool {
-        let key = photo_key(photo, kind);
+        let key = self.photo_key(photo, kind);
         let Ok(mut state) = self.shared.state.try_lock() else {
             return false;
         };
@@ -1130,7 +1170,12 @@ fn process_remote_task(
         .cloned()
         .context("Unavailable offline: remote preview provider is not ready")?;
     let compressed = reserve(shared, task, crate::remote::protocol::MAX_PAYLOAD)?;
-    let result = provider.fetch(&remote.source, task.key.kind, || !current(shared, task))?;
+    let result = provider.fetch_for_renderer(
+        &remote.source,
+        task.key.kind,
+        remote.rendering_namespace.as_deref(),
+        || !current(shared, task),
+    )?;
     if !current(shared, task) {
         return Ok(());
     }
@@ -1614,7 +1659,14 @@ impl RemotePreviewProvider {
         self.cache.set_budget(bytes)
     }
     pub fn connect(&self, device: String, host: crate::remote::RemoteHost) {
+        // Negotiation already persisted this in the host cache. Update our
+        // shared in-memory view too for custom transports with a separate cache.
+        self.cache
+            .remember_renderer(&device, host.hello().rendering_namespace());
         self.hosts.lock().unwrap().insert(device, host);
+    }
+    fn rendering_namespace(&self, device: &str) -> Option<String> {
+        self.cache.rendering_namespace(device)
     }
     pub fn disconnect(&self, device: &str) {
         self.hosts.lock().unwrap().remove(device);
@@ -1623,6 +1675,16 @@ impl RemotePreviewProvider {
         &self,
         source: &crate::model::RemoteSource,
         kind: PreviewKind,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<crate::remote::PreviewResult> {
+        let namespace = self.rendering_namespace(&source.device_id);
+        self.fetch_for_renderer(source, kind, namespace.as_deref(), cancelled)
+    }
+    fn fetch_for_renderer(
+        &self,
+        source: &crate::model::RemoteSource,
+        kind: PreviewKind,
+        namespace: Option<&str>,
         cancelled: impl Fn() -> bool,
     ) -> Result<crate::remote::PreviewResult> {
         let key = source.key();
@@ -1634,11 +1696,12 @@ impl RemotePreviewProvider {
             PreviewKind::Full => &[PreviewKind::Full],
         };
         for &cached_kind in candidates {
-            if let Some(preview) = self.cache.get(
+            if let Some(preview) = self.cache.get_for_renderer(
                 &source.device_id,
                 &key,
                 cached_kind,
                 crate::remote::protocol::MAX_PAYLOAD,
+                namespace,
             )? {
                 return Ok(preview);
             }
@@ -1647,8 +1710,13 @@ impl RemotePreviewProvider {
         let Some(host) = host.filter(|h| h.is_connected() && source.available) else {
             bail!("Unavailable offline: this preview kind is not cached on this computer");
         };
-        match host.preview_cancellable(&key, kind, crate::remote::protocol::MAX_PAYLOAD, cancelled)
-        {
+        match host.preview_for_renderer(
+            &key,
+            kind,
+            crate::remote::protocol::MAX_PAYLOAD,
+            namespace,
+            cancelled,
+        ) {
             Err(error) if !host.is_connected() => bail!(
                 "Unavailable offline: this preview kind is not cached on this computer ({error})"
             ),
@@ -1981,145 +2049,7 @@ fn convert_to_srgb(image: &mut DynamicImage, icc: Option<&[u8]>) -> ColorStatus 
     let Some(icc) = icc else {
         return ColorStatus::AssumedSrgb;
     };
-    let result = (|| -> Result<()> {
-        let source = Profile::new_icc(icc).context("Cannot parse embedded ICC profile")?;
-        let target = Profile::new_srgb();
-        let grayscale = source.color_space() == ColorSpaceSignature::GrayData;
-        if grayscale
-            && matches!(
-                image,
-                DynamicImage::ImageLuma16(_)
-                    | DynamicImage::ImageLumaA16(_)
-                    | DynamicImage::ImageRgb16(_)
-                    | DynamicImage::ImageRgba16(_)
-            )
-        {
-            let transform = Transform::<u16, [u16; 3]>::new_flags(
-                &source,
-                PixelFormat::GRAY_16,
-                &target,
-                PixelFormat::RGB_16,
-                Intent::RelativeColorimetric,
-                // LCMS's optimized 16-bit gray LUT rounds away dark tones.
-                // Retain its analytic curve pipeline until final quantization.
-                lcms2::Flags::NO_OPTIMIZE,
-            )
-            .context("Embedded grayscale profile is incompatible with decoded pixels")?;
-            let alpha = image.color().has_alpha().then(|| {
-                image
-                    .to_rgba16()
-                    .pixels()
-                    .map(|p| p[3])
-                    .collect::<Vec<u16>>()
-            });
-            let mut rgb =
-                image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
-            transform.transform_pixels(
-                image.to_luma16().as_raw(),
-                rgb.as_mut().as_chunks_mut::<3>().0,
-            );
-            if let Some(alpha) = alpha {
-                let mut rgba = DynamicImage::ImageRgb16(rgb).into_rgba16();
-                for (pixel, alpha) in rgba.pixels_mut().zip(alpha) {
-                    pixel[3] = alpha;
-                }
-                *image = DynamicImage::ImageRgba16(rgba);
-            } else {
-                *image = DynamicImage::ImageRgb16(rgb);
-            }
-            return Ok(());
-        }
-        if !grayscale {
-            match image {
-                DynamicImage::ImageRgb16(rgb) => {
-                    let transform = Transform::<[u16; 3], [u16; 3]>::new(
-                        &source,
-                        PixelFormat::RGB_16,
-                        &target,
-                        PixelFormat::RGB_16,
-                        Intent::RelativeColorimetric,
-                    )
-                    .context("Embedded profile is incompatible with decoded RGB pixels")?;
-                    transform.transform_in_place(rgb.as_mut().as_chunks_mut::<3>().0);
-                    return Ok(());
-                }
-                DynamicImage::ImageRgba16(rgba) => {
-                    let transform = Transform::<[u16; 4], [u16; 4]>::new_flags(
-                        &source,
-                        PixelFormat::RGBA_16,
-                        &target,
-                        PixelFormat::RGBA_16,
-                        Intent::RelativeColorimetric,
-                        lcms2::Flags::COPY_ALPHA,
-                    )
-                    .context("Embedded profile is incompatible with decoded RGB pixels")?;
-                    transform.transform_in_place(rgba.as_mut().as_chunks_mut::<4>().0);
-                    return Ok(());
-                }
-                _ => (),
-            }
-        }
-        if !grayscale {
-            let format = match image {
-                DynamicImage::ImageRgb8(_) => Some(PixelFormat::RGB_8),
-                DynamicImage::ImageRgba8(_) => Some(PixelFormat::RGBA_8),
-                _ => None,
-            };
-            if let Some(format) = format {
-                let transform = Transform::<u8, u8>::new_flags(
-                    &source,
-                    format,
-                    &target,
-                    format,
-                    Intent::RelativeColorimetric,
-                    if format == PixelFormat::RGBA_8 {
-                        lcms2::Flags::COPY_ALPHA
-                    } else {
-                        lcms2::Flags::default()
-                    },
-                )
-                .context("Embedded profile is incompatible with decoded RGB pixels")?;
-                match image {
-                    DynamicImage::ImageRgb8(rgb) => transform.transform_in_place(rgb.as_mut()),
-                    DynamicImage::ImageRgba8(rgba) => transform.transform_in_place(rgba.as_mut()),
-                    _ => unreachable!(),
-                }
-                return Ok(());
-            }
-        }
-        let transform = Transform::<u8, u8>::new(
-            &source,
-            if grayscale {
-                PixelFormat::GRAY_8
-            } else {
-                PixelFormat::RGB_8
-            },
-            &target,
-            PixelFormat::RGB_8,
-            Intent::RelativeColorimetric,
-        )
-        .context("Embedded profile is incompatible with decoded RGB pixels")?;
-        let alpha = image
-            .color()
-            .has_alpha()
-            .then(|| image.to_rgba8().pixels().map(|p| p[3]).collect::<Vec<u8>>());
-        let mut rgb = image.to_rgb8();
-        if grayscale {
-            transform.transform_pixels(image.to_luma8().as_raw(), rgb.as_mut());
-        } else {
-            transform.transform_in_place(rgb.as_mut());
-        }
-        if let Some(alpha) = alpha {
-            let mut rgba = DynamicImage::ImageRgb8(rgb).to_rgba8();
-            for (pixel, a) in rgba.pixels_mut().zip(alpha) {
-                pixel[3] = a;
-            }
-            *image = DynamicImage::ImageRgba8(rgba);
-        } else {
-            *image = DynamicImage::ImageRgb8(rgb);
-        }
-        Ok(())
-    })();
+    let result = crate::color::convert_image(image, icc);
     match result {
         Ok(()) => ColorStatus::ConvertedToSrgb,
         Err(error) => ColorStatus::InvalidProfile(format!("{error:#}")),
@@ -2623,13 +2553,19 @@ struct DiskMeta {
 }
 
 fn cache_path(shared: &Shared, key: &Key) -> PathBuf {
+    cache_path_for_namespace(&shared.cache_dir, key, &shared.rendering_namespace)
+}
+
+fn cache_path_for_namespace(directory: &Path, key: &Key, namespace: &str) -> PathBuf {
     let mut hash = blake3::Hasher::new();
+    hash.update(namespace.as_bytes());
+    hash.update(&[0]);
     hash.update(key.source.path.as_os_str().as_encoded_bytes());
     hash.update(&key.source.modified.to_le_bytes());
     hash.update(&key.source.size.to_le_bytes());
     hash.update(&[u8::from(key.source.sensor_raw)]);
     hash.update(&[key.kind.priority()]);
-    shared.cache_dir.join(format!(
+    directory.join(format!(
         "{}-{}.srp",
         hash.finalize().to_hex(),
         if key.kind == PreviewKind::Thumbnail {
@@ -2835,6 +2771,114 @@ fn update_and_prune_disk(
 mod tests {
     use super::*;
     use image::GenericImageView;
+    use lcms2::{ColorSpaceSignature, Intent, PixelFormat, Profile, Transform};
+
+    #[test]
+    fn rendering_namespace_distinguishes_every_codec_and_color_configuration() {
+        let mut namespaces = std::collections::HashSet::new();
+        for native_color in [false, true] {
+            for native_codecs in [false, true] {
+                for rust_heif in [false, true] {
+                    assert!(namespaces.insert(rendering_namespace_for(
+                        native_color,
+                        native_codecs,
+                        rust_heif
+                    )));
+                }
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 1_000_000);
+        assert_eq!(
+            pipeline.shared.cache_dir,
+            temp.path().join(format!("previews-v{CACHE_VERSION}"))
+        );
+        let key = make_key(Path::new("/fixture.jpg"), 10, 100, PreviewKind::Fit);
+        assert_ne!(
+            cache_path_for_namespace(&pipeline.shared.cache_dir, &key, "icc-native"),
+            cache_path_for_namespace(&pipeline.shared.cache_dir, &key, "icc-rust"),
+        );
+    }
+
+    #[test]
+    fn inactive_rendering_namespaces_share_the_same_disk_quota() {
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 1_000_000);
+        fs::create_dir_all(&pipeline.shared.cache_dir).unwrap();
+        let key = make_key(Path::new("/fixture.jpg"), 10, 100, PreviewKind::Fit);
+        let old = cache_path_for_namespace(&pipeline.shared.cache_dir, &key, "previous-engine");
+        let current = cache_path(&pipeline.shared, &key);
+        fs::write(&old, [0u8; 100]).unwrap();
+        File::open(&old).unwrap().set_modified(UNIX_EPOCH).unwrap();
+        fs::write(&current, [0u8; 32]).unwrap();
+        let mut disk = DiskState::default();
+        update_and_prune_disk(&pipeline.shared, &mut disk, &current, 64).unwrap();
+        assert!(!old.exists());
+        assert!(current.exists());
+        assert_eq!(pipeline.shared.disk_bytes.load(Ordering::Relaxed), 32);
+    }
+
+    #[test]
+    fn remote_renderer_change_cannot_reuse_decoded_memory_preview() {
+        use crate::model::{PhotoSource, RemoteSource};
+        let temp = tempfile::tempdir().unwrap();
+        let provider = Arc::new(RemotePreviewProvider::new(temp.path().join("remote")).unwrap());
+        let pipeline = MediaPipeline::new(temp.path().join("local"), 1_000_000);
+        pipeline.set_remote_provider(provider.clone());
+        let photo = crate::model::Photo {
+            source: PhotoSource::Remote(RemoteSource {
+                device_id: "device".into(),
+                root_id: "root".into(),
+                volume_id: "volume".into(),
+                relative_path: "photo.jpg".into(),
+                size_bytes: 10,
+                modified_at: 20,
+                companion_path: None,
+                companion_size_bytes: 0,
+                companion_modified_at: 0,
+                available: true,
+            }),
+            ..Default::default()
+        };
+        provider
+            .cache
+            .remember_renderer("device", Some("renderer-a"));
+        let first = pipeline.photo_key(&photo, PreviewKind::Fit);
+        pipeline.shared.state.lock().unwrap().insert_preview(
+            first.clone(),
+            Arc::new(make_preview(
+                numbered(),
+                PreviewKind::Fit,
+                3,
+                2,
+                ColorStatus::AssumedSrgb,
+                false,
+            )),
+        );
+        assert!(
+            pipeline
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .satisfying(&first)
+                .is_some()
+        );
+        provider
+            .cache
+            .remember_renderer("device", Some("renderer-b"));
+        let second = pipeline.photo_key(&photo, PreviewKind::Fit);
+        assert_ne!(first, second);
+        assert!(
+            pipeline
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .satisfying(&second)
+                .is_none()
+        );
+    }
 
     #[test]
     fn opaque_and_transparent_disk_caches_round_trip_exact_pixels() {
@@ -3121,7 +3165,21 @@ mod tests {
                     convert_to_srgb(&mut image, Some(&icc)),
                     ColorStatus::ConvertedToSrgb
                 );
-                assert_eq!(image.to_rgb8().as_raw(), expected.as_raw());
+                let actual = image.to_rgb8();
+                let max_error = actual
+                    .as_raw()
+                    .iter()
+                    .zip(expected.as_raw())
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                // Matrix/TRC engines may round a display code to adjacent integers.
+                // Keep exact old-engine equivalence for the native implementation.
+                let tolerance = if cfg!(feature = "native-color") { 0 } else { 1 };
+                assert!(
+                    max_error <= tolerance,
+                    "ICC reference max channel error {max_error}"
+                );
                 if let DynamicImage::ImageRgba8(actual) = image {
                     for (actual, source) in actual.pixels().zip(pixels.pixels()) {
                         assert_eq!(actual[3], source[3]);

@@ -1,0 +1,14 @@
+[
+  {
+    "file": "LICENSE-MIT",
+    "url": "https://raw.githubusercontent.com/HarpeLm/Heifer/515c7a7fd67599c29b4e52e8b77fbc0674f7f24e/LICENSE-MIT",
+    "sha256": "fea27f8faa7a178621d21d677ff89532776b7ba9292939085914bb6639f33fb1",
+    "provenance": "Exact workspace commit recorded in all four published 0.2.0 crates .cargo_vcs_info.json; crate archives omit workspace license files."
+  },
+  {
+    "file": "LICENSE-APACHE",
+    "url": "https://raw.githubusercontent.com/HarpeLm/Heifer/515c7a7fd67599c29b4e52e8b77fbc0674f7f24e/LICENSE-APACHE",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "provenance": "Exact workspace commit recorded in all four published 0.2.0 crates .cargo_vcs_info.json; crate archives omit workspace license files."
+  }
+]

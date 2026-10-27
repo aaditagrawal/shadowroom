@@ -95,13 +95,23 @@ The index operation streams progress; photo records are a separate `photos` stre
 
 ## Preview caching and drive I/O
 
-The agent uses the shared `MediaPipeline`: 384px thumbnails, 2560px Fit, native format/color handling and version-9 local media caches. All tiers prefer a paired JPEG/HEIF, then an embedded RAW JPEG, with LibRaw sensor fallback if no supported preview exists. **Full uses that selected preview at its native resolution**. Its dimensions can therefore differ from the RAW capture dimensions; provenance identifies the actual source rather than calling a camera preview a sensor render.
+The agent uses the shared `MediaPipeline`: 384px thumbnails, 2560px Fit, configured format/color handling and version-10 local media caches. All tiers prefer a paired JPEG/HEIF, then an embedded RAW JPEG, with LibRaw sensor fallback when native codecs are enabled and no supported preview exists. **Full uses that selected preview at its native resolution**. Its dimensions can therefore differ from the RAW capture dimensions; provenance identifies the actual source rather than calling a camera preview a sensor render.
 
 Pixels are already oriented sRGB and travel as **JPEG quality 85**, even for TIFF/JXL/HEIF or RAW sources. Notes identify JPEG wire encoding, actual transmitted dimensions and source provenance, including LibRaw/white-balance details. Thumbnail/Fit requests downsize a larger satisfying image to their requested tier. **Full is never resized to fit the wire budget**: exceeding `max_bytes` or the roughly 16 MiB framing ceiling fails explicitly, without changing quality or dimensions. The exact binary payload limit is listed above; encoding stops before growing beyond it. There is no chunked Full transport.
 
 New agents advertise `preview_jpeg_first_v4`. Responses and both encoded-JPEG caches retain `rendered_raw`, `embedded_raw` and `rendering_note`; clients verify JPEG dimensions and reject conflicting RAW flags. Older agents advertising `preview_provenance_v2` retain their sensor-only RAW Full contract, which clients still enforce. Legacy replies without provenance remain readable but carry an explicit Full-provenance-unverified note, also retained offline.
 
 Client/server representation revision 4 invalidates earlier preview representations independently of protocol version 1. The server uses `jpeg-v4`; earlier version directories are obsolete. Client keys include representation/protocol versions, device identity, the entire photo/companion fingerprint and kind. JPEG/checksum metadata is published atomically; corrupt/partial entries are misses. Cached payloads and metadata use bounded reads of regular files; on Unix, final-component symlinks and special files are rejected. Both cached and newly received previews must have matching JPEG dimensions, bounded pixels/notes, and consistent RAW provenance. A matching byte checksum alone does not validate metadata. Warm fetches consult the client cache before connecting and transfer zero protocol bytes. `RemoteHost::offline_preview` reopens persisted JPEGs and provenance after restart; disconnect retains them. The GUI retains metadata to enumerate offline photos.
+
+New builds additionally advertise `preview_renderer:<namespace>` in Hello
+capabilities. The namespace covers pipeline/app version, platform, ICC engine,
+native codecs and Rust HEIF. Both JPEG caches include the server renderer in
+their keys; decoded remote memory keys do too. Reconnecting to the same device
+with a changed renderer invalidates prior output, and in-flight responses stay
+bound to their original session identity. Bounded per-device `.renderer`
+sidecars under `renderers/` persist the last namespace for offline use; JPEG LRU
+eviction does not remove them. Legacy agents without this capability keep their
+existing revision-4 keys. Protocol framing remains version 1.
 
 Metadata indexing and first preview generation can read a source separately because the existing public indexer and media APIs do not share source bytes. Incremental scans avoid repeated metadata reads for unchanged originals, and warmed previews avoid original content reads. Canonicalization/stat calls still touch filesystem metadata. Do not promise exactly one physical drive read for the first index plus preview. RAW compressed-byte and image pixel safety limits remain those of the existing media pipeline.
 

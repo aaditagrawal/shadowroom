@@ -518,9 +518,12 @@ fn publish_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
         let target_c = std::ffi::CString::new(target.as_os_str().as_bytes())?;
         #[cfg(target_os = "linux")]
         {
-            // SAFETY: both paths are live, nul-terminated C strings; flags prohibit replacement.
+            // Call the kernel directly: glibc's renameat2 wrapper requires 2.28,
+            // while the syscall works on older libc builds and Linux >= 3.15.
+            // SAFETY: both paths are live, nul-terminated strings; flags prohibit replacement.
             if unsafe {
-                libc::renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     libc::AT_FDCWD,
                     source_c.as_ptr(),
                     libc::AT_FDCWD,
@@ -560,6 +563,41 @@ fn publish_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
     // Portable no-replace fallback. The caller owns and removes the staging link.
     fs::hard_link(source, target)
 }
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn no_replace_publication_preserves_existing_files_and_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("staged-photo");
+        let target = directory.path().join("existing-photo");
+        fs::write(&source, b"imported photo").unwrap();
+        fs::write(&target, b"existing photo").unwrap();
+        assert_eq!(
+            publish_noreplace(&source, &target).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"imported photo");
+        assert_eq!(fs::read(&target).unwrap(), b"existing photo");
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("existing-link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert_eq!(
+                publish_noreplace(&source, &link).unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists
+            );
+            assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+            assert_eq!(fs::read(&target).unwrap(), b"existing photo");
+        }
+        let fresh = directory.path().join("fresh-photo");
+        publish_noreplace(&source, &fresh).unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"imported photo");
+    }
+}
+
 struct CommittedGroup {
     record: ImportRecord,
     cleanup_errors: Vec<String>,

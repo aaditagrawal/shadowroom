@@ -60,6 +60,8 @@ jobs:
         run: bash -n scripts/*.sh
       - name: COPR publisher safety
         run: uv run --no-project python -m unittest discover -s scripts/tests -p test_copr_publish.py
+      - name: Portable ABI inspector
+        run: uv run --no-project python -m unittest discover -s scripts/tests -p test_linux_abi.py
       - name: Documentation links
         run: uv run --no-project python scripts/check-docs.py
 
@@ -130,7 +132,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           desktop-file-validate packaging/linux/app.shadowroom.Shadowroom.desktop
-          scripts/package-linux.sh --no-build --heif-runtime .local/ci-linux/codecs
+          scripts/package-linux.sh --no-build --heif-runtime .local/ci-linux/codecs --glibc-baseline 2.28
           scripts/package-appimage.sh --package "dist/shadowroom-$RELEASE_VERSION-linux-x86_64" \
             --runtime .local/release-inputs/runtime-x86_64 \
             --runtime-sha256 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d \
