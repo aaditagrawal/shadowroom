@@ -10,9 +10,11 @@ is the first preferences section. Culling, Performance, Controller and Help have
 own sections so a large theme collection does not bury other settings.
 
 Preferences use a separate draft. Choices do not change the running app or write
-the settings file until you click **Apply**. **Cancel**, Escape, the close button,
-or clicking outside the dialog discards the draft. Switching sections keeps it.
-Imported theme files are staged in the draft and installed only on Apply.
+the settings file until you click **Apply** or **Apply & Close**. **Apply** saves
+and leaves preferences open; **Apply & Close** saves and closes them. **Cancel**,
+Escape, the close button, or clicking outside discards only the unapplied changes
+since the last successful Apply. Switching sections keeps the draft. Imported
+theme files are staged and installed only when applied.
 
 The theme list groups Dark and Light palettes, with background/accent/text
 swatches and a separate bounded scroll area. Installed Zed themes are discovered
@@ -88,8 +90,16 @@ The UI registers bundled bytes with GPUI at startup. The variable fonts include 
 
 ## Preference persistence
 
+**Culling → Trash destination** chooses **OS Trash** (the default) or **In-app**.
+OS Trash moves confirmed local photo groups out of their source folders and uses
+your operating system's recovery interface. In-app Trash only hides catalog
+entries and can be restored or undone in Shadowroom. Changing the preference
+does not move existing files or convert old in-app Trash decisions. Every UI
+deletion requires its own confirmation; **Shift+Delete** requests permanent
+deletion regardless of this preference. See [Trash and duplicates](DUPLICATES_TRASH.md).
+
 Preferences live in the user's configuration directory under `shadowroom/settings.json`. `Settings::load(path)` returns defaults for a missing file and fills missing fields in older files. Invalid JSON is reported and left untouched. Unknown future preference keys survive a load/save cycle.
 
 `Settings::save(path)` writes a same-directory temporary file with exclusive creation, flushes and syncs its data, then atomically renames it over the target. Failed writes do not partially replace the existing file. On Unix new snapshots are owner-readable/writable. Saves replace a target symlink itself, rather than following it. This protects one complete snapshot; the desktop holds an exclusive catalog lease to prevent concurrent writable instances.
 
-Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, 8,192 MiB disk preview budget, automatic memory sizing, and the startup Getting Started guide enabled. Auto is stored as `memory_budget_mb: 0` and uses a quarter of physical RAM, bounded to 512 MiB–4 GiB; manual limits remain available. Help controls the startup guide, which can also be reopened with F1 or ?. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.
+Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, OS Trash (`trash_mode: "system"`), 8,192 MiB disk preview budget, automatic memory sizing, and the startup Getting Started guide enabled. Optional in-app Trash is stored as `trash_mode: "in_app"`. Auto is stored as `memory_budget_mb: 0` and uses a quarter of physical RAM, bounded to 512 MiB–4 GiB; manual limits remain available. Help controls the startup guide, which can also be reopened with F1 or ?. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.

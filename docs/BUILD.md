@@ -14,7 +14,7 @@ sudo apt-get install build-essential clang libclang-dev pkg-config cmake \
   libfontconfig1-dev libfreetype-dev libwayland-dev libx11-xcb-dev \
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libxkbcommon-dev libxkbcommon-x11-dev libssl-dev libzstd-dev \
-  libvulkan-dev libasound2-dev
+  libvulkan-dev libasound2-dev libglib2.0-0t64
 LCMS2_STATIC=1 cargo build --locked --release --bins
 ./target/release/shadowroom /path/to/photos
 ```
@@ -23,6 +23,11 @@ Install your distribution's Vulkan runtime/driver and an `xdg-desktop-portal`
 backend for folder dialogs. LibRaw is required for sensor RAW rendering. HEIF on
 Linux requires libheif and an HEVC decoder such as libde265. These codecs are
 loaded at runtime; see [format support](MEDIA.md).
+
+OS Trash on Linux uses GIO (`libgio-2.0.so.0`, provided by GLib). Install your
+distribution's GLib runtime; Fedora's RPM requires `glib2`. If the library or a
+source volume's Trash is unavailable, deletion reports an error and never falls
+back to permanent deletion. AppImages use the host's GIO service.
 
 After building, run the core checks in [Contributing](../CONTRIBUTING.md). On an
 X11/Xwayland desktop, check the feedback workflows against the native app with

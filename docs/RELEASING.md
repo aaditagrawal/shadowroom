@@ -49,8 +49,9 @@ The workflow produces:
 - Fedora 44 x86_64 RPM plus its self-contained, vendored source RPM. Compilation
   runs without container networking and DNF installs the resulting RPM in a
   disposable Fedora environment. This package uses system codecs and shared
-  libraries, separate from the portable Linux payload. No COPR repository is
-  created or submitted to by this workflow; see [Fedora distribution](FEDORA.md).
+  libraries, separate from the portable Linux payload. After GitHub publication,
+  the separate [Fedora COPR workflow](../.github/workflows/copr.yml) submits that
+  verified source RPM to the configured repository; see [Fedora distribution](FEDORA.md).
 - Public source archive, individual `.sha256` files, and a combined `SHA256SUMS`.
 
 Rust 1.99.1, uv 0.13.5 and action commit IDs are pinned in the workflow. Public
@@ -99,3 +100,30 @@ creates a draft preview release, uploads the archives, then publishes it. A fail
 upload leaves a draft which a rerun can resume. Already published release assets
 are refused rather than silently replaced; use a new version for changed bytes.
 Existing historical tags and releases remain unchanged.
+
+## Fedora COPR publication
+
+Native checks calls the reusable Fedora COPR workflow only after its tag publish
+job succeeds and `COPR_PROJECT` names `aaditagrawal/shadowroom`. This explicit call
+is necessary because releases created with `GITHUB_TOKEN` do not trigger a second
+release-event workflow. Owner-published release events and default-branch manual
+runs also support an already-published tag.
+[GitHub event behavior](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs).
+
+COPR receives only its specific API secret and read-only GitHub permissions.
+Its publisher runs from the default branch, verifies the exact release tag/SHA,
+required native job results, asset checksums, and SRPM source/lock provenance,
+then uploads the verified local SRPM for Fedora 44 x86_64 without build networking.
+The reusable call validates successful predecessor jobs instead of requiring its
+own still-running workflow to have a final conclusion. External/manual runs
+require a completed Native checks run whose seven source/package/publication
+jobs succeeded; a previous COPR-monitor failure does not block resuming it.
+
+Submissions are serialized. The publisher reuses a running/successful build for
+the same EVR and checks a reused source package against the release. It never
+automatically retries a POST or creates a second failed-EVR build. A 300-minute
+monitor timeout leaves the server build running; manually rerun Fedora COPR with
+the published tag to resume inspection. Inspect uncertain submission responses
+before retrying. Sanitized receipts include source/asset hashes, build ID, and
+state and are uploaded even when monitoring fails. See [Fedora](FEDORA.md) for
+credentials, package availability, DNF commands, and codec distinctions.

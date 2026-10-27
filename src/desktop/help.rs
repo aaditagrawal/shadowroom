@@ -24,7 +24,7 @@ impl Workspace {
             ),
             (
                 "2. Work on one set at a time",
-                "In Catalog, click a frame, Ctrl/Cmd-click to add frames, or Shift-click / Shift+Arrow to select a range. Review and Compare use only that selection. G returns to Catalog; Show full folder leaves the subset.",
+                "In Catalog, Enter or L opens Review across the folder at the hovered or active photo. Select multiple photos first to review only that set. Double-click always opens the full folder at that photo. Ctrl/Cmd-click adds frames; Shift-click / Shift+Arrow selects a range. G returns to Catalog; Show full folder leaves a subset.",
             ),
             (
                 "3. Cull, then rate your keepers",
@@ -47,8 +47,16 @@ impl Workspace {
                 "Labels are your own categories, not a universal meaning or rating standard. For example, red can mean retouch and green can mean delivery-ready. Keys 6–9 assign red, yellow, green and blue; the inspector also offers purple and clear. Export XMP explicitly when you want to carry decisions into another editor.",
             ),
             (
+                "Image actions",
+                "Right-click an image for Show in folder, Show in review, Survey burst, Compare, Pick, Reject, Reset and deletion actions. Right-click a selected Catalog photo to keep the batch, or another photo to target it instead. Up/Down and Enter choose an action; Escape closes the menu.",
+            ),
+            (
+                "Delete deliberately",
+                "Delete defaults to OS Trash. Preferences → Culling → Trash destination also offers in-app Trash, which keeps files in place and supports Restore or Undo. Shift+Delete requests permanent deletion. Check the photo/file counts, source folders and destination in every confirmation. Cancel is selected first: Enter cancels; Tab then Enter confirms. RAWs, companions and recognized sidecars are included. Restore OS-trashed files through your file manager. Trash failures never silently cause permanent deletion; partial failures are reported. Physical deletion is local-only and cannot be undone in Shadowroom.",
+            ),
+            (
                 "Your files and settings",
-                "Decisions are saved in the local catalog and can be undone. In-app Trash hides whole photo groups and is restorable; it does not delete originals. Export Picks copies picked assets to a separate destination; XMP export writes only to an explicit destination. Preferences stay unchanged until Apply; Cancel or Escape discards the draft.",
+                "Ratings, flags and labels are staged in the local catalog. Export Picks copies picked assets; XMP export writes only to an explicit destination. Preferences stay unchanged until you apply them: Apply commits and stays open; Apply & Close commits and closes. Cancel or Escape discards only the unapplied changes since the last Apply.",
             ),
         ] {
             content = content.child(

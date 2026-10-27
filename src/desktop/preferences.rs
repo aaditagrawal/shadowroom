@@ -10,6 +10,7 @@ pub(super) struct Draft {
     pub themes: Vec<Theme>,
     pub imports: Vec<String>,
     pub applying: bool,
+    close_after_apply: bool,
 }
 
 impl Workspace {
@@ -39,7 +40,17 @@ impl Workspace {
 
     fn finish_preferences(&mut self, patch: &Value) {
         match self.update_settings(patch) {
-            Ok(_) => self.close_preferences(),
+            Ok(_) => {
+                let close = self
+                    .preferences_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.close_after_apply);
+                if close {
+                    self.close_preferences();
+                } else {
+                    self.preferences_draft = Some(Draft::new(&self.settings, &self.themes));
+                }
+            }
             Err(error) => {
                 if let Some(draft) = &mut self.preferences_draft {
                     draft.applying = false;
@@ -49,7 +60,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn apply_preferences(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn apply_preferences(&mut self, close: bool, cx: &mut Context<Self>) {
         let Some(draft) = &mut self.preferences_draft else {
             return;
         };
@@ -58,9 +69,12 @@ impl Workspace {
             return;
         }
         if !draft.changed() {
-            self.close_preferences();
+            if close {
+                self.close_preferences();
+            }
             return;
         }
+        draft.close_after_apply = close;
         let patch = draft.patch();
         if draft.imports.is_empty() {
             self.finish_preferences(&patch);
@@ -153,6 +167,7 @@ impl Draft {
             themes: themes.to_vec(),
             imports: Vec::new(),
             applying: false,
+            close_after_apply: false,
         }
     }
 
@@ -199,6 +214,7 @@ impl Draft {
             Cmd::Memory(mb) => s.memory_budget_mb = *mb,
             Cmd::Disk(mb) => s.cache_budget_mb = *mb,
             Cmd::StartupGuide(enabled) => s.show_getting_started = *enabled,
+            Cmd::TrashMode(mode) => s.trash_mode = mode.clone(),
             Cmd::Theme(name) if self.themes.iter().any(|t| t.name == *name) => {
                 s.theme = name.clone();
                 s.extra.insert("theme_mode".into(), json!("manual"));

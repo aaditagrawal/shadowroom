@@ -230,7 +230,7 @@ def main():
         ids = [p["id"] for p in c.call("library_list", {"scope": "all"})["photos"]]
         subset = ids[4:9]
         c.call("select", {"ids": subset})
-        c.call("view", {"mode": "loupe"})
+        key("Return")
         state = run.state()
         s.require(
             state["filtered_count"] == 5 and set(state["review_subset"]) == set(subset),
@@ -271,7 +271,9 @@ def main():
         key("Right")
         c.call("view", {"mode": "loupe"})
         s.require(
-            run.state()["filtered_count"] == 1 and run.state()["selected_id"] == ids[1],
+            run.state()["filtered_count"] == 60
+            and run.state()["review_subset"] is None
+            and run.state()["selected_id"] == ids[1],
             "Catalog keyboard focus was not carried into Review",
         )
         c.call("view", {"mode": "grid"})
@@ -284,7 +286,7 @@ def main():
         )
         c.call("settings_set", {"settings": {"auto_advance": False}})
         record(
-            "single selection and keyboard navigation scope Review; automatic advance remains usable"
+            "single-image Review keeps full context; keyboard focus and automatic advance remain usable"
         )
 
         c.call("select", {"id": ids[0]})

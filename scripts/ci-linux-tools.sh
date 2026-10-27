@@ -4,7 +4,7 @@ set -euo pipefail
 tools=(mksquashfs desktop-file-validate Xvfb xauth dbus-run-session)
 tool_packages=(squashfs-tools desktop-file-utils xvfb xauth dbus-x11)
 runtime_packages=(libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxcb-shape0
-                  libxcb-xfixes0 libfontconfig1 libx11-xcb1)
+                  libxcb-xfixes0 libfontconfig1 libx11-xcb1 libglib2.0-0t64)
 missing=()
 for index in "${!tools[@]}"; do
     if ! command -v "${tools[index]}" >/dev/null; then

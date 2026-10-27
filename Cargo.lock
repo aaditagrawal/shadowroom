@@ -5225,7 +5225,7 @@ dependencies = [
 
 [[package]]
 name = "shadowroom"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5244,6 +5244,8 @@ dependencies = [
  "libc",
  "libloading",
  "memchr",
+ "objc2",
+ "objc2-foundation",
  "rand 0.9.5",
  "rusqlite",
  "serde",

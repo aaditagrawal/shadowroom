@@ -164,7 +164,20 @@ def main():
                 or (label.isdecimal() and row["text"].strip().lower() == label + "mb")
             ]
             if label == "Apply" and found:
-                # The explanatory footer also contains the word Apply.
+                # Pick the separate Apply button, before Apply & Close.
+                footer = max(int(row["top"]) for row in found)
+                found = [
+                    min(
+                        (
+                            row
+                            for row in found
+                            if abs(int(row["top"]) - footer) < 12
+                            and int(row["left"]) > 680
+                        ),
+                        key=lambda row: int(row["left"]),
+                    )
+                ]
+            elif label in {"OS", "In-app"} and found:
                 found = [max(found, key=lambda row: int(row["left"]))]
             elif (
                 label
@@ -217,7 +230,8 @@ def main():
             )
             key("Down")
             s.require(
-                run.state()["selection"] == [run.state()["selected_id"]], "Plain navigation did not collapse the range to its focused frame"
+                run.state()["selection"] == [run.state()["selected_id"]],
+                "Plain navigation did not collapse the range to its focused frame",
             )
             record(
                 f"row selection extends and shrinks with {stride} columns at {width}px"
@@ -279,9 +293,11 @@ def main():
             json.loads(settings_file.read_text())["interface_font"] == "DM Sans",
             "Apply did not save the chosen font",
         )
-        record("Apply activates and durably saves preferences")
+        s.require(run.state()["overlays"]["preferences"], "Apply closed preferences")
+        record(
+            "Apply activates and durably saves preferences while keeping the pane open"
+        )
 
-        c.call("command", {"name": "toggle_preferences"})
         click_text("Geist")
         key("Escape")
         s.require(
@@ -289,6 +305,38 @@ def main():
             "Escape committed the draft",
         )
         record("Escape discards preference edits")
+        c.call("command", {"name": "toggle_preferences"})
+        click_text("Culling")
+        click_text("In-app")
+        s.require(
+            c.call("settings_get")["trash_mode"] == "system",
+            "Trash destination changed before Apply",
+        )
+        click_text("Close")  # The explicit Apply & Close button.
+        s.require(
+            not run.state()["overlays"]["preferences"],
+            "Apply & Close kept preferences open",
+        )
+        s.wait_for(
+            lambda: run.state()["settings_persistence"]["state"] == "durable",
+            10,
+            "Trash destination saved",
+        )
+        s.require(
+            c.call("settings_get")["trash_mode"] == "in_app",
+            "Apply & Close lost Trash destination",
+        )
+        c.call("command", {"name": "toggle_preferences"})
+        click_text("OS")
+        click_text("Close")
+        s.require(
+            c.call("settings_get")["trash_mode"] == "system"
+            and not run.state()["overlays"]["preferences"],
+            "OS Trash preference or Apply & Close failed",
+        )
+        record(
+            "Trash destination is staged; Apply & Close commits and closes for both options"
+        )
         c.call("command", {"name": "toggle_preferences"})
         click_text("Import")
         click_text("ask")

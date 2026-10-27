@@ -28,6 +28,8 @@ pub struct Settings {
     pub cache_budget_mb: usize,
     pub memory_budget_mb: usize,
     pub show_getting_started: bool,
+    /// `system` moves originals to OS trash; `in_app` only hides catalog groups.
+    pub trash_mode: String,
     pub last_photo_id: Option<i64>,
     pub view_mode: String,
     pub show_inspector: bool,
@@ -69,6 +71,7 @@ impl Default for Settings {
             cache_budget_mb: 8192,
             memory_budget_mb: 0,
             show_getting_started: true,
+            trash_mode: "system".into(),
             last_photo_id: None,
             view_mode: "loupe".into(),
             show_inspector: true,
@@ -160,6 +163,9 @@ impl Settings {
         }
         self.cache_budget_mb = self.cache_budget_mb.clamp(128, 1_048_576);
         self.min_rating = self.min_rating.min(5);
+        if !["system", "in_app"].contains(&self.trash_mode.as_str()) {
+            self.trash_mode = "system".into();
+        }
         self.sidebar_width = self.sidebar_width.clamp(180, 480);
         self.inspector_width = self.inspector_width.clamp(240, 480);
         self.ingest_day_start_hour = self.ingest_day_start_hour.min(23);
@@ -309,6 +315,20 @@ fn atomic_write_with_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn older_preferences_default_to_system_trash_and_preserve_explicit_in_app_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, br#"{"auto_advance":false}"#).unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.trash_mode, "system");
+        settings.trash_mode = "in_app".into();
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().trash_mode, "in_app");
+        settings.trash_mode = "permanent".into();
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().trash_mode, "system");
+    }
     #[test]
     fn failed_directory_sync_is_reported_and_retry_preserves_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();

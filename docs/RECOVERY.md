@@ -50,9 +50,42 @@ This fallback requires successful local filesystem writes. It is not a journal
 for an unannounced process kill, power failure before the observer runs, or a
 machine with no writable storage. Normal quit waits for exports; forcibly ending
 the process or irrevocable OS termination can interrupt a copy. Export manifests
-and destination files should be checked after such an interruption. Originals
-remain read-only. Undo/redo history is limited to the current session; committed
+and destination files should be checked after such an interruption. Indexing,
+rating, copying, and exporting leave original bytes unchanged. Explicitly
+confirmed file deletion is a separate operation, described below. Undo/redo
+history is limited to the current session; committed
 decisions and the selected review position survive restart.
+
+## Explicit file deletion
+
+Delete defaults to **OS Trash**; **Preferences → Culling → Trash destination**
+also offers **In-app**, which leaves files in place. In-app Trash remains a
+normal catalog decision with acknowledgement, retry, session Undo/Redo, and
+decision-journal recovery. The in-app Trash collection does not display the
+operating system's Trash contents.
+
+OS Trash and Shift+Delete permanent deletion use a frozen plan confirmed in the
+UI, with photo/file counts, source locations, and destination. They wait for
+pending decisions/recovery and conflicting background work. They are **not
+decision-journal entries** and cannot be reversed by replaying a decision or
+pressing Undo. A successful file removal clears session decision history. Restore
+OS-trashed files through the operating system; permanent deletion has no
+Shadowroom recovery path. After OS restoration, refresh or reopen the folder;
+reindexing does not recover unexported decisions from a deleted catalog record.
+Use explicit XMP export for a portable copy of decisions, or in-app Trash to
+retain the existing catalog work. MCP's `trash` tool remains app-only.
+
+Each file and parent folder is rechecked against the confirmed plan. Operations
+stop on failure, with no permanent-deletion fallback for unavailable OS Trash.
+Some files may already have moved or been removed; the visible error and
+`workspace_state.deletion.report` distinguish completed, failed, and not-attempted
+members. Catalog reconciliation only follows completed removals. If that step
+fails, refresh the source folder as directed by the error. Normal quit waits for
+an executing deletion to finish, but an unannounced process kill or power loss
+can interrupt it; inspect source folders and OS Trash before continuing. See
+[Trash, deletion, and exact duplicates](DUPLICATES_TRASH.md) for file scope.
+
+## Session history
 
 Session undo retains complete commands, with at most 1,000 undo entries and a
 64 MiB target for the capacities of stored before/after decision snapshots across

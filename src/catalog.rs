@@ -238,6 +238,93 @@ impl Catalog {
         }
         self.update(id, "rating", &rating.to_string())
     }
+    /// Reconcile only paths actually removed by an explicit filesystem action.
+    /// A partial photo-group operation may leave its original in place: retain
+    /// that record and its decisions, but retire the missing companion pointer.
+    /// Filesystem operations must finish before this transaction begins.
+    pub fn reconcile_deleted_files(&self, paths: &[PathBuf]) -> Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let mut removed = HashSet::new();
+        for path in paths {
+            match fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("Check removed photo path"),
+                Ok(_) => bail!(
+                    "A file reappeared at {}; its catalog record was retained",
+                    path.display()
+                ),
+            }
+            removed.insert(path.clone());
+        }
+        let _ingest = self
+            .ingest_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Ingest lock poisoned"))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
+        let transaction = connection.transaction()?;
+        let mut original_ids = Vec::new();
+        let mut companions = Vec::new();
+        {
+            // Both branches use the existing path/companion indices, so a small
+            // deletion does not deserialize an entire large catalog.
+            let mut statement = transaction.prepare("SELECT id,path,data FROM photos WHERE source_device IS NULL AND (path=?1 OR json_extract(data,'$.companion_path')=?1)")?;
+            let mut seen = HashSet::new();
+            for removed_path in &removed {
+                let mut rows = statement.query([removed_path.to_string_lossy()])?;
+                while let Some(row) = rows.next()? {
+                    let id: i64 = row.get(0)?;
+                    if !seen.insert(id) {
+                        continue;
+                    }
+                    let path = PathBuf::from(row.get::<_, String>(1)?);
+                    if removed.contains(&path) {
+                        original_ids.push(id);
+                        continue;
+                    }
+                    let mut metadata: serde_json::Value =
+                        serde_json::from_str(row.get_ref(2)?.as_str()?)?;
+                    let companion = metadata
+                        .get("companion_path")
+                        .and_then(serde_json::Value::as_str);
+                    if companion.is_some_and(|path| removed.contains(Path::new(path))) {
+                        let object = metadata
+                            .as_object_mut()
+                            .context("Photo metadata is not an object")?;
+                        object.insert("companion_path".into(), serde_json::Value::Null);
+                        object.insert("companion_size_bytes".into(), 0.into());
+                        object.insert("companion_modified_at".into(), 0.into());
+                        object.insert("metadata_version".into(), 0.into());
+                        companions.push((id, serde_json::to_string(&metadata)?));
+                    }
+                }
+            }
+        }
+        for id in &original_ids {
+            transaction.execute(
+                "DELETE FROM photos WHERE id=?1 AND source_device IS NULL",
+                [id],
+            )?;
+        }
+        for (id, data) in companions {
+            transaction.execute(
+                "UPDATE photos SET data=?1 WHERE id=?2 AND source_device IS NULL",
+                params![data, id],
+            )?;
+        }
+        for path in removed {
+            transaction.execute(
+                "DELETE FROM exact_hashes WHERE path=?1",
+                [path.to_string_lossy()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(original_ids.len())
+    }
     pub fn set_flag(&self, id: i64, flag: Flag) -> Result<()> {
         self.update(id, "flag", flag.as_str())
     }
@@ -1240,6 +1327,68 @@ fn write_unique(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn file_deletion_reconciliation_preserves_surviving_decisions_and_retires_missing_companions() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let raw = root.join("a.nef");
+        let jpeg = root.join("a.jpg");
+        let other = root.join("b.jpg");
+        for path in [&raw, &jpeg, &other] {
+            fs::write(path, b"disposable fixture").unwrap();
+        }
+        let catalog = Catalog::open(&root.join("catalog.sqlite3")).unwrap();
+        catalog
+            .upsert_photos(&[
+                Photo {
+                    path: raw.clone(),
+                    companion_path: Some(jpeg.clone()),
+                    companion_size_bytes: 18,
+                    ..Default::default()
+                },
+                Photo {
+                    path: other.clone(),
+                    ..Default::default()
+                },
+            ])
+            .unwrap();
+        let before = catalog.photos().unwrap();
+        let raw_id = before.iter().find(|photo| photo.path == raw).unwrap().id;
+        catalog
+            .set_decisions(&[PhotoDecision {
+                id: raw_id,
+                rating: 4,
+                flag: Flag::Pick,
+                label: ColorLabel::Blue,
+                trashed: true,
+            }])
+            .unwrap();
+        fs::remove_file(&jpeg).unwrap();
+        assert_eq!(
+            catalog
+                .reconcile_deleted_files(std::slice::from_ref(&jpeg))
+                .unwrap(),
+            0
+        );
+        let remaining = catalog.photos().unwrap();
+        let photo = remaining.iter().find(|photo| photo.id == raw_id).unwrap();
+        assert!(photo.companion_path.is_none());
+        assert_eq!(photo.companion_size_bytes, 0);
+        assert_eq!(photo.rating, 4);
+        assert_eq!(photo.flag, Flag::Pick);
+        assert_eq!(photo.label, ColorLabel::Blue);
+        assert!(photo.trashed);
+        fs::remove_file(&raw).unwrap();
+        assert_eq!(catalog.reconcile_deleted_files(&[raw]).unwrap(), 1);
+        assert_eq!(catalog.photos().unwrap().len(), 1);
+        assert_eq!(catalog.photos().unwrap()[0].path, other);
+        assert!(
+            catalog
+                .reconcile_deleted_files(std::slice::from_ref(&other))
+                .is_err()
+        );
+        assert_eq!(catalog.photos().unwrap().len(), 1);
+    }
     #[test]
     #[ignore]
     fn catalog_performance_harness() {

@@ -36,7 +36,7 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `rate` | `rating`, `ids?` | Set 0–5 stars; zero clears stars |
 | `flag` | `flag`, `ids?` | Set `none`, `pick`, or `reject` |
 | `label` | `label`, `ids?` | Set `none`, `red`, `yellow`, `green`, `blue`, or `purple` |
-| `trash` | `trashed`, `ids?` | Restorable app-only Trash; false restores. Original files stay untouched; inspect decision persistence. |
+| `trash` | `trashed`, `ids?` | Always restorable app-only Trash, independent of UI Trash preference; false restores. Never moves/deletes files; inspect decision persistence. |
 | `duplicates` | `action`, `ids?` | `scan`, `cancel`, or `status`; omitted scan IDs mean all nontrashed catalog photos. IDs are valid only for scan. |
 | `undo` / `redo` | `{}` | Restore the app's decision history |
 | `view` | `mode`, `panel?` | `grid`, `loupe`, `compare`, or `survey`; optional photo panel `review` or `info` |
@@ -68,12 +68,33 @@ snapshot means the diagnostic lock was busy; retry. The history is session-local
 and survives successful retries, so it is evidence of earlier failures rather
 than the current availability of a photograph.
 
-`settings_set.settings` accepts the application's known preferences, including `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `show_getting_started`, `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Memory accepts **0 for Auto** or 64–65,536 MiB; local disk cache accepts 128–1,048,576 MiB. Auto uses a quarter of physical RAM bounded to 512 MiB–4 GiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request. The explicit `settings_set` tool commits immediately; the Preferences dialog keeps a separate draft until Apply.
+`settings_set.settings` accepts the application's known preferences, including `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `show_getting_started`, `trash_mode`, `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Memory accepts **0 for Auto** or 64–65,536 MiB; local disk cache accepts 128–1,048,576 MiB. Auto uses a quarter of physical RAM bounded to 512 MiB–4 GiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. `trash_mode` is `system` (OS Trash, default) or `in_app`; changing it does not move files or change the app-only MCP `trash` tool. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request. The explicit `settings_set` tool commits immediately; the Preferences dialog keeps a separate draft until Apply.
 
-Opening Review or Compare from Catalog uses its current selection as a navigation
-subset and clears the batch-edit selection, so a decision affects the current
-frame. `workspace_state.review_subset` exposes that set. Returning to Grid restores
-the Catalog selection; `command(name=show_full_folder)` releases the subset.
+Opening Review or Compare from Catalog constrains navigation only when two or
+more photos are selected. A singleton keeps the current collection available.
+The batch-edit selection is cleared on entry, so a decision affects the current
+frame. Automation uses its explicit selection, independently of mouse hover.
+`workspace_state.review_subset` exposes an active subset. Returning to Grid
+restores the Catalog selection; `command(name=show_full_folder)` releases the
+subset. The UI's double-click and Show in review context action always open the
+full current collection.
+
+The UI defaults to OS Trash and offers optional in-app Trash in Culling
+preferences. For compatibility, the MCP `trash` tool **always changes only the
+catalog decision**; it never uses OS Trash or permanent deletion. Physical
+deletion and its confirmation are available only in the app, and remote photos
+cannot be physically deleted. There is no allowlisted `command` to confirm or
+execute deletion. `workspace_state.deletion` exposes whether a confirmation or
+operation is open, its frozen photo/file counts, sources, destination, mode, and
+the last per-file outcome report. While it is open, mutations are refused; close
+or finish it in the app before continuing. OS-trashed files must be restored
+through the OS file manager, and physical deletion cannot be undone by MCP
+`undo`.
+
+Preferences **Apply** commits and keeps the pane open; **Apply & Close** commits
+and closes it. Cancel/Escape only discards unapplied changes. These UI semantics
+do not change the explicit, immediate `settings_set` behavior or XMP export
+policy.
 
 Import/export acceptance is asynchronous. Read `workspace_state` until the job completes and pending saves are clear; an accepted job is not a claim that files are already indexed or copied. Decision tools follow the desktop's save-status model. Tool timeouts are not a rollback guarantee: inspect workspace state before retrying non-idempotent actions such as navigation, undo, or export.
 

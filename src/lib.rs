@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod controls;
+pub mod deletion;
 mod fsutil;
 pub mod grouping;
 pub mod indexer;
