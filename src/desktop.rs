@@ -4222,7 +4222,9 @@ impl Workspace {
         active: bool,
         cx: &gpui::Context<Self>,
     ) -> Stateful<Div> {
-        let hover = self.hover_bg();
+        // Controls also appear on elevated surfaces; a ghost hover can match
+        // the dialog background exactly. Use the filled control hover there.
+        let hover = self.c("element.hover", "#303030");
         let icon_only = label.is_empty();
         div()
             .id(id)
@@ -4236,8 +4238,14 @@ impl Workspace {
             .when(!icon_only, |s| s.px(px(space::SM)))
             .cursor_pointer()
             .occlude()
-            .when(active, |s| s.bg(self.selected_bg()))
-            .when(!active, |s| s.hover(move |s| s.bg(hover)))
+            // Reserve the outline so keyboard selection never shifts layout.
+            .border_1()
+            .border_color(transparent_black())
+            .when(active, |s| {
+                s.bg(self.selected_bg())
+                    .border_color(self.c("border.focused", "#5b9bd5"))
+            })
+            .hover(move |s| s.bg(hover))
             .when(!glyph.is_empty(), |s| {
                 s.child(icon(
                     glyph,
@@ -8364,6 +8372,7 @@ impl Workspace {
         }
         row.into_any_element()
     }
+    /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         let s = self.preference_settings();
         let fonts = self.choices(
@@ -8831,7 +8840,7 @@ impl Workspace {
                                         "Apply",
                                         "check",
                                         Cmd::ApplyPreferences,
-                                        true,
+                                        false,
                                         cx,
                                     ))
                                     .child(self.button(
