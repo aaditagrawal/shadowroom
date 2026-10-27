@@ -11,21 +11,25 @@ The initial target is Fedora 44 x86_64. Fedora 45 x86_64 is also an available
 COPR chroot and should be validated before advertising support. These are native
 Fedora RPMs, separate from the portable glibc 2.28 AppImage and tarball.
 
-## Current publication state
+## Fedora repository
 
-As checked on October 27, 2026, the existing
-[aaditagrawal/typsmthng-desktop COPR project](https://copr.fedorainfracloud.org/coprs/aaditagrawal/typsmthng-desktop/)
-publishes the RPM named `typsmthng` for Fedora 44 x86_64. Its successful
-[build 11207495](https://copr.fedorainfracloud.org/coprs/build/11207495/)
-contains version 0.1.11-1. Its GitHub release workflow prepares an immutable
-source RPM and submits it after the release passes verification.
+The [aaditagrawal/shadowroom COPR project](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/)
+is configured for Fedora 44 x86_64 with binary-build networking disabled. Its
+public Builds/Packages pages show the current package version and publication
+status. GitHub release publication precedes the COPR compilation: a GitHub
+release alone does not mean the Fedora repository build has finished.
 
-A Shadowroom COPR project has not been created. The Shadowroom GitHub repository
-also has no `COPR_PROJECT` variable or `COPR_CONFIG` secret configured. The
-typsmthng repository has both, but GitHub does not reveal stored secret values;
-its encrypted `COPR_CONFIG` cannot be copied through the repository API. Obtain
-or securely provision a COPR API configuration separately when publication is
-authorized. Do not put it in source files, logs, release assets, or chat.
+After a successful COPR build, install and receive updates with:
+
+```sh
+sudo dnf copr enable aaditagrawal/shadowroom
+sudo dnf install shadowroom
+sudo dnf upgrade shadowroom
+```
+
+COPR builds/signs a third-party repository; this is not inclusion in Fedora's
+official repositories. Fedora 44 x86_64 is the validated target. Do not assume a
+Fedora 45 build is available merely because COPR offers that chroot.
 
 ## Build the source RPM
 
@@ -79,7 +83,7 @@ release. This recipe disables debuginfo and debugsource packages.
 For a downloaded, verified GitHub release RPM:
 
 ```sh
-sudo dnf install ./shadowroom-0.1.1-1.fc44.x86_64.rpm
+sudo dnf install ./shadowroom-0.1.2-1.fc44.x86_64.rpm
 ```
 
 A directly downloaded RPM is installed locally; it does not configure a package
@@ -87,39 +91,55 @@ repository or provide automatic release updates. Match the package to its Fedora
 target and verify the release checksum. GitHub release RPMs are not claimed to
 have a Fedora/COPR signature.
 
-## Configure COPR when publication is authorized
+## Release automation and credentials
 
-Follow [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
-to use the owner's Fedora account and API configuration. The following commands
-describe future setup; preparation scripts do not execute them:
+The [Fedora COPR workflow](../.github/workflows/copr.yml) runs after Native checks
+publish a verified version tag. It also accepts an owner's published-release
+event or a manual **already-published tag** from the default branch. It reuses the
+release's self-contained SRPM rather than rebuilding source preparation against
+mutable dependency state. Only Fedora 44 x86_64 is submitted.
 
-```sh
-copr-cli create shadowroom --chroot fedora-44-x86_64
-copr-cli build aaditagrawal/shadowroom build/rpm-sources/shadowroom-*.src.rpm
-```
-
-Create the project with networking disabled for binary RPM builds. Start with
-the chroot validated by CI; enable additional chroots after testing. A future
-release submission job can use:
+The repository uses:
 
 | GitHub repository setting | Value |
 | --- | --- |
 | Variable `COPR_PROJECT` | `aaditagrawal/shadowroom` |
 | Secret `COPR_CONFIG` | Complete COPR API INI configuration, supplied securely |
 
-Submission should run only after verified publication of the exact same source
-commit, and remain disabled when the configuration is absent. Write credentials
-to a temporary mode-600 file, remove it after submission, and do not expose them
-to pull-request jobs. COPR builds and signs its repository from submitted SRPMs;
-this is a third-party repository rather than inclusion in Fedora's official repos.
+The project and repository settings are provisioned separately from the build
+workflow. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
+describes obtaining API configuration. Secrets belong in GitHub repository
+secrets, never source files, logs, release assets, or chat. The publisher validates
+the Fedora HTTPS endpoint/owner, writes a temporary mode-600 configuration, and
+removes it immediately after submission. Pull requests never execute this job or
+receive its credentials; implementation is checked out from the default branch.
 
-After a successful future COPR build, installation and updates become:
+Before submitting, [copr-publish.py](../scripts/copr-publish.py) verifies:
 
-```sh
-sudo dnf copr enable aaditagrawal/shadowroom
-sudo dnf install shadowroom
-sudo dnf upgrade shadowroom
-```
+- A published numeric release tag resolves to a commit on the default branch,
+  and Native checks ran against that exact tag/SHA. Both core jobs, Linux,
+  macOS, Fedora, source packaging, and GitHub publication must have succeeded.
+- The release SRPM matches both `SHA256SUMS` and GitHub's asset SHA-256 digest.
+  Its package identity, embedded source commit, Cargo.lock, and vendor provenance
+  match the released source. Archive contents are inspected without executing or
+  extracting them into the project.
+- The COPR project has the validated chroot and disabled build networking.
+  Public build history contains no competing build for the same version/release
+  and no unidentified active upload.
+
+The publisher uploads the verified local SRPM bytes with no automatic POST retry,
+records the build ID, and waits for that build. Existing running or successful
+builds for the same EVR are reused; reused successful source archives must match
+the release. A failed/cancelled build or conflicting EVR requires operator review
+instead of silently creating a duplicate. A timeout does not cancel the build:
+rerun **Fedora COPR** for that published tag to resume. Submission-response errors
+can still mean server acceptance; inspect the project before retrying.
+
+The sanitized publication receipt is retained as an Actions artifact; credentials
+and downloaded source payloads are excluded. The isolated publishing toolchain
+pins `copr-cli==2.6`, `copr==2.7`, `rpmfile==2.2.1`, and `zstandard==0.25.0`, using
+uv. This follows the existing typsmthng release route while adding checksum,
+source-provenance, and duplicate-submission checks.
 
 ## Runtime codecs
 

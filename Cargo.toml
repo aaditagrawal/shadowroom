@@ -1,6 +1,6 @@
 [package]
 name = "shadowroom"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A fast, keyboard-first, non-destructive photo culling workspace"
 license = "Apache-2.0"
@@ -40,6 +40,12 @@ tiff = "0.11.3"
 # statvfs for preflight filesystem capacity.
 libc = "0.2"
 gpui = { version = "0.2.2", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Use Foundation's typed ownership/out-parameter bindings for native OS Trash.
+# Both versions already belong to GPUI's pinned dependency graph.
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -9,7 +9,8 @@
 | [Keyboard and controllers](CONTROLS.md) | Shortcuts and Creator Micro mapping |
 | [Themes and preferences](THEMES.md) | Fonts, Zed themes, live reload, and budgets |
 | [Grouping](GROUPING.md) | Time, Visual, and Burst matching |
-| [Trash and duplicates](DUPLICATES_TRASH.md) | Restorable catalog Trash and exact-byte matching |
+| [Trash and duplicates](DUPLICATES_TRASH.md) | OS/in-app Trash, confirmed permanent deletion, and exact-byte matching |
+| [darktable comparison](DARKTABLE.md) | Source-backed review, Trash, preferences, and XMP design reference |
 | [Media](MEDIA.md) | RAW/HEIF/JXL/TIFF support, color, alpha, and caches |
 | [Recovery](RECOVERY.md) | Pending saves, retries, shutdown, and journals |
 | [Remote access](NETWORK.md) | Headless agent, SSH, protocol, and offline previews |

@@ -7,7 +7,7 @@ use crate::{
     model::{Photo, PhotoDecision},
     settings::Settings,
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -53,6 +53,8 @@ pub enum IoCommand {
     },
     CancelDuplicates,
     Decisions(Vec<PhotoDecision>),
+    /// A frozen, explicitly confirmed local filesystem deletion plan.
+    DeleteFiles(crate::deletion::DeletionPlan),
     Hash(i64, u64),
     Settings(Settings),
     Export(PathBuf, bool, Vec<i64>),
@@ -87,6 +89,8 @@ pub enum IoEvent {
     Saved,
     /// One failed Decisions command; clears one pending-save indication too.
     SaveFailed(String),
+    /// Terminal filesystem result, including partial failures and reconciliation.
+    FilesDeleted(crate::deletion::DeletionReport),
     /// Exact normalized snapshot successfully persisted by the preferences writer.
     PreferencesSaved(Settings),
     /// Pending preferences remain queued for retry; this never acknowledges durability.
@@ -449,6 +453,53 @@ fn run_catalog(
                             IoEvent::SaveFailed(format!("Decision was not saved: {error:#}")),
                         ),
                     }
+                }
+                IoCommand::DeleteFiles(plan) => {
+                    let ready = (|| -> Result<()> {
+                        anyhow::ensure!(shutdown.is_empty(), "The app is closing");
+                        anyhow::ensure!(
+                            job.is_none() && roots.is_empty(),
+                            "Wait for folder indexing before deleting files"
+                        );
+                        anyhow::ensure!(
+                            !ingest.is_busy(),
+                            "Wait for import work (including paused imports) before deleting files"
+                        );
+                        anyhow::ensure!(
+                            active_exports == 0,
+                            "Wait for exports before deleting files"
+                        );
+                        anyhow::ensure!(
+                            duplicate_job.is_none(),
+                            "Wait for duplicate scanning before deleting files"
+                        );
+                        flush_hashes(&catalog, &mut pending_hashes)?;
+                        flush_preferences(&preferences_writer, &mut pending_settings, &events)?;
+                        catalog
+                            .flush()
+                            .context("Save catalog before deleting files")?;
+                        Ok(())
+                    })();
+                    let mut report = match ready {
+                        Ok(()) => plan.execute(),
+                        Err(error) => plan.failure_report(format!("No files changed: {error:#}")),
+                    };
+                    let removed = report.removed_paths();
+                    if !removed.is_empty() {
+                        if let Err(error) =
+                            catalog.reconcile_deleted_files(&report.removed_catalog_paths())
+                        {
+                            report.catalog_error = Some(format!(
+                                "Files were removed, but catalog reconciliation failed: {error:#}. Refresh the source folder before continuing."
+                            ));
+                        }
+                        // An old pre-delete snapshot must not resurrect a removed
+                        // file or companion while the current snapshot publishes.
+                        let _ = take(&photos);
+                        refresh_needed = true;
+                        last_snapshot = Instant::now() - SNAPSHOT_INTERVAL;
+                    }
+                    reliable(&events, IoEvent::FilesDeleted(report));
                 }
                 IoCommand::Hash(id, hash) => {
                     if pending_hashes.is_empty() {
@@ -1139,6 +1190,101 @@ impl GroupWorker {
 mod tests {
     use super::*;
     use crate::model::{ColorLabel, Flag};
+
+    fn deletion_result(events: &Receiver<IoEvent>) -> crate::deletion::DeletionReport {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if let IoEvent::FilesDeleted(report) = event {
+                return report;
+            }
+        }
+    }
+    #[test]
+    fn confirmed_file_deletion_waits_for_prior_decisions_and_reconciles_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("fixture.jpg");
+        std::fs::write(&path, b"disposable fixture").unwrap();
+        let catalog = Catalog::open(&root.join("catalog.sqlite3")).unwrap();
+        catalog
+            .upsert_photos(&[Photo {
+                path: path.clone(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let photos = catalog.photos().unwrap();
+        let plan = crate::deletion::DeletionPlan::prepare(
+            &photos,
+            crate::deletion::DeletionMode::Permanent,
+        )
+        .unwrap();
+        let (commands, events, _, _) = start_io(root.clone(), Settings::default(), None);
+        commands
+            .send(IoCommand::Decisions(vec![decision(photos[0].id, 4)]))
+            .unwrap();
+        commands.send(IoCommand::DeleteFiles(plan)).unwrap();
+        let report = deletion_result(&events);
+        assert!(report.is_success(), "{report:?}");
+        assert_eq!(report.completed_file_count(), 1);
+        assert!(!path.exists());
+        assert!(catalog.photos().unwrap().is_empty());
+        shutdown(&commands);
+    }
+    #[test]
+    fn failed_durability_barrier_leaves_every_file_and_catalog_record_untouched() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("fixture.jpg");
+        std::fs::write(&path, b"disposable fixture").unwrap();
+        let catalog = Catalog::open(&root.join("catalog.sqlite3")).unwrap();
+        catalog
+            .upsert_photos(&[Photo {
+                path: path.clone(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let plan = crate::deletion::DeletionPlan::prepare(
+            &catalog.photos().unwrap(),
+            crate::deletion::DeletionMode::Permanent,
+        )
+        .unwrap();
+        let failing = Arc::new(AtomicBool::new(true));
+        let writer_failing = failing.clone();
+        let (commands, events, _, _) = start_io_with_exporter(
+            root,
+            Settings::default(),
+            None,
+            Arc::new(ExportPlan::execute),
+            Arc::new(move |_| {
+                anyhow::ensure!(
+                    !writer_failing.load(Ordering::Acquire),
+                    "fixture preferences storage failed"
+                );
+                Ok(())
+            }),
+        );
+        commands
+            .send(IoCommand::Settings(Settings::default()))
+            .unwrap();
+        commands.send(IoCommand::DeleteFiles(plan)).unwrap();
+        let report = deletion_result(&events);
+        assert!(!report.is_success());
+        assert_eq!(report.completed_file_count(), 0);
+        assert!(
+            report
+                .error
+                .unwrap()
+                .contains("fixture preferences storage failed")
+        );
+        assert!(path.exists());
+        assert_eq!(catalog.photos().unwrap().len(), 1);
+        failing.store(false, Ordering::Release);
+        shutdown(&commands);
+    }
 
     fn decision(id: i64, rating: u8) -> PhotoDecision {
         PhotoDecision {

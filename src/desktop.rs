@@ -1,7 +1,9 @@
+mod deletion_ui;
 mod help;
 mod ingest_ui;
 mod layout;
 mod preferences;
+mod review_actions;
 mod scrollbar;
 mod text_input;
 use anyhow::{Context as _, Result};
@@ -165,6 +167,7 @@ enum Cmd {
     Palette,
     Preferences,
     ApplyPreferences,
+    ApplyClosePreferences,
     Appearance,
     PreferencesSection(PreferencesSection),
     Close,
@@ -180,6 +183,7 @@ enum Cmd {
     Undo,
     Redo,
     View(ViewMode),
+    ReviewSelection,
     Zoom,
     ZoomTo(f32),
     ZoomStep(i8),
@@ -224,6 +228,10 @@ enum Cmd {
     Unreviewed(isize),
     ResolveBurst,
     Trash(bool),
+    PermanentDelete,
+    ConfirmDelete,
+    CancelDelete,
+    TrashMode(String),
     ScanDuplicates,
     CancelDuplicates,
     ShowDuplicates,
@@ -614,6 +622,9 @@ pub struct Workspace {
     selection_anchor: Option<i64>,
     review_subset: Option<HashSet<i64>>,
     review_folder: Option<String>,
+    review_selection: Option<HashSet<i64>>,
+    catalog_hover: Option<i64>,
+    image_context: Option<review_actions::ImageContextMenu>,
     analysis_cursor: usize,
     analysis_pending: HashSet<i64>,
     analysis_errors: usize,
@@ -662,6 +673,7 @@ pub struct Workspace {
     preferences: bool,
     preferences_draft: Option<preferences::Draft>,
     preferences_section: PreferencesSection,
+    deletion: deletion_ui::State,
     getting_started: bool,
     text_edit: text_input::Edit,
     scroll_drag: Option<scrollbar::Drag>,
@@ -862,6 +874,9 @@ impl Workspace {
             selection_anchor: None,
             review_subset: None,
             review_folder: None,
+            review_selection: None,
+            catalog_hover: None,
+            image_context: None,
             filter,
             min_rating,
             scope: None,
@@ -904,6 +919,7 @@ impl Workspace {
             preferences: false,
             preferences_draft: None,
             preferences_section: PreferencesSection::default(),
+            deletion: deletion_ui::State::default(),
             getting_started,
             text_edit: text_input::Edit::default(),
             scroll_drag: None,
@@ -1226,6 +1242,12 @@ impl Workspace {
         self.pending_saves = self.awaiting.len();
     }
     fn request_quit(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.deletion.executing() {
+            self.status = "Wait for confirmed file deletion to finish before closing".into();
+            cx.notify();
+            return;
+        }
+        self.deletion.cancel();
         if self
             .preferences_draft
             .as_ref()
@@ -1380,6 +1402,7 @@ impl Workspace {
                 IoEvent::Drives(d) => self.drives = d,
                 IoEvent::Status(s) => self.status = s,
                 IoEvent::Error(s) => self.error = Some(s),
+                IoEvent::FilesDeleted(report) => self.deletion_finished(report),
                 IoEvent::Busy(b) => self.busy = b,
                 IoEvent::Saved => {
                     self.awaiting.pop_front();
@@ -1905,6 +1928,7 @@ impl Workspace {
         }
     }
     fn navigate(&mut self, delta: isize, cx: &mut gpui::Context<Self>) {
+        self.catalog_hover = None;
         if self.filtered.is_empty() {
             return;
         }
@@ -2239,6 +2263,15 @@ impl Workspace {
     }
 
     fn execute(&mut self, cmd: Cmd, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.deletion.open()
+            && !matches!(
+                cmd,
+                Cmd::ConfirmDelete | Cmd::CancelDelete | Cmd::Close | Cmd::Quit
+            )
+        {
+            return;
+        }
+        self.image_context = None;
         let resize_focus = match &cmd {
             Cmd::ResizeDock(side) => Some(*side),
             _ => None,
@@ -2284,6 +2317,11 @@ impl Workspace {
         }
         match cmd {
             Cmd::Trash(trashed) => {
+                if trashed {
+                    self.request_deletion(false, cx);
+                    cx.notify();
+                    return;
+                }
                 let ids: Vec<i64> = if self.multi.is_empty() {
                     self.review_photo().map(|p| p.id).into_iter().collect()
                 } else {
@@ -2293,6 +2331,9 @@ impl Workspace {
                     self.error = Some(error);
                 }
             }
+            Cmd::PermanentDelete => self.request_deletion(true, cx),
+            Cmd::ConfirmDelete => self.confirm_deletion(cx),
+            Cmd::CancelDelete => self.deletion.cancel(),
             Cmd::ScanDuplicates => {
                 let ids: Vec<_> = self
                     .photos
@@ -2424,7 +2465,8 @@ impl Workspace {
                 }
                 self.palette = false;
             }
-            Cmd::ApplyPreferences => self.apply_preferences(cx),
+            Cmd::ApplyPreferences => self.apply_preferences(false, cx),
+            Cmd::ApplyClosePreferences => self.apply_preferences(true, cx),
             Cmd::GettingStarted => {
                 self.close_preferences();
                 self.palette = false;
@@ -2434,6 +2476,11 @@ impl Workspace {
                 self.settings.show_getting_started = enabled;
                 self.save_settings();
             }
+            Cmd::TrashMode(mode) => {
+                self.settings.trash_mode = mode;
+                self.settings.normalize();
+                self.save_settings();
+            }
             Cmd::Appearance => {
                 self.open_preferences();
                 self.preferences_section = PreferencesSection::Appearance;
@@ -2441,6 +2488,11 @@ impl Workspace {
             }
             Cmd::PreferencesSection(section) => self.preferences_section = section,
             Cmd::Close => {
+                if self.deletion.open() {
+                    self.deletion.cancel();
+                    cx.notify();
+                    return;
+                }
                 if self.getting_started {
                     self.getting_started = false;
                     cx.notify();
@@ -2500,55 +2552,8 @@ impl Workspace {
                     }
                 }
             }
-            Cmd::View(mode) => {
-                self.rating_filter_open = false;
-                let keep = self.selected_id();
-                if self.mode == ViewMode::Grid && mode != ViewMode::Grid {
-                    self.review_subset = (!self.multi.is_empty()).then(|| self.multi.clone());
-                    self.review_folder = self.scope.clone();
-                    self.multi.clear();
-                } else if mode == ViewMode::Grid {
-                    if self.review_folder == self.scope {
-                        if let Some(ids) = self.review_subset.take() {
-                            self.multi = ids;
-                        }
-                    }
-                    self.review_subset = None;
-                }
-                self.mode = mode;
-                self.rebuild(keep);
-                if self.review_subset.is_some()
-                    && self
-                        .reference
-                        .is_some_and(|id| self.visible_position(id).is_none())
-                {
-                    self.reference = None;
-                }
-                if mode == ViewMode::Compare {
-                    if self.filtered.len() < 2 {
-                        self.reference = None;
-                        self.status = "Select at least two photographs to compare".into();
-                    } else {
-                        if self.reference.is_none() {
-                            self.reference = self.selected_id();
-                        }
-                        if self.reference == self.selected_id() {
-                            self.navigate(
-                                if self.selected + 1 < self.filtered.len() {
-                                    1
-                                } else {
-                                    -1
-                                },
-                                cx,
-                            );
-                        }
-                    }
-                }
-                self.settings.view_mode = format!("{mode:?}").to_lowercase();
-                self.save_settings();
-                self.media.cancel_pending();
-                self.read_ahead();
-            }
+            Cmd::View(mode) => self.change_photo_view(mode, mode == ViewMode::Compare, cx),
+            Cmd::ReviewSelection => self.activate_review(cx),
             Cmd::ClearReviewSubset => {
                 self.review_subset = None;
                 self.rebuild(self.selected_id());
@@ -3015,10 +3020,17 @@ impl Workspace {
             ),
             item(
                 "Move to Trash",
-                "Review · in-app only, originals stay in place",
+                "Review · confirm configured Trash destination",
                 "Delete",
                 "trash",
                 Cmd::Trash(true),
+            ),
+            item(
+                "Delete Permanently…",
+                "File · confirm photo/file counts and original locations",
+                "Shift Delete",
+                "trash",
+                Cmd::PermanentDelete,
             ),
             item(
                 "Restore from Trash",
@@ -3487,6 +3499,9 @@ impl Workspace {
         })
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.deletion_key(event, window, cx) {
+            return;
+        }
         self.reconcile_rating_filter();
         let key = event.keystroke.key.as_str();
         if key == "escape" && self.cancel_ingest_resize() {
@@ -3502,6 +3517,10 @@ impl Workspace {
         }
         let modifiers = event.keystroke.modifiers;
         let primary = modifiers.platform || modifiers.control;
+        if self.image_context.is_some() {
+            self.image_context_key(event, window, cx);
+            return;
+        }
         if key == "f1" {
             self.execute(Cmd::GettingStarted, window, cx);
             return;
@@ -3611,6 +3630,7 @@ impl Workspace {
         }
         if modifiers.shift && !primary {
             let command = match key {
+                "delete" | "backspace" => Some(Cmd::PermanentDelete),
                 "right" => Some(Cmd::Unreviewed(1)),
                 "left" => Some(Cmd::Unreviewed(-1)),
                 "p" => Some(Cmd::ResolveBurst),
@@ -3638,7 +3658,7 @@ impl Workspace {
                 C::RatingDown => Cmd::RatingDelta(-1),
                 C::RatingUp => Cmd::RatingDelta(1),
                 C::Grid => Cmd::View(ViewMode::Grid),
-                C::Loupe => Cmd::View(ViewMode::Loupe),
+                C::Loupe => Cmd::ReviewSelection,
                 C::Compare => Cmd::View(ViewMode::Compare),
                 C::ToggleZoom => Cmd::Zoom,
                 C::ZoomIn => Cmd::ZoomStep(1),
@@ -3707,7 +3727,7 @@ impl Workspace {
                 "f16" => Some(Cmd::RatingDelta(-1)),
                 "f17" => Some(Cmd::RatingDelta(1)),
                 "g" | "f18" => Some(Cmd::View(ViewMode::Grid)),
-                "l" | "f19" | "enter" => Some(Cmd::View(ViewMode::Loupe)),
+                "l" | "f19" | "enter" => Some(Cmd::ReviewSelection),
                 "c" | "f20" => Some(Cmd::View(ViewMode::Compare)),
                 "s" => Some(Cmd::View(ViewMode::Survey)),
                 "z" | "f21" | "space" => Some(Cmd::Zoom),
@@ -5167,7 +5187,9 @@ impl Workspace {
             .into_any_element()
     }
     fn other_overlay_open(&self) -> bool {
-        self.palette
+        self.deletion.open()
+            || self.image_context.is_some()
+            || self.palette
             || self.preferences
             || self.getting_started
             || self.import_ui.open
@@ -5515,6 +5537,7 @@ impl Workspace {
         }
         let texture = self.texture(photo_index, kind, cx);
         let photo = &self.photos[photo_index];
+        let context_photo_id = photo.id;
         let requested_error = self.media.photo_error(photo, kind);
         let mut quality = requested_error
             .as_ref()
@@ -5553,7 +5576,14 @@ impl Workspace {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.reference_focus = reference;
                 cx.notify();
-            }));
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_image_context(context_photo_id, event.position, cx);
+                    cx.stop_propagation();
+                }),
+            );
         if let Some((image, w, h, source, actual_kind, color_status)) = texture {
             let origin = if source.rendered_raw {
                 " · sensor RAW"
@@ -5867,6 +5897,7 @@ impl Workspace {
                                     position == this.selected || this.multi.contains(&photo.id);
                                 let texture = this.texture(index, PreviewKind::Thumbnail, cx);
                                 let photo = &this.photos[index];
+                                let photo_id = photo.id;
                                 let mut image = div()
                                     .h(px(ui::GRID_IMAGE_HEIGHT))
                                     .w_full()
@@ -6025,6 +6056,24 @@ impl Workspace {
                                                         .text_color(this.rating_color())
                                                         .child("★".repeat(photo.rating as usize)),
                                                 ),
+                                        )
+                                        .on_hover(cx.listener(
+                                            move |this, hovered: &bool, _, cx| {
+                                                this.hover_catalog_photo(photo_id, *hovered, cx);
+                                            },
+                                        ))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &MouseDownEvent, _, cx| {
+                                                    this.open_image_context(
+                                                        photo_id,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                    cx.stop_propagation();
+                                                },
+                                            ),
                                         )
                                         .on_click(cx.listener(
                                             move |this, event: &ClickEvent, window, cx| {
@@ -6274,8 +6323,16 @@ impl Workspace {
                 .justify_center()
                 .cursor_pointer()
                 .child(photo_box);
+            let photo_id = p.id;
             row = row.child(
                 cell.tooltip(self.tip(&p.filename, ""))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.open_image_context(photo_id, event.position, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         let m = event.modifiers();
                         this.select(position, m.control || m.platform, m.shift, cx);
@@ -6505,6 +6562,7 @@ impl Workspace {
             if let Some(bar) = self.label_bar(p.label) {
                 image = image.child(bar);
             }
+            let photo_id = p.id;
             let cell = div()
                 .id(("film", position))
                 .flex_shrink_0()
@@ -6528,6 +6586,13 @@ impl Workspace {
                     },
                     "",
                 ))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.open_image_context(photo_id, event.position, cx);
+                        cx.stop_propagation();
+                    }),
+                )
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     let m = event.modifiers();
                     this.select(position, m.control || m.platform, m.shift, cx);
@@ -6835,7 +6900,7 @@ impl Workspace {
             .child(
                 self.button("trash-selection", "", "trash", Cmd::Trash(true), false, cx)
                     .when(compact, |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)))
-                    .tooltip(self.tip("Move to in-app Trash", "Delete")),
+                    .tooltip(self.tip("Move to Trash…", "Delete")),
             )
             .into_any_element()
     }
@@ -7382,12 +7447,15 @@ impl Workspace {
         });
         state["overlays"] = json!({"rating_filter":self.rating_filter_open && !self.other_overlay_open(),"palette":self.palette,"preferences":self.preferences});
         state["overlays"]["getting_started"] = json!(self.getting_started);
+        state["deletion"] = self.deletion.snapshot();
         state["zoom_percent"] = if self.zoom {
             json!(self.zoom_factor * 100.)
         } else {
             Value::Null
         };
         state["focus_peaking"] = json!(self.focus_peaking);
+        state["image_context"] = self.image_context_state();
+        state["catalog_hover"] = json!(self.catalog_hover);
         state["fit_zoom_percent"] = json!(self.fit_scales.get()[1] * 100.);
         state["review_subset"] = if self.review_folder == self.scope {
             json!(self.review_subset)
@@ -7540,6 +7608,22 @@ impl Workspace {
     ) -> std::result::Result<Value, String> {
         if method == "duplicates" && p["action"] == "status" {
             return Ok(json!({"scan":self.duplicate_scan,"duplicates_only":self.duplicates_only}));
+        }
+        if self.deletion.open()
+            && !matches!(
+                method,
+                "workspace_state"
+                    | "settings_get"
+                    | "library_list"
+                    | "photo_get"
+                    | "cache_stats"
+                    | "quit"
+            )
+        {
+            return Err(
+                "A file-deletion confirmation or operation is open; finish it in the app first"
+                    .into(),
+            );
         }
         if self.quitting
             && ![
@@ -7829,7 +7913,18 @@ impl Workspace {
                     Some("survey") => ViewMode::Survey,
                     _ => return Err("Invalid view".into()),
                 };
-                self.execute(Cmd::View(mode), window, cx);
+                // Automation addresses its explicit selection, independently
+                // of whichever image happens to be under the user's pointer.
+                self.catalog_hover = None;
+                self.execute(
+                    if mode == ViewMode::Loupe {
+                        Cmd::ReviewSelection
+                    } else {
+                        Cmd::View(mode)
+                    },
+                    window,
+                    cx,
+                );
                 if let Some(panel) = p["panel"].as_str() {
                     self.execute(Cmd::InspectorTab(panel == "info"), window, cx);
                 }
@@ -8510,6 +8605,7 @@ impl Workspace {
             .when(self.preferences_section == PreferencesSection::Culling, |body| body
             .child(heading("Culling"))
             .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
+            .child(self.preference_row("Trash destination", "OS Trash moves files; in-app Trash keeps originals in place. Always confirm before deleting.", self.choices("trash-mode", [("OS Trash".into(), Cmd::TrashMode("system".into()), s.trash_mode == "system"), ("In-app".into(), Cmd::TrashMode("in_app".into()), s.trash_mode == "in_app")], cx)))
             .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
             .child(self.preference_row("Burst gap", "Maximum time between frames in a burst", gaps))
             .child(self.preference_row("Similarity", "How alike frames must look to group", thresholds))
@@ -8697,6 +8793,14 @@ impl Workspace {
                                         "check",
                                         Cmd::ApplyPreferences,
                                         true,
+                                        cx,
+                                    ))
+                                    .child(self.button(
+                                        "apply-close-preferences",
+                                        "Apply & Close",
+                                        "",
+                                        Cmd::ApplyClosePreferences,
+                                        false,
                                         cx,
                                     )),
                             ),
@@ -9378,6 +9482,12 @@ impl Render for Workspace {
         }
         if self.getting_started {
             root = root.child(self.getting_started_view(cx));
+        }
+        if self.image_context.is_some() {
+            root = root.child(self.image_context_view(cx));
+        }
+        if self.deletion.open() {
+            root = root.child(self.deletion_view(cx));
         }
         self.trim_display_cache();
         // Client-side decorations (Wayland, composited X11): transparent resize

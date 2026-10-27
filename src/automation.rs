@@ -710,7 +710,7 @@ impl McpSession {
                     PROTOCOLS[0]
                 };
                 self.initialized = true;
-                json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"shadowroom","version":env!("CARGO_PKG_VERSION")},"instructions":"Controls the running native Shadowroom desktop app. Open the app before invoking tools. Import/export calls enqueue background jobs; inspect workspace_state for progress and pending saves. Originals remain read-only."})
+                json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"shadowroom","version":env!("CARGO_PKG_VERSION")},"instructions":"Controls the running native Shadowroom desktop app. Open the app before invoking tools. Import/export calls enqueue background jobs; inspect workspace_state for progress and pending saves. Tools never move or delete originals; the desktop offers separately confirmed file deletion."})
             }
             "ping" => json!({}),
             _ if !self.initialized => {
@@ -798,7 +798,7 @@ fn build_tool_definitions() -> Vec<Value> {
         "interface_font":{"type":"string","minLength":1,"maxLength":128},"theme":{"type":"string","minLength":1,"maxLength":256},
         "theme_mode":{"type":"string","enum":["manual","system","zed"]},"theme_light":{"type":"string","minLength":1,"maxLength":256},"theme_dark":{"type":"string","minLength":1,"maxLength":256},
         "grouping_mode":modes,"burst_gap_ms":{"type":"integer","minimum":1,"maximum":3600000},"visual_threshold":{"type":"integer","minimum":0,"maximum":64},
-        "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"anyOf":[{"type":"integer","enum":[0]},{"type":"integer","minimum":64,"maximum":65536}]},"show_getting_started":{"type":"boolean"},
+        "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"anyOf":[{"type":"integer","enum":[0]},{"type":"integer","minimum":64,"maximum":65536}]},"show_getting_started":{"type":"boolean"},"trash_mode":{"type":"string","enum":["system","in_app"]},
         "last_photo_id":{"type":["integer","null"],"minimum":1},"view_mode":{"type":"string","enum":["grid","loupe","compare","survey"]},"show_inspector":{"type":"boolean"},"show_sidebar":{"type":"boolean"},"sidebar_width":{"type":"integer","minimum":180,"maximum":480},"inspector_width":{"type":"integer","minimum":240,"maximum":480},"min_rating":rating,"filter":{"type":"string","enum":["all","picks","unrated","rejects","trash"]}
     }});
     let ingest_options = json!({"type":"object","additionalProperties":false,"properties":{

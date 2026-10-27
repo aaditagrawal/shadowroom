@@ -1,0 +1,75 @@
+name: Fedora COPR
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Already published v<VERSION> release to submit or resume
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+    secrets:
+      COPR_CONFIG:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+# Release events and the Native checks reusable call can both occur for an
+# owner-published release. Serialize the project and inspect EVR before any POST.
+concurrency:
+  group: shadowroom-copr-publication
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    name: Verify and publish Fedora source RPM
+    if: >-
+      github.repository == 'aaditagrawal/shadowroom' &&
+      vars.COPR_PROJECT == 'aaditagrawal/shadowroom' &&
+      (github.event_name == 'release' || github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      # Never check out the manual input/ref with publishing credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - name: Publisher safety tests
+        run: uv run --no-project python -m unittest discover -s scripts/tests -p test_copr_publish.py
+      - name: Verify release bytes, submit once, and wait for Fedora
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+          COPR_PROJECT: ${{ vars.COPR_PROJECT }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          args=(--tag "$RELEASE_TAG" --submit)
+          if [[ -n "$SOURCE_RUN_ID" ]]; then args+=(--source-run-id "$SOURCE_RUN_ID"); fi
+          uv tool run --from copr-cli==2.6 --with copr==2.7 --with rpmfile==2.2.1 --with zstandard==0.25.0 \
+            python scripts/copr-publish.py "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: copr-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/copr-publication.json
+          if-no-files-found: ignore
+          retention-days: 30

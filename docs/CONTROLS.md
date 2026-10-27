@@ -13,6 +13,8 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `0`–`5` | Set star rating; zero clears it |
 | `R` | Reset stars and pick/reject together without advancing; keep color label |
 | `G` / `L` (or `E`) / `C` | Grid / loupe / compare |
+| Enter in Catalog | Enter Review; a selection of two or more photos limits navigation to that set |
+| Double-click a Catalog photo | Review the full current collection at that photo |
 | `Z` or Space | Toggle fit / 100% zoom |
 | `=` / `-` | Zoom in / out |
 | Ctrl/Cmd + scroll | Zoom in / out; plain scroll pans while zoomed |
@@ -22,6 +24,8 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
+| Delete / Backspace | Open the confirmation for the configured Trash destination |
+| Shift+Delete | Open the permanent-deletion confirmation |
 
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
 
@@ -33,14 +37,34 @@ the source or histogram.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
 Ctrl/Cmd-click toggles individual frames. Import checkboxes toggle independently.
-Opening Review or Compare from a Catalog selection freezes that set for navigation
-and applies each decision to the current frame. **Show full folder** leaves the
-subset. Returning to Catalog restores the selection.
+With zero or one selected photo, **Enter/L** opens Review across the current
+folder and filters, starting at the hovered photo when available or the active
+photo otherwise. With two or more selected photos, **Enter/L** freezes that
+selection for Review navigation. Compare also constrains a multiple selection.
+Decisions in Review/Compare affect the current frame. Double-click and the
+**Show in review** context action always open the full current collection.
+**Show full folder** leaves a subset. Returning to Catalog restores its selection.
+
+Right-click a Catalog photo, Review image, or filmstrip thumbnail for **Show in
+folder**, **Show in review**, **Survey burst**, **Compare**, Pick, Reject, Reset,
+and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
+right-clicking a different photo makes it the action target. The menu names the
+photo or selected count. Up/Down and Enter activate a menu action; Escape closes
+it.
+
+Delete uses **Preferences → Culling → Trash destination**: **OS Trash** by
+default, or optional **In-app** Trash. Shift+Delete always requests permanent
+deletion. Each action opens a confirmation with photo/file counts, source
+locations, and destination. **Cancel is selected initially: Enter cancels, Tab
+then Enter confirms, and Escape cancels.** Restore OS-trashed files with your file
+manager; app Restore/Undo applies only to in-app Trash. Physical deletion cannot
+be undone in Shadowroom and clears decision Undo history after files change.
+See [Trash and duplicates](DUPLICATES_TRASH.md) for grouping and partial failures.
 
 Text fields show a blinking caret, support arrows, Home/End, Shift selection,
 Backspace/Delete, and Ctrl/Cmd+A/C/X/V. Tab changes import or network-host fields.
 
-`src/controls.rs` defines the authoritative command enum and bindings. The UI maps these commands into actions. Dedicated F13–F24 shortcuts provide a keyboard-layout-independent controller layer:
+`src/controls.rs` defines the shared keyboard/controller commands and bindings. The desktop also handles Review entry, context menus, and deletion gestures. Dedicated F13–F24 shortcuts provide a keyboard-layout-independent controller layer:
 
 | Key | Command | Original Micro matrix position |
 | --- | --- | --- |

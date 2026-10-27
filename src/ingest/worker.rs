@@ -4,7 +4,7 @@ use crate::service::IoEvent;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::{
     process::Command as ProcessCommand,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, JoinHandle},
 };
 
@@ -51,6 +51,7 @@ pub struct Worker {
     tx: Sender<Command>,
     control: Control,
     stopping: Arc<AtomicBool>,
+    activity: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
@@ -60,14 +61,27 @@ impl Worker {
         let worker_control = control.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let stop_worker = stopping.clone();
+        let activity = Arc::new(AtomicUsize::new(0));
+        let worker_activity = activity.clone();
         let thread = thread::Builder::new()
             .name("shadowroom-ingest".into())
-            .spawn(move || run(catalog, events, changed, rx, worker_control, stop_worker))
+            .spawn(move || {
+                run(
+                    catalog,
+                    events,
+                    changed,
+                    rx,
+                    worker_control,
+                    stop_worker,
+                    worker_activity,
+                )
+            })
             .expect("Start ingest worker");
         Self {
             tx,
             control,
             stopping,
+            activity,
             thread: Some(thread),
         }
     }
@@ -76,10 +90,16 @@ impl Worker {
         if matches!(command, Command::Cancel) {
             self.control.cancel();
         }
-        self.tx
-            .try_send(command)
-            .context("Import command queue is full or disconnected")?;
+        self.activity.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.tx.try_send(command) {
+            self.activity.fetch_sub(1, Ordering::AcqRel);
+            return Err(error).context("Import command queue is full or disconnected");
+        }
         Ok(())
+    }
+    /// Includes accepted-but-not-started commands and paused copy jobs.
+    pub fn is_busy(&self) -> bool {
+        self.activity.load(Ordering::Acquire) != 0
     }
     pub fn stop(mut self) -> Result<()> {
         self.stopping.store(true, Ordering::Release);
@@ -93,6 +113,18 @@ impl Worker {
         Ok(())
     }
 }
+struct Activity(Arc<AtomicUsize>);
+impl Activity {
+    fn start(activity: &Arc<AtomicUsize>) -> Self {
+        activity.fetch_add(1, Ordering::AcqRel);
+        Self(activity.clone())
+    }
+}
+impl Drop for Activity {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 fn emit(events: &Sender<IoEvent>, event: Event) {
     let _ = events.send(IoEvent::Ingest(event));
 }
@@ -103,6 +135,7 @@ fn run(
     incoming: Receiver<Command>,
     control: Control,
     stopping: Arc<AtomicBool>,
+    activity: Arc<AtomicUsize>,
 ) {
     match catalog.ingest_reconcile_abandoned() {
         Ok(count) if count > 0 => {
@@ -120,6 +153,7 @@ fn run(
     let mut planned: Option<IngestPlan> = None;
     let mut job: Option<JoinHandle<()>> = None;
     while let Ok(command) = incoming.recv() {
+        let _command_activity = Activity(activity.clone());
         if stopping.load(Ordering::Acquire) {
             break;
         }
@@ -171,6 +205,7 @@ fn run(
                             control.clone(),
                             events.clone(),
                             changed.clone(),
+                            Activity::start(&activity),
                         ));
                     }
                 }
@@ -209,6 +244,7 @@ fn run(
                         control.clone(),
                         events.clone(),
                         changed.clone(),
+                        Activity::start(&activity),
                     ));
                 }
                 Command::Pause => {
@@ -311,16 +347,19 @@ fn start_job(
     control: Control,
     events: Sender<IoEvent>,
     changed: Sender<()>,
+    activity: Activity,
 ) -> JoinHandle<()> {
-    start_job_with_hooks(
+    start_job_with_hooks_and_activity(
         plan,
         catalog,
         control,
         events,
         changed,
         Arc::new(DefaultHooks),
+        Some(activity),
     )
 }
+#[cfg(test)]
 pub(super) fn start_job_with_hooks(
     plan: IngestPlan,
     catalog: Catalog,
@@ -329,9 +368,21 @@ pub(super) fn start_job_with_hooks(
     changed: Sender<()>,
     hooks: Arc<dyn CopyHooks>,
 ) -> JoinHandle<()> {
+    start_job_with_hooks_and_activity(plan, catalog, control, events, changed, hooks, None)
+}
+fn start_job_with_hooks_and_activity(
+    plan: IngestPlan,
+    catalog: Catalog,
+    control: Control,
+    events: Sender<IoEvent>,
+    changed: Sender<()>,
+    hooks: Arc<dyn CopyHooks>,
+    activity: Option<Activity>,
+) -> JoinHandle<()> {
     thread::Builder::new()
         .name("shadowroom-ingest-copy".into())
         .spawn(move || {
+            let _activity = activity;
             let mut latest = Progress {
                 total: plan.groups.len(),
                 total_bytes: plan.bytes,
