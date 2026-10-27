@@ -618,12 +618,15 @@ mod tests {
     #[test]
     fn permanent_deletion_includes_pair_and_case_insensitive_sidecars_only() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = dir.path().join("IMG_0123.NEF");
-        let jpeg = dir.path().join("img_0123.JPG");
-        let xmp = dir.path().join("Img_0123.XMP");
-        let extension_xmp = dir.path().join("IMG_0123.NEF.xmp");
-        let audio = dir.path().join("IMG_0123.WAV");
-        let unrelated = dir.path().join("IMG_0124.xmp");
+        // macOS exposes the temporary directory through /var -> /private/var.
+        // Deletion plans deliberately report canonical physical paths.
+        let root = dir.path().canonicalize().unwrap();
+        let raw = root.join("IMG_0123.NEF");
+        let jpeg = root.join("img_0123.JPG");
+        let xmp = root.join("Img_0123.XMP");
+        let extension_xmp = root.join("IMG_0123.NEF.xmp");
+        let audio = root.join("IMG_0123.WAV");
+        let unrelated = root.join("IMG_0124.xmp");
         for path in [&raw, &jpeg, &xmp, &extension_xmp, &audio, &unrelated] {
             write(path);
         }
@@ -666,9 +669,10 @@ mod tests {
     #[test]
     fn partial_failure_reports_precise_completed_paths_and_stops() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = dir.path().join("a.nef");
-        let jpeg = dir.path().join("a.jpg");
-        let sidecar = dir.path().join("a.xmp");
+        let root = dir.path().canonicalize().unwrap();
+        let raw = root.join("a.nef");
+        let jpeg = root.join("a.jpg");
+        let sidecar = root.join("a.xmp");
         for path in [&raw, &jpeg, &sidecar] {
             write(path);
         }
@@ -736,10 +740,11 @@ mod tests {
     #[test]
     fn shared_stem_sidecars_stay_with_unselected_siblings() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = dir.path().join("a.nef");
-        let other = dir.path().join("a.cr3");
-        let shared = dir.path().join("a.XMP");
-        let specific = dir.path().join("a.NEF.xmp");
+        let root = dir.path().canonicalize().unwrap();
+        let raw = root.join("a.nef");
+        let other = root.join("a.cr3");
+        let shared = root.join("a.XMP");
+        let specific = root.join("a.NEF.xmp");
         for path in [&raw, &other, &shared, &specific] {
             write(path);
         }
@@ -754,9 +759,10 @@ mod tests {
     #[test]
     fn selecting_every_sibling_removes_one_deduplicated_shared_sidecar() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = dir.path().join("a.nef");
-        let other = dir.path().join("a.cr3");
-        let shared = dir.path().join("a.xmp");
+        let root = dir.path().canonicalize().unwrap();
+        let raw = root.join("a.nef");
+        let other = root.join("a.cr3");
+        let shared = root.join("a.xmp");
         for path in [&raw, &other, &shared] {
             write(path);
         }

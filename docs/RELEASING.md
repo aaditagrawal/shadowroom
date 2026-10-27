@@ -1,8 +1,8 @@
 # Release process
 
 Shadowroom uses the version in `Cargo.toml` for native package names. The
-[Native checks workflow](../.github/workflows/ci.yml) checks branches and pull
-requests, retains native artifacts, and publishes a preview GitHub Release after
+[Native checks workflow](../.github/workflows/ci.yml) checks main-branch pushes and
+pull requests, retains native artifacts, and publishes a preview GitHub Release after
 a matching `v<VERSION>` tag passes every required job. Ordinary branch pushes and
 pull requests never publish releases.
 

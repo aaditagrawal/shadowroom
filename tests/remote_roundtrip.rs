@@ -574,7 +574,7 @@ fn scan_errors_preserve_unseen_records_until_deletions_are_verified() {
     );
     let id = running.host.list_roots().unwrap().remove(0).id;
     let initial = running.host.index(&id, |_| {}).unwrap();
-    fs::set_permissions(&nested, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&nested, fs::Permissions::from_mode(0o0)).unwrap();
     if fs::read_dir(&nested).is_ok() {
         // root can bypass permissions on some CI hosts.
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
