@@ -8,7 +8,7 @@ your decisions into the next editor.
 
 ![Shadowroom reviewing a lakeside photograph, with histogram, five-star rating, pick flag, and filmstrip](docs/images/review.png)
 
-**Early release · 0.1.3 · Apache-2.0**
+**Early release · 0.1.4 · Apache-2.0**
 
 [Get started](#get-started) · [Performance](#performance) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md)
 
@@ -49,12 +49,16 @@ your decisions into the next editor.
 
 ## Get started
 
-[Download v0.1.3](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.3)
+[Download v0.1.4](https://github.com/aaditagrawal/shadowroom/releases/tag/v0.1.4)
 for the Linux x86_64 AppImage/archive, macOS arm64 archive, Fedora 44 RPM, and source release.
 The portable Linux AppImage and archive target glibc 2.28 or newer and include
 the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
 required. The macOS build is signed ad hoc and is not notarized. Each asset
 includes a SHA-256 checksum.
+
+Linux folder/theme pickers and OS Trash run inside the app without requiring
+GIO for those actions. See [Linux portability](docs/PORTABILITY.md) for the
+experimental Rust media backends and static CPU/X11 browsing prototype.
 
 Fedora 44 x86_64 packages also use the
 [Shadowroom COPR repository](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/).
