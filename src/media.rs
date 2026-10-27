@@ -2898,15 +2898,18 @@ mod tests {
         assert_eq!(fit.source.path, companion);
         assert!(!fit.source.sensor_raw);
         let pipeline = MediaPipeline::new(directory.path().join("cache"), 64 * 1024 * 1024);
-        pipeline.request_photo(&photo, PreviewKind::Full);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let preview = loop {
-            if let Some(preview) = pipeline.best_photo(&photo) {
+            // Request/cache lookups are nonblocking. A fallback lookup can return
+            // Fit if its Full probe contends with the decoder publishing tiers.
+            pipeline.request_photo(&photo, PreviewKind::Full);
+            if let Some(preview) = pipeline.get_photo(&photo, PreviewKind::Full) {
                 break preview;
             }
             assert!(
                 std::time::Instant::now() < until,
-                "Paired Fit fallback disappeared"
+                "Paired JPEG Full preview did not arrive: {:?}",
+                pipeline.photo_error(&photo, PreviewKind::Full)
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         };

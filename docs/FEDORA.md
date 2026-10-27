@@ -83,7 +83,7 @@ release. This recipe disables debuginfo and debugsource packages.
 For a downloaded, verified GitHub release RPM:
 
 ```sh
-sudo dnf install ./shadowroom-0.1.2-1.fc44.x86_64.rpm
+sudo dnf install ./shadowroom-0.1.3-1.fc44.x86_64.rpm
 ```
 
 A directly downloaded RPM is installed locally; it does not configure a package
