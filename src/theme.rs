@@ -78,6 +78,7 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Built-in dark palette, including visible hover states on dialog surfaces.
     pub fn dark() -> Self {
         Self::builtin(
             "Shadowroom Dark",

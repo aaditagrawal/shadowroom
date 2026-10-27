@@ -8333,6 +8333,7 @@ impl Workspace {
         }
         row.into_any_element()
     }
+    /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         let s = self.preference_settings();
         let fonts = self.choices(
@@ -8800,7 +8801,7 @@ impl Workspace {
                                         "Apply",
                                         "check",
                                         Cmd::ApplyPreferences,
-                                        true,
+                                        false,
                                         cx,
                                     ))
                                     .child(self.button(
