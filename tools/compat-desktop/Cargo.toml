@@ -1,0 +1,19 @@
+[package]
+name = "shadowroom-compat-prototype"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+repository = "https://github.com/aaditagrawal/shadowroom"
+
+[dependencies]
+anyhow = "1"
+font8x8 = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+shadowroom = { path = "../..", default-features = false, features = ["rust-color", "rust-heif"] }
+tempfile = "3"
+x11rb = { version = "=0.13.2", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

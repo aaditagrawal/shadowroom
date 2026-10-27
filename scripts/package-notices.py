@@ -4,17 +4,19 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 
-def collect(project: Path, destination: Path, cargo: str, features: str) -> None:
+def collect(project: Path, destination: Path, cargo: str, features: str,
+            manifest: Path | None = None, target_platform: str | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     legal = destination / "licenses"
     legal.mkdir()
     for name in ("LICENSE", "THIRD_PARTY_NOTICES.md", "Cargo.lock"):
-        shutil.copy2(project / name, destination / name)
+        source = manifest.parent / name if manifest and name == "Cargo.lock" else project / name
+        shutil.copy2(source, destination / name)
     shutil.copy2(project / "assets/icons/LICENSE", legal / "Codicons-CC-BY-4.0.txt")
     icon_legal = legal / "icons"
     icon_legal.mkdir()
@@ -30,11 +32,17 @@ def collect(project: Path, destination: Path, cargo: str, features: str) -> None
         shutil.copy2(project / "vendor/xattr" / name, target / name)
 
     environment = dict(os.environ, RUSTUP_AUTO_INSTALL="0")
-    host = subprocess.check_output([cargo, "-vV"], text=True, env=environment)
-    host = next(line.split(": ", 1)[1] for line in host.splitlines() if line.startswith("host: "))
+    if target_platform is None:
+        host = subprocess.check_output([cargo, "-vV"], text=True, env=environment)
+        target_platform = next(line.split(": ", 1)[1] for line in host.splitlines() if line.startswith("host: "))
+    metadata_command = [cargo, "metadata", "--offline", "--locked", "--format-version", "1",
+                        "--filter-platform", target_platform]
+    if features:
+        metadata_command.extend(["--features", features])
+    if manifest:
+        metadata_command.extend(["--manifest-path", str(manifest)])
     metadata = json.loads(subprocess.check_output(
-        [cargo, "metadata", "--offline", "--locked", "--format-version", "1",
-         "--filter-platform", host, "--features", features],
+        metadata_command,
         cwd=project, text=True, env=environment,
     ))
     resolved = {node["id"] for node in metadata["resolve"]["nodes"]}
@@ -42,7 +50,7 @@ def collect(project: Path, destination: Path, cargo: str, features: str) -> None
     prefixes = ("LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE")
     skipped = {".git", "target", "node_modules"}
     for package in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"])):
-        if package["id"] not in resolved or package["name"] == "shadowroom":
+        if package["id"] not in resolved or package["name"] == "shadowroom" or package["id"] == metadata["resolve"]["root"]:
             continue
         source = Path(package["manifest_path"]).parent.resolve()
         paths = set()
@@ -102,5 +110,8 @@ if __name__ == "__main__":
     parser.add_argument("destination", type=Path)
     parser.add_argument("--cargo", required=True)
     parser.add_argument("--features", default="desktop")
+    parser.add_argument("--manifest-path", type=Path)
+    parser.add_argument("--target")
     args = parser.parse_args()
-    collect(Path(__file__).resolve().parent.parent, args.destination, args.cargo, args.features)
+    collect(Path(__file__).resolve().parent.parent, args.destination, args.cargo, args.features,
+            args.manifest_path.resolve() if args.manifest_path else None, args.target)

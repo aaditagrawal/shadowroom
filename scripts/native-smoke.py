@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated native Linux desktop + MCP acceptance checks; Python stdlib only."""
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -16,7 +17,6 @@ import tempfile
 import threading
 import time
 import traceback
-
 
 TOOLS = {
     "ingest_scan", "ingest_plan", "ingest_start", "ingest_status", "ingest_cancel",
@@ -262,10 +262,47 @@ def close_owned_window(tool, process, environment):
     owner = subprocess.run([str(tool), "getwindowpid", window], env=local, capture_output=True,
                            text=True, timeout=3, check=True)
     require(owner.stdout.strip() == str(process.pid), "Refusing to close another process's window")
-    # windowquit sends WM_DELETE_WINDOW. xdotool's similarly named windowclose
-    # destroys the X window directly and bypasses application close confirmation.
-    subprocess.run([str(tool), "windowquit", window], env=local, capture_output=True, timeout=3, check=True)
-    return {"method": "xdotool windowquit (WM_DELETE_WINDOW)", "pid": process.pid, "window_id": window}
+    # xdotool windowquit sends _NET_CLOSE_WINDOW to a window manager. Send the
+    # application protocol directly so this also works on a private bare Xvfb.
+    class Data(ctypes.Union):
+        _fields_ = [("bytes", ctypes.c_char * 20), ("shorts", ctypes.c_short * 10),
+                    ("longs", ctypes.c_long * 5)]
+
+    class ClientMessage(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong),
+                    ("send_event", ctypes.c_int), ("display", ctypes.c_void_p),
+                    ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                    ("format", ctypes.c_int), ("data", Data)]
+
+    class Event(ctypes.Union):
+        _fields_ = [("client", ClientMessage), ("padding", ctypes.c_long * 24)]
+
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                              ctypes.c_long, ctypes.POINTER(Event)]
+    x11.XSendEvent.restype = ctypes.c_int
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(environment["DISPLAY"].encode())
+    require(display, "Cannot connect to the owned test display")
+    try:
+        event = Event()
+        event.client.type = 33  # ClientMessage
+        event.client.display = display
+        event.client.window = int(window)
+        event.client.message_type = x11.XInternAtom(display, b"WM_PROTOCOLS", 0)
+        event.client.format = 32
+        event.client.data.longs[0] = x11.XInternAtom(display, b"WM_DELETE_WINDOW", 0)
+        require(x11.XSendEvent(display, int(window), 0, 0, ctypes.byref(event)),
+                "WM_DELETE_WINDOW delivery failed")
+        x11.XSync(display, 0)
+    finally:
+        x11.XCloseDisplay(display)
+    return {"method": "own-PID WM_DELETE_WINDOW via XSendEvent", "pid": process.pid, "window_id": window}
 
 
 def exercise(args, root, report):
@@ -428,8 +465,11 @@ def exercise(args, root, report):
         client.call("command", {"name": "toggle_histogram_log"})
         require(client.call("settings_get").get("histogram_log") != prior_log, "Histogram log toggle failed")
         client.call("group", {"mode": "time", "gap_ms": 2000})
-        grouped = wait_for(lambda: (lambda state: state if state["groups"] else None)(run.state()),
-                           6, "background time grouping")
+        def expected_time_group():
+            state = run.state()
+            return state if any(set(group) == set(ids) for group in state["groups"]) else None
+
+        grouped = wait_for(expected_time_group, 6, "background time grouping of all BMP fixtures")
         require(any(set(group) == set(ids) for group in grouped["groups"]), "Expected one temporal BMP group")
         client.call("command", {"name": "next_group"})
         client.call("group", {"mode": "off"})

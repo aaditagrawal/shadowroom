@@ -216,6 +216,10 @@ impl Agent {
                 "analyze".into(),
                 "revision_sync".into(),
                 "jpeg_preview".into(),
+                format!(
+                    "{RENDERING_CAPABILITY_PREFIX}{}",
+                    crate::media::rendering_namespace()
+                ),
                 "preview_jpeg_first_v4".into(),
                 "read_range".into(),
                 "cancel".into(),
@@ -735,10 +739,13 @@ impl State {
                     pm.is_file() && pm.len() == size && mtime(&pm) == modified,
                     "Preview source changed; re-index first"
                 );
-                if let Some(cached) =
-                    self.jpeg_cache
-                        .get(&self.hello.device_id, key, *kind, *max_bytes)?
-                {
+                if let Some(cached) = self.jpeg_cache.get_for_renderer(
+                    &self.hello.device_id,
+                    key,
+                    *kind,
+                    *max_bytes,
+                    self.hello.rendering_namespace(),
+                )? {
                     check(stop)?;
                     return send(writer, id, true, cached.response(), cached.jpeg);
                 }
@@ -854,8 +861,13 @@ impl State {
                 };
                 // Keep one canonical fixed-quality representation. A smaller
                 // byte budget fails explicitly instead of resizing a Full image.
-                self.jpeg_cache
-                    .put(&self.hello.device_id, key, *kind, &result)?;
+                self.jpeg_cache.put_for_renderer(
+                    &self.hello.device_id,
+                    key,
+                    *kind,
+                    &result,
+                    self.hello.rendering_namespace(),
+                )?;
                 ensure!(result.jpeg.len() <= *max_bytes, "Preview exceeds max_bytes");
                 check(stop)?;
                 return send(writer, id, true, result.response(), result.jpeg);
@@ -1166,6 +1178,129 @@ fn unescape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_renderer_namespaces_exclude_legacy_and_other_engine_jpegs() {
+        use crate::media::PreviewKind;
+        let temp = tempfile::tempdir().unwrap();
+        let photos = temp.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        image::RgbImage::from_pixel(2, 2, image::Rgb([240u8, 20, 30]))
+            .save(photos.join("photo.jpg"))
+            .unwrap();
+        let mut options = AgentOptions::new(temp.path().join("state"));
+        options.discover_drives = false;
+        options.roots.push(photos);
+        let mut agent = Agent::new(options).unwrap();
+        assert_eq!(
+            agent.state.hello.rendering_namespace(),
+            Some(crate::media::rendering_namespace().as_str())
+        );
+        let root = agent.state.roots[0].info.id.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        agent
+            .state
+            .handle(
+                &Work {
+                    id: 1,
+                    request: Request::Index { root },
+                    stop: stop.clone(),
+                },
+                &Mutex::new(Vec::new()),
+            )
+            .unwrap();
+        let key = agent.state.roots[0]
+            .manifest
+            .lock()
+            .unwrap()
+            .records
+            .values()
+            .next()
+            .unwrap()
+            .key
+            .clone();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::RgbImage::from_pixel(
+                2,
+                2,
+                image::Rgb([0u8, 0, 250]),
+            ))
+            .unwrap();
+        let stale = super::super::client::PreviewResult {
+            jpeg,
+            width: 2,
+            height: 2,
+            cache_hit: false,
+            rendered_raw: false,
+            embedded_raw: false,
+            rendering_note: Some("obsolete renderer".into()),
+        };
+        let device = agent.state.hello.device_id.clone();
+        let first_namespace = agent.state.hello.rendering_namespace().unwrap().to_owned();
+        agent
+            .state
+            .jpeg_cache
+            .put_for_renderer(&device, &key, PreviewKind::Fit, &stale, None)
+            .unwrap();
+        let request = Work {
+            id: 2,
+            request: Request::Preview {
+                key: key.clone(),
+                kind: PreviewKind::Fit,
+                max_bytes: MAX_PAYLOAD,
+            },
+            stop,
+        };
+        let output = Mutex::new(Vec::new());
+        agent.state.handle(&request, &output).unwrap();
+        let first = read_frame::<Response>(&mut &output.into_inner().unwrap()[..])
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.payload, stale.jpeg);
+        agent
+            .state
+            .jpeg_cache
+            .put_for_renderer(
+                &device,
+                &key,
+                PreviewKind::Fit,
+                &stale,
+                Some(&first_namespace),
+            )
+            .unwrap();
+        let state = Arc::get_mut(&mut agent.state).unwrap();
+        state
+            .hello
+            .capabilities
+            .retain(|capability| !capability.starts_with(RENDERING_CAPABILITY_PREFIX));
+        state
+            .hello
+            .capabilities
+            .push(format!("{RENDERING_CAPABILITY_PREFIX}another-build"));
+        let output = Mutex::new(Vec::new());
+        agent.state.handle(&request, &output).unwrap();
+        let second = read_frame::<Response>(&mut &output.into_inner().unwrap()[..])
+            .unwrap()
+            .unwrap();
+        assert_ne!(second.payload, stale.jpeg);
+        assert_eq!(
+            agent
+                .state
+                .jpeg_cache
+                .get_for_renderer(
+                    &device,
+                    &key,
+                    PreviewKind::Fit,
+                    MAX_PAYLOAD,
+                    Some("another-build")
+                )
+                .unwrap()
+                .unwrap()
+                .jpeg,
+            second.payload
+        );
+    }
 
     #[test]
     fn jpeg_payload_rejects_growth_before_crossing_frame_limit() {

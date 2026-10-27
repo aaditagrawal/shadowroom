@@ -1,4 +1,5 @@
 mod deletion_ui;
+mod folder_picker;
 mod help;
 mod ingest_ui;
 mod layout;
@@ -674,6 +675,7 @@ pub struct Workspace {
     preferences_draft: Option<preferences::Draft>,
     preferences_section: PreferencesSection,
     deletion: deletion_ui::State,
+    folder_picker: Option<folder_picker::State>,
     getting_started: bool,
     text_edit: text_input::Edit,
     scroll_drag: Option<scrollbar::Drag>,
@@ -920,6 +922,7 @@ impl Workspace {
             preferences_draft: None,
             preferences_section: PreferencesSection::default(),
             deletion: deletion_ui::State::default(),
+            folder_picker: None,
             getting_started,
             text_edit: text_input::Edit::default(),
             scroll_drag: None,
@@ -1324,7 +1327,11 @@ impl Workspace {
 
     fn poll(&mut self, cx: &mut gpui::Context<Self>) {
         let mut dirty = std::mem::take(&mut self.texture_retry);
-        if self.palette || self.add_host.is_some() || self.import_ui.active_field.is_some() {
+        if self.palette
+            || self.add_host.is_some()
+            || self.import_ui.active_field.is_some()
+            || self.folder_picker.is_some()
+        {
             dirty |= self.text_edit.blink();
         }
         while let Ok(update) = self.theme_updates.try_recv() {
@@ -2213,6 +2220,19 @@ impl Workspace {
     }
 
     fn choose_folder(&mut self, export: Option<bool>, cx: &mut gpui::Context<Self>) {
+        if cfg!(target_os = "linux") {
+            let ids = if self.multi.is_empty() {
+                self.filtered.iter().map(|&i| self.photos[i].id).collect()
+            } else {
+                self.multi.iter().copied().collect()
+            };
+            self.show_path_picker(
+                folder_picker::Purpose::Workspace { export, ids },
+                self.settings.ingest_library_root.clone(),
+                cx,
+            );
+            return;
+        }
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -2263,6 +2283,9 @@ impl Workspace {
     }
 
     fn execute(&mut self, cmd: Cmd, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.folder_picker.is_some() && !matches!(cmd, Cmd::Close | Cmd::Quit) {
+            return;
+        }
         if self.deletion.open()
             && !matches!(
                 cmd,
@@ -2488,6 +2511,11 @@ impl Workspace {
             }
             Cmd::PreferencesSection(section) => self.preferences_section = section,
             Cmd::Close => {
+                if self.folder_picker.take().is_some() {
+                    self.refocus_ingest_field();
+                    cx.notify();
+                    return;
+                }
                 if self.deletion.open() {
                     self.deletion.cancel();
                     cx.notify();
@@ -3499,6 +3527,9 @@ impl Workspace {
         })
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.picker_key(event, cx) {
+            return;
+        }
         if self.deletion_key(event, window, cx) {
             return;
         }
@@ -5196,6 +5227,7 @@ impl Workspace {
     }
     fn other_overlay_open(&self) -> bool {
         self.deletion.open()
+            || self.folder_picker.is_some()
             || self.image_context.is_some()
             || self.palette
             || self.preferences
@@ -7456,6 +7488,11 @@ impl Workspace {
         state["overlays"] = json!({"rating_filter":self.rating_filter_open && !self.other_overlay_open(),"palette":self.palette,"preferences":self.preferences});
         state["overlays"]["getting_started"] = json!(self.getting_started);
         state["deletion"] = self.deletion.snapshot();
+        state["folder_picker"] = self
+            .folder_picker
+            .as_ref()
+            .map(folder_picker::State::snapshot)
+            .unwrap_or(Value::Null);
         state["zoom_percent"] = if self.zoom {
             json!(self.zoom_factor * 100.)
         } else {
@@ -8041,6 +8078,8 @@ impl Workspace {
                     return Err("Close the current dialog before opening the rating filter".into());
                 }
                 let command = match p["name"].as_str().ok_or("Command required")? {
+                    "open_folder_picker" => Cmd::Import,
+                    "open_theme_picker" => Cmd::ImportTheme,
                     "next_unreviewed" => Cmd::Unreviewed(1),
                     "previous_unreviewed" => Cmd::Unreviewed(-1),
                     "resolve_burst" => Cmd::ResolveBurst,
@@ -9497,6 +9536,9 @@ impl Render for Workspace {
         }
         if self.deletion.open() {
             root = root.child(self.deletion_view(cx));
+        }
+        if self.folder_picker.is_some() {
+            root = root.child(self.picker_view(cx));
         }
         self.trim_display_cache();
         // Client-side decorations (Wayland, composited X11): transparent resize

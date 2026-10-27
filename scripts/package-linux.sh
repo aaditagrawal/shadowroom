@@ -7,13 +7,15 @@ output_root="$project_root/dist"
 profile=release
 skip_build=0
 heif_runtime=
+glibc_baseline=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build) skip_build=1; shift ;;
         --debug) profile=debug; shift ;;
         --output) output_root=${2:?--output requires a directory}; shift 2 ;;
         --heif-runtime) heif_runtime=${2:?--heif-runtime requires a prepared runtime directory}; shift 2 ;;
-        -h|--help) printf '%s\n' 'Usage: scripts/package-linux.sh [--no-build] [--debug] [--output DIR] [--heif-runtime DIR]'; exit 0 ;;
+        --glibc-baseline) glibc_baseline=${2:?--glibc-baseline requires a version}; shift 2 ;;
+        -h|--help) printf '%s\n' 'Usage: scripts/package-linux.sh [--no-build] [--debug] [--output DIR] [--heif-runtime DIR] [--glibc-baseline VERSION]'; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done
@@ -163,6 +165,11 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t 
 printf 'Installed to %s. Launch Shadowroom from the app menu or run %s/bin/shadowroom.\n' "$prefix" "$prefix"
 INSTALL
 chmod 755 "$root/install.sh"
+if [[ -n "$glibc_baseline" ]]; then
+    uv run --no-project python scripts/check-linux-abi.py "$root" \
+        --max-glibc "$glibc_baseline" \
+        --report "$root/share/doc/shadowroom/linux-abi.json"
+fi
 tar -czf "$staging/$package.tar.gz" -C "$staging" "$package"
 mv -- "$root" "$output_root/$package"
 mv -- "$staging/$package.tar.gz" "$output_root/$package.tar.gz"

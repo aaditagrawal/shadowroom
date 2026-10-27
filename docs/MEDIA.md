@@ -17,8 +17,9 @@ media.request_photo(&photo, PreviewKind::Full);
 
 Use the `*_with_size` methods with catalog metadata. Their cache identity includes
 the native path bytes, catalog modification time, byte size, preview kind, and
-pipeline version. Version 9 uses paired/embedded camera previews for full-size
-inspection and retains the associated-color alpha resampling from version 8. It
+pipeline version. Version 10 separates rendering configurations so switching ICC
+or codec backends cannot reuse differently rendered output. It uses paired/embedded
+camera previews for full-size inspection and retains the associated-color alpha resampling from version 8. It
 persists `rendered_raw`, `embedded_raw`, and `rendering_note` provenance, including
 on derived previews. Older entries are regenerated. No path canonicalization or
 filesystem stat occurs on the UI thread. Paths supplied by the catalog should be absolute. The smaller contract
@@ -149,7 +150,7 @@ the installed LibRaw build.
 Every display buffer is straight-alpha **8-bit sRGB RGBA**. Supported source
 precision is retained through color conversion, then quantized for display.
 Orientation is applied once; source dimensions describe display geometry separately
-from preview dimensions. ICC conversion uses Little CMS with relative colorimetric
+from preview dimensions. ICC conversion uses Little CMS by default with relative colorimetric
 rendering, except system HEIF color conversion on macOS. For generic image formats,
 missing profiles assume sRGB; invalid/incompatible profiles preserve decoded pixels
 and report `ColorStatus::InvalidProfile`. The dedicated paths below apply stricter

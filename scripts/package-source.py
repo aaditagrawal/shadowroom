@@ -24,6 +24,7 @@ ROOTS = [
     "scripts",
     "src",
     "tests",
+    "tools",
     "vendor",
 ]
 

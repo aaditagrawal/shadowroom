@@ -1,0 +1,18 @@
+[package]
+name = "shadowroom-codec-evaluation"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+repository = "https://github.com/aaditagrawal/shadowroom"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+heifer = "=0.2.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+
+[profile.release]
+debug = 0

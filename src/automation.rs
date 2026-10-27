@@ -1137,7 +1137,7 @@ fn build_tool_definitions() -> Vec<Value> {
         tool(
             "command",
             "Execute an allowlisted workspace action; this is not a shell or arbitrary-command interface.",
-            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","show_full_folder","reset_decision"]}}),
+            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","open_folder_picker","open_theme_picker","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","show_full_folder","reset_decision"]}}),
             &["name"],
             false,
         ),

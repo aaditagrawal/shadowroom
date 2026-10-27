@@ -50,6 +50,13 @@ vendored source and are copied to `licenses/xattr/` in packages.
 
 ## Compiled dependencies
 
+Experimental portability builds additionally use moxcms for Rust ICC conversion,
+heifer (including its HEVC/container crates) for Rust HEIC decoding, and x11rb
+with font8x8 for the CPU/X11 prototype. These components retain their upstream
+licenses and are included in the generated dependency inventory for the selected
+manifest/features. Standalone tools carry their own Cargo lockfiles; the notice
+collector accepts `--manifest-path` and `--target` for those builds.
+
 Rust dependencies, including GPUI, and their bundled native components retain
 their respective upstream licenses. Packaging creates `licenses/dependencies/`
 with available upstream LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files,

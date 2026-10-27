@@ -125,6 +125,14 @@ impl Workspace {
         let Some(id) = self.preferences_draft.as_ref().map(|draft| draft.id) else {
             return;
         };
+        if cfg!(target_os = "linux") {
+            self.show_path_picker(
+                super::folder_picker::Purpose::Theme(id),
+                std::path::PathBuf::new(),
+                cx,
+            );
+            return;
+        }
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,

@@ -1,7 +1,15 @@
-//! Bounded HEIF header inspection and platform-native, read-only SDR decoding.
-//! Native pixel allocation is reachable only after the caller admits working_bytes.
+//! Bounded HEIF header inspection and read-only SDR decoding.
+//! Pixel allocation is reachable only after the caller admits working_bytes.
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, RgbaImage};
+use image::DynamicImage;
+#[cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        any(feature = "native-codecs", feature = "rust-heif")
+    )
+))]
+use image::RgbaImage;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -12,6 +20,9 @@ const MAX_META: usize = 8 * 1024 * 1024;
 const MAX_PROFILE: usize = 4 * 1024 * 1024;
 const MAX_PIXELS: u64 = 160_000_000;
 const MAX_BOXES: usize = 4096;
+#[cfg(all(target_os = "linux", feature = "rust-heif"))]
+#[path = "codecs/rust_heif.rs"]
+mod rust_backend;
 // Match libheif's 256×256 coded-surface floor. Tiny HEIF display images
 // can use larger hardware-encoder surfaces (e.g. 2×2 stored in 160×64).
 #[cfg(target_os = "linux")]
@@ -24,7 +35,8 @@ pub struct HeifInfo {
     pub height: u32,
     pub coded_width: u32,
     pub coded_height: u32,
-    /// Largest declared coded image/tile, used for conservative admission.
+    /// Largest declared coded image/tile, including Rust HEVC block padding
+    /// when that backend is enabled, used for conservative admission.
     pub allocation_pixels: u64,
     pub bit_depth: u8,
     pub color_primaries: Option<u16>,
@@ -165,7 +177,14 @@ pub fn inspect(bytes: &[u8]) -> Result<HeifInfo> {
         if property.kind == *b"ispe" {
             let (w, h) = (be32(property.data, 4)?, be32(property.data, 8)?);
             validate_size(w, h)?;
-            allocation_pixels = allocation_pixels.max(u64::from(w) * u64::from(h));
+            let pixels = u64::from(w) * u64::from(h);
+            // ispe describes the cropped surface, while HEVC's SPS can encode
+            // padding up to the next coding block. Charge those padded pixels
+            // before permitting the optional Rust decoder to allocate them.
+            #[cfg(all(target_os = "linux", feature = "rust-heif"))]
+            let pixels =
+                pixels.max(u64::from(w.div_ceil(64) * 64) * u64::from(h.div_ceil(64) * 64));
+            allocation_pixels = allocation_pixels.max(pixels);
         }
     }
     let mut associated = Vec::new();
@@ -426,11 +445,111 @@ pub fn decode(bytes: &[u8], max_edge: Option<u32>, admitted_bytes: usize) -> Res
         );
     }
     let info = inspect(bytes)?;
+    #[cfg(all(target_os = "linux", feature = "rust-heif"))]
+    if let Some(decoded) = rust_backend::decode(bytes, &info)? {
+        return Ok(decoded);
+    }
     platform::decode(bytes, max_edge, &info)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "native-codecs", feature = "rust-heif")
+))]
+mod sdr_color {
+    use super::*;
+    pub(super) trait SdrSample: image::Primitive {
+        fn normalized(self) -> f64;
+        fn from_normalized(value: f64) -> Self;
+    }
+    impl SdrSample for u8 {
+        fn normalized(self) -> f64 {
+            f64::from(self) / 255.
+        }
+        fn from_normalized(value: f64) -> Self {
+            (value * 255.).round() as u8
+        }
+    }
+    impl SdrSample for u16 {
+        fn normalized(self) -> f64 {
+            f64::from(self) / 65535.
+        }
+        fn from_normalized(value: f64) -> Self {
+            (value * 65535.).round() as u16
+        }
+    }
+    pub(super) fn convert_nclx<T: SdrSample>(
+        image: &mut image::ImageBuffer<image::Rgba<T>, Vec<T>>,
+        info: &HeifInfo,
+    ) -> Result<bool>
+    where
+        image::Rgba<T>: image::Pixel<Subpixel = T>,
+    {
+        let (Some(primaries), Some(transfer)) =
+            (info.color_primaries, info.transfer_characteristics)
+        else {
+            return Ok(false);
+        };
+        if primaries == 2 || transfer == 2 {
+            return Ok(false);
+        }
+        if primaries == 1 && transfer == 13 {
+            return Ok(true);
+        }
+        for pixel in image.pixels_mut() {
+            let mut rgb = [0.; 3];
+            for (out, input) in rgb.iter_mut().zip(pixel.0) {
+                let encoded = input.normalized();
+                *out = match transfer {
+                    13 => {
+                        if encoded <= 0.04045 {
+                            encoded / 12.92
+                        } else {
+                            ((encoded + 0.055) / 1.055).powf(2.4)
+                        }
+                    }
+                    8 => encoded,
+                    1 | 6 | 14 | 15 => {
+                        if encoded < 0.081 {
+                            encoded / 4.5
+                        } else {
+                            ((encoded + 0.099) / 1.099).powf(1. / 0.45)
+                        }
+                    }
+                    _ => bail!("Unsupported HEIF SDR transfer"),
+                };
+            }
+            let matrix = match primaries {
+                1 => [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                12 => [
+                    [1.224745, -0.224904, 0.],
+                    [-0.042058, 1.042081, 0.],
+                    [-0.019642, -0.078655, 1.098537],
+                ],
+                9 => [
+                    [1.660491, -0.587641, -0.072850],
+                    [-0.124550, 1.132900, -0.008350],
+                    [-0.018151, -0.100579, 1.118730],
+                ],
+                _ => bail!("Unsupported HEIF SDR primaries"),
+            };
+            for (channel, row) in pixel.0[..3].iter_mut().zip(matrix) {
+                let linear = (row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]).clamp(0., 1.);
+                let encoded = if linear <= 0.0031308 {
+                    linear * 12.92
+                } else {
+                    1.055 * linear.powf(1. / 2.4) - 0.055
+                };
+                *channel = T::from_normalized(encoded);
+            }
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "native-codecs"))]
 mod platform {
+    use super::sdr_color::convert_nclx;
     use super::*;
     use libloading::Library;
     use std::{
@@ -694,92 +813,16 @@ mod platform {
             })
         }
     }
-    trait SdrSample: image::Primitive {
-        fn normalized(self) -> f64;
-        fn from_normalized(value: f64) -> Self;
-    }
-    impl SdrSample for u8 {
-        fn normalized(self) -> f64 {
-            f64::from(self) / 255.
-        }
-        fn from_normalized(value: f64) -> Self {
-            (value * 255.).round() as u8
-        }
-    }
-    impl SdrSample for u16 {
-        fn normalized(self) -> f64 {
-            f64::from(self) / 65535.
-        }
-        fn from_normalized(value: f64) -> Self {
-            (value * 65535.).round() as u16
-        }
-    }
-    fn convert_nclx<T: SdrSample>(
-        image: &mut image::ImageBuffer<image::Rgba<T>, Vec<T>>,
-        info: &HeifInfo,
-    ) -> Result<bool>
-    where
-        image::Rgba<T>: image::Pixel<Subpixel = T>,
-    {
-        let (Some(primaries), Some(transfer)) =
-            (info.color_primaries, info.transfer_characteristics)
-        else {
-            return Ok(false);
-        };
-        if primaries == 2 || transfer == 2 {
-            return Ok(false);
-        }
-        if primaries == 1 && transfer == 13 {
-            return Ok(true);
-        }
-        for pixel in image.pixels_mut() {
-            let mut rgb = [0.; 3];
-            for (out, input) in rgb.iter_mut().zip(pixel.0) {
-                let encoded = input.normalized();
-                *out = match transfer {
-                    13 => {
-                        if encoded <= 0.04045 {
-                            encoded / 12.92
-                        } else {
-                            ((encoded + 0.055) / 1.055).powf(2.4)
-                        }
-                    }
-                    8 => encoded,
-                    1 | 6 | 14 | 15 => {
-                        if encoded < 0.081 {
-                            encoded / 4.5
-                        } else {
-                            ((encoded + 0.099) / 1.099).powf(1. / 0.45)
-                        }
-                    }
-                    _ => bail!("Unsupported HEIF SDR transfer"),
-                };
-            }
-            let matrix = match primaries {
-                1 => [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
-                12 => [
-                    [1.224745, -0.224904, 0.],
-                    [-0.042058, 1.042081, 0.],
-                    [-0.019642, -0.078655, 1.098537],
-                ],
-                9 => [
-                    [1.660491, -0.587641, -0.072850],
-                    [-0.124550, 1.132900, -0.008350],
-                    [-0.018151, -0.100579, 1.118730],
-                ],
-                _ => bail!("Unsupported HEIF SDR primaries"),
-            };
-            for (channel, row) in pixel.0[..3].iter_mut().zip(matrix) {
-                let linear = (row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]).clamp(0., 1.);
-                let encoded = if linear <= 0.0031308 {
-                    linear * 12.92
-                } else {
-                    1.055 * linear.powf(1. / 2.4) - 0.055
-                };
-                *channel = T::from_normalized(encoded);
-            }
-        }
-        Ok(true)
+}
+
+#[cfg(all(target_os = "linux", not(feature = "native-codecs")))]
+mod platform {
+    use super::*;
+
+    pub fn decode(_bytes: &[u8], _max_edge: Option<u32>, _info: &HeifInfo) -> Result<DecodedHeif> {
+        bail!(
+            "HEIF image requires a codec unavailable in this build: enable native-codecs for full libheif support, or rust-heif for supported SDR HEVC images"
+        )
     }
 }
 
@@ -1069,11 +1112,32 @@ pub(crate) fn test_header(width: u32, height: u32, rotation: u8, depth: u8) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(
+        target_os = "linux",
+        not(any(feature = "native-codecs", feature = "rust-heif"))
+    ))]
+    #[test]
+    fn disabled_heif_backend_reports_build_capability_after_admission() {
+        let bytes = test_header(64, 48, 0, 8);
+        let admitted = working_bytes(&bytes, None).unwrap();
+        let error = decode(&bytes, None, admitted).err().unwrap();
+        assert!(error.to_string().contains("unavailable in this build"));
+        assert!(error.to_string().contains("native-codecs"));
+        let error = decode(&bytes, None, 0).err().unwrap();
+        assert!(error.to_string().contains("working memory"));
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn tiny_heif_admission_includes_the_minimum_coded_surface() {
         let bytes = test_header(2, 2, 0, 8);
         assert!(working_bytes(&bytes, None).unwrap() >= 256 * 256 * 40 + 13 * 1024 * 1024);
+    }
+    #[cfg(all(target_os = "linux", feature = "rust-heif"))]
+    #[test]
+    fn rust_heif_admission_charges_coding_block_padding() {
+        let bytes = test_header(451, 461, 0, 8);
+        assert_eq!(inspect(&bytes).unwrap().allocation_pixels, 512 * 512);
+        assert!(working_bytes(&bytes, None).unwrap() >= 512 * 512 * 40);
     }
     #[test]
     fn headers_apply_rotation_and_admit_before_native_decode() {

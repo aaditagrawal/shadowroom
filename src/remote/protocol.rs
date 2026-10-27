@@ -26,7 +26,20 @@ pub struct Hello {
     pub hostname: String,
     pub os: String,
     pub arch: String,
+    #[serde(default)]
     pub capabilities: Vec<String>,
+}
+/// Optional Hello capability, ignored by older clients. Missing means legacy
+/// rendering; preserve those agents' existing v4 cache keys and wire framing.
+pub const RENDERING_CAPABILITY_PREFIX: &str = "preview_renderer:";
+impl Hello {
+    pub fn rendering_namespace(&self) -> Option<&str> {
+        self.capabilities.iter().find_map(|capability| {
+            capability
+                .strip_prefix(RENDERING_CAPABILITY_PREFIX)
+                .filter(|namespace| !namespace.is_empty())
+        })
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RemoteRoot {
@@ -244,4 +257,35 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, frame: &Frame<T>) -> R
     writer.write_all(&frame.payload)?;
     writer.flush()?;
     Ok(length + 4)
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_hello_and_optional_renderer_capability_share_v1_framing() {
+        let mut json = serde_json::json!({
+            "protocol_version": 1, "app_version": "0.1.3", "device_id": "device",
+            "hostname": "host", "os": "linux", "arch": "x86_64"
+        });
+        let legacy: Hello = serde_json::from_value(json.clone()).unwrap();
+        assert!(legacy.capabilities.is_empty());
+        assert_eq!(legacy.rendering_namespace(), None);
+        json["capabilities"] = serde_json::json!(["jpeg_preview", "preview_renderer:renderer-a"]);
+        let current: Hello = serde_json::from_value(json).unwrap();
+        assert_eq!(current.rendering_namespace(), Some("renderer-a"));
+        let mut wire = Vec::new();
+        write_frame(
+            &mut wire,
+            &Frame::new(1, true, Response::Hello(current), vec![]),
+        )
+        .unwrap();
+        let frame = read_frame::<Response>(&mut &wire[..]).unwrap().unwrap();
+        let Response::Hello(hello) = frame.header.message else {
+            panic!("expected hello")
+        };
+        assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(hello.rendering_namespace(), Some("renderer-a"));
+    }
 }

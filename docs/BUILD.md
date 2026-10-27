@@ -5,8 +5,9 @@ stable Rust toolchain. The desktop uses GPUI; the remote agent also runs headles
 
 ## Linux
 
-An X11 or Wayland session, Vulkan drivers, and a working desktop portal are needed
-to open the app. On Ubuntu 24.04, install the development prerequisites:
+The GPUI desktop needs an X11 or Wayland session and compatible Vulkan drivers.
+Linux uses a built-in folder/theme picker; desktop portals are not required for
+those dialogs. On Ubuntu 24.04, install the development prerequisites:
 
 ```sh
 sudo apt-get update
@@ -14,20 +15,22 @@ sudo apt-get install build-essential clang libclang-dev pkg-config cmake \
   libfontconfig1-dev libfreetype-dev libwayland-dev libx11-xcb-dev \
   libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libxkbcommon-dev libxkbcommon-x11-dev libssl-dev libzstd-dev \
-  libvulkan-dev libasound2-dev libglib2.0-0t64
+  libvulkan-dev libasound2-dev
 LCMS2_STATIC=1 cargo build --locked --release --bins
 ./target/release/shadowroom /path/to/photos
 ```
 
-Install your distribution's Vulkan runtime/driver and an `xdg-desktop-portal`
-backend for folder dialogs. LibRaw is required for sensor RAW rendering. HEIF on
+Install your distribution's Vulkan runtime/driver. LibRaw is required for sensor
+RAW rendering. HEIF on
 Linux requires libheif and an HEVC decoder such as libde265. These codecs are
 loaded at runtime; see [format support](MEDIA.md).
 
-OS Trash on Linux uses GIO (`libgio-2.0.so.0`, provided by GLib). Install your
-distribution's GLib runtime; Fedora's RPM requires `glib2`. If the library or a
-source volume's Trash is unavailable, deletion reports an error and never falls
-back to permanent deletion. AppImages use the host's GIO service.
+OS Trash on Linux implements FreeDesktop Trash directly, including per-volume
+restore metadata, without loading GLib/GIO. It requires a safe writable Trash
+directory and atomic no-replace rename support from the kernel/filesystem; an
+unsupported operation reports an error and never falls back to permanent deletion.
+Optional drive ejection still invokes `gio mount -e` and needs a desktop volume
+manager. See [portability work](PORTABILITY.md) for lean builds and prototypes.
 
 After building, run the core checks in [Contributing](../CONTRIBUTING.md). On an
 X11/Xwayland desktop, check the feedback workflows against the native app with
@@ -114,7 +117,7 @@ docker build -f packaging/linux/Containerfile -t shadowroom-release-el8:ci packa
 uv run --no-project python scripts/fetch-release-inputs.py --output .local/release-inputs
 scripts/ci-linux-build.sh
 CARGO_TARGET_DIR="$PWD/.local/ci-linux/target" scripts/package-linux.sh \
-  --no-build --heif-runtime .local/ci-linux/codecs
+  --no-build --heif-runtime .local/ci-linux/codecs --glibc-baseline 2.28
 ```
 
 For Podman set `CONTAINER_ENGINE=podman` and build/tag the same image. The build
