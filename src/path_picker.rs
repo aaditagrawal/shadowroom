@@ -129,7 +129,17 @@ mod tests {
         assert_eq!(listing.entries.len(), MAX_ENTRIES);
         assert!(listing.truncated);
     }
-    #[cfg(unix)]
+    #[test]
+    fn unicode_directory_paths_are_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let child = root.path().join("photos-東京");
+        fs::create_dir(&child).unwrap();
+        let expected = fs::canonicalize(&child).unwrap();
+        assert_eq!(list(root.path(), false).unwrap().entries[0].path, expected);
+    }
+    // Linux permits arbitrary filename bytes; macOS filesystems reject invalid
+    // UTF-8 with EILSEQ before the listing code can run.
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_directory_paths_are_preserved() {
         use std::os::unix::ffi::OsStringExt;
