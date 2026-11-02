@@ -1096,3 +1096,29 @@ fn replaced_failed_manifest_path_is_never_adopted_or_deleted() {
     );
     assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 1);
 }
+
+#[test]
+fn every_reference_token_expands() {
+    let f = Fixture::new();
+    f.write("A.mov", b"primary video");
+    let scan = f.scan();
+    for &(_, token, _) in naming::TOKENS {
+        for folder in [true, false] {
+            let options = IngestOptions {
+                library_root: f.temp.path().join("library"),
+                folder_template: if folder { token.into() } else { String::new() },
+                file_template: if folder {
+                    "{original}".into()
+                } else {
+                    format!("x{token}")
+                },
+                job_code: "job".into(),
+                include_videos: true,
+                selected_ids: Some(scan.groups.iter().map(|g| g.id).collect()),
+                ..Default::default()
+            };
+            plan(&scan, options, f.catalog.ingest_sequences().unwrap())
+                .unwrap_or_else(|e| panic!("{token} (folder: {folder}): {e:#}"));
+        }
+    }
+}

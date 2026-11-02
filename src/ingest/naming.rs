@@ -19,6 +19,64 @@ pub const PRESETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Template reference shown beside the naming fields: (group, token, meaning).
+/// `every_reference_token_expands` keeps this list in step with `Context::token`.
+pub const TOKENS: &[(&str, &str, &str)] = &[
+    ("Date", "{YYYY}", "Capture year, 2026"),
+    ("Date", "{YY}", "Two-digit year, 26"),
+    ("Date", "{MM}", "Month, 01–12"),
+    ("Date", "{MMM}", "Month name, Oct"),
+    ("Date", "{DD}", "Day of month, 01–31"),
+    ("Date", "{date}", "Capture date, 2026-10-27"),
+    ("Time", "{hh}", "Hour, 00–23"),
+    ("Time", "{mm}", "Minute"),
+    ("Time", "{ss}", "Second"),
+    ("Time", "{time}", "Capture time, 143005"),
+    ("Time", "{subsec}", "Milliseconds, 042"),
+    ("File", "{original}", "Original filename without extension"),
+    (
+        "File",
+        "{ext}",
+        "Lowercase extension; useful in folders (the filename extension is added automatically)",
+    ),
+    ("File", "{camera}", "Camera model"),
+    ("File", "{make}", "Camera make"),
+    ("File", "{serial}", "Camera serial number"),
+    ("File", "{lens}", "Lens model"),
+    ("File", "{iso}", "ISO"),
+    ("Job", "{job}", "Job code"),
+    (
+        "Job",
+        "{_job}",
+        "Underscore + job code, or nothing when the job code is empty",
+    ),
+    (
+        "Count",
+        "{seq_day:3}",
+        "Counter per capture day; the number sets zero padding (001)",
+    ),
+    (
+        "Count",
+        "{seq_session:4}",
+        "Counter for this import run (0001)",
+    ),
+    (
+        "Count",
+        "{seq_stored:5}",
+        "Counter across every import (00001)",
+    ),
+    (
+        "Count",
+        "{letter}",
+        "a, b, … aa for photos captured in the same second",
+    ),
+    (
+        "Count",
+        "{import:YYYYMMDD}",
+        "Import date (UTC); YYYY, YY, MM and DD are replaced",
+    ),
+];
+
 pub fn wall_time(group: &IngestGroup) -> NaiveDateTime {
     let time =
         DateTime::from_timestamp_millis(group.capture_ms).unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
