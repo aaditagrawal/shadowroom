@@ -8,9 +8,21 @@ import tomllib
 from pathlib import Path
 
 
+def validate_lockfiles(root: Path, version: str):
+    for relative in ("Cargo.lock", "tools/compat-desktop/Cargo.lock"):
+        packages = tomllib.loads((root / relative).read_text())["package"]
+        versions = [p["version"] for p in packages if p["name"] == "shadowroom"]
+        if versions != [version]:
+            raise SystemExit(
+                f"{relative}: shadowroom version {versions!r} must match "
+                f"Cargo.toml {version!r}; refresh this lockfile before releasing"
+            )
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     version = tomllib.loads((root / "Cargo.toml").read_text())["package"]["version"]
+    validate_lockfiles(root, version)
     tag = os.environ.get("GITHUB_REF_NAME", "")
     if os.environ.get("GITHUB_REF_TYPE") == "tag" and tag != f"v{version}":
         raise SystemExit(f"Release tag {tag!r} must match Cargo.toml v{version}")

@@ -25,8 +25,31 @@ env:
   RUST_TEST_THREADS: '2'
 
 jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+          enable-cache: false
+      - name: Validate version, lockfiles and tag
+        run: uv run --no-project python scripts/release-metadata.py
+      - name: Release metadata, COPR safety and ABI regression tests
+        run: uv run --no-project python -m unittest discover -s scripts/tests
+      - name: Package script syntax
+        run: for script in scripts/*.sh; do bash -n "$script" || exit; done
+      - name: Documentation links
+        run: uv run --no-project python scripts/check-docs.py
+
   core:
     name: Core / ${{ matrix.os }}
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -63,21 +86,14 @@ jobs:
         run: cargo test --locked --no-default-features --features rust-color,rust-heif
       - name: CPU/X11 prototype
         if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           cargo fmt --manifest-path tools/compat-desktop/Cargo.toml -- --check
           cargo test --locked --manifest-path tools/compat-desktop/Cargo.toml
-      - name: Package script syntax
-        run: bash -n scripts/*.sh
-      - name: COPR publisher safety
-        run: uv run --no-project python -m unittest discover -s scripts/tests -p test_copr_publish.py
-      - name: Portable ABI inspector
-        run: uv run --no-project python -m unittest discover -s scripts/tests -p test_linux_abi.py
-      - name: Documentation links
-        run: uv run --no-project python scripts/check-docs.py
-
   linux:
     name: Linux x86_64 / glibc 2.28
-    needs: core
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -183,7 +199,7 @@ jobs:
 
   macos:
     name: macOS arm64 native package
-    needs: core
+    needs: preflight
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -238,7 +254,7 @@ jobs:
 
   fedora:
     name: Fedora 44 x86_64 RPM
-    needs: core
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -255,7 +271,7 @@ jobs:
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          shared-key: release-fedora44-${{ hashFiles('Cargo.lock', 'packaging/rpm/Containerfile', 'packaging/rpm/shadowroom.spec.in', 'scripts/rpm-build-srpm.sh', 'scripts/ci-fedora-build.sh', 'vendor/**') }}
+          shared-key: release-fedora44-${{ hashFiles('packaging/rpm/Containerfile', 'packaging/rpm/shadowroom.spec.in', 'scripts/rpm-build-srpm.sh', 'scripts/ci-fedora-build.sh', 'vendor/**') }}
           workspaces: '. -> .local/ci-rpm/target'
           cache-on-failure: true
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -291,7 +307,7 @@ jobs:
 
   source:
     name: Public source bundle
-    needs: core
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

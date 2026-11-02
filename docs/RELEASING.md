@@ -70,6 +70,11 @@ Its runtime is deliberately a dated release rather than mutable `continuous`.
 build instructions and versioned inputs, not a claim that different OS package
 mirrors or toolchains always produce byte-identical native executables.
 
+A short release preflight validates both lockfiles, tag/version agreement, scripts,
+and documentation before compilation. Core tests and platform packaging then run
+in parallel; publication requires every core and platform job to succeed. The
+CPU/X11 prototype shares the core target directory to reuse compiled dependencies.
+
 Core caches separate Ubuntu and macOS targets; release caches separate EL8 and
 macOS targets. The EL8 target directory restored on the host is the same directory
 mounted into the container, and the host Cargo registry is shared with the build.
@@ -88,7 +93,8 @@ Commit only the source tree, documentation, benchmark JSON, and documentation
 images. Keep `target/`, `.local/`, `dist/`, catalogs, and codec build work out of Git.
 Retain `Cargo.lock`, `vendor/xattr`, and all attribution files.
 
-Update `Cargo.toml` and `Cargo.lock`, and write `docs/releases/v<VERSION>.md` with
+Update `Cargo.toml`, `Cargo.lock`, and `tools/compat-desktop/Cargo.lock`, and write
+`docs/releases/v<VERSION>.md` with
 the actual platform support, changes and known limitations. Push the reviewed
 source and check the branch run before tagging that revision. The tag must exactly
 match `v` plus the Cargo package version; mismatches fail before packaging.
