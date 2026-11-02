@@ -2531,6 +2531,10 @@ impl Workspace {
                     cx.notify();
                     return;
                 }
+                if self.import_ui.menu.take().is_some() {
+                    cx.notify();
+                    return;
+                }
                 if self.palette {
                     self.palette = false;
                 } else if self.preferences {
@@ -3527,6 +3531,13 @@ impl Workspace {
         })
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // Quit works from every view, field, menu and dialog; request_quit still
+        // waits for decision writes, exports and imports to settle.
+        let m = event.keystroke.modifiers;
+        if (m.control || m.platform) && !m.shift && !m.alt && event.keystroke.key == "q" {
+            self.request_quit(cx);
+            return;
+        }
         if self.picker_key(event, cx) {
             return;
         }
@@ -9448,7 +9459,13 @@ impl Render for Workspace {
                     .flex()
                     .items_start()
                     .gap(px(space::MD))
-                    .child(div().flex_1().child(error.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_normal()
+                            .child(error.clone()),
+                    )
                     .child(self.button("dismiss-error", "", "close", Cmd::Close, false, cx)),
             );
         }

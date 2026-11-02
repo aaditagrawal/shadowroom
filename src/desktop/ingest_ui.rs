@@ -14,6 +14,19 @@ enum ImportPanel {
 
 const IMPORT_RESIZE_HANDLE: f32 = space::SM;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum IngestMenu {
+    Preset,
+    Selection,
+}
+
+const SELECTIONS: [(&str, &str); 4] = [
+    ("all", "All photos"),
+    ("picks", "Picks"),
+    ("except_rejects", "Everything except rejects"),
+    ("rated", "Rated photos"),
+];
+
 /// The same geometry drives the visible panels and the virtualized grid.
 #[derive(Clone, Copy)]
 struct ImportLayout {
@@ -98,8 +111,12 @@ pub(super) struct ImportUi {
     pub scroll: UniformListScrollHandle,
     pub timeline_scroll: UniformListScrollHandle,
     pub range: Option<(usize, usize)>,
-    pub preset: usize,
-    pub preset_open: bool,
+    pub menu: Option<IngestMenu>,
+    menu_index: usize,
+    /// A click outside an open menu closes it; the same press must not reopen it.
+    menu_dismissed: Option<(IngestMenu, Point<Pixels>)>,
+    /// Template field that receives a token clicked in the reference.
+    template_field: usize,
     pub expected_plan: Option<IngestOptions>,
     panel: ImportPanel,
     timeline_width: f32,
@@ -158,8 +175,10 @@ impl ImportUi {
             scroll: UniformListScrollHandle::new(),
             timeline_scroll: UniformListScrollHandle::new(),
             range: None,
-            preset: 1,
-            preset_open: false,
+            menu: None,
+            menu_index: 0,
+            menu_dismissed: None,
+            template_field: 2,
             expected_plan: None,
             panel: ImportPanel::Photos,
             timeline_width: ui::INGEST_TIMELINE_WIDTH,
@@ -778,6 +797,7 @@ impl Workspace {
             }
             "close" => {
                 self.import_ui.open = false;
+                self.import_ui.menu = None;
                 self.import_ui.active_field = None;
                 self.import_ui.resizing = None;
             }
@@ -830,7 +850,6 @@ impl Workspace {
                     .map(|(i, _)| i)
                     .collect();
             }
-            "preset" => self.import_ui.preset_open = !self.import_ui.preset_open,
             "save_preset" => {
                 let name = if self.import_ui.fields[3].trim().is_empty() {
                     "Custom"
@@ -839,26 +858,22 @@ impl Workspace {
                 }
                 .to_string();
                 self.settings.ingest_presets.insert(
-                    name,
+                    name.clone(),
                     (
                         self.import_ui.fields[1].clone(),
                         self.import_ui.fields[2].clone(),
                     ),
                 );
+                self.import_ui.menu = None;
                 self.save_settings();
+                self.status = format!("Saved naming preset “{name}”");
             }
-            "videos" => {
-                self.import_ui.options.include_videos = !self.import_ui.options.include_videos;
+            "videos:include" | "videos:skip" => {
+                self.import_ui.options.include_videos = action == "videos:include";
                 self.import_ui.changed();
             }
-            "collision" => {
-                self.import_ui.options.collision =
-                    if self.import_ui.options.collision == "suffix" {
-                        "skip"
-                    } else {
-                        "suffix"
-                    }
-                    .into();
+            "collision:suffix" | "collision:skip" => {
+                self.import_ui.options.collision = action[10..].into();
                 self.import_ui.changed();
             }
             "gap" => {
@@ -890,19 +905,32 @@ impl Workspace {
                 self.import_ui.options.selection = "picks".into();
                 self.import_ui.changed();
             }
-            "selection" => {
-                self.import_ui.options.selection =
-                    match self.import_ui.options.selection.as_str() {
-                        "all" => "picks",
-                        "picks" => "except_rejects",
-                        "except_rejects" => "rated",
-                        _ => "all",
-                    }
-                    .into();
-                self.import_ui.changed();
+            action if action.starts_with("selection:") => {
+                if let Some((value, _)) = SELECTIONS.iter().find(|(v, _)| *v == &action[10..]) {
+                    self.import_ui.options.selection = (*value).into();
+                    self.import_ui.menu = None;
+                    self.import_ui.changed();
+                }
             }
-            "rating" => {
-                self.import_ui.options.min_rating = self.import_ui.options.min_rating % 5 + 1;
+            action if action.starts_with("rating:") => {
+                if let Ok(rating) = action[7..].parse::<u8>() {
+                    self.import_ui.options.min_rating = rating.clamp(1, 5);
+                    self.import_ui.changed();
+                }
+            }
+            action if action.starts_with("token:") => {
+                let field = match self.import_ui.active_field {
+                    Some(field @ (1 | 2)) => field,
+                    _ => {
+                        let field = self.import_ui.template_field;
+                        self.import_ui.active_field = Some(field);
+                        self.text_edit.focus(&self.import_ui.fields[field]);
+                        field
+                    }
+                };
+                self.import_ui.template_field = field;
+                self.text_edit
+                    .insert(&mut self.import_ui.fields[field], &action[6..]);
                 self.import_ui.changed();
             }
             "mark" => {
@@ -986,11 +1014,10 @@ impl Workspace {
             action if action.starts_with("preset:") => {
                 if let Ok(index) = action[7..].parse::<usize>() {
                     if let Some((_, folder, file)) = ingest::naming::PRESETS.get(index) {
-                        self.import_ui.preset = index;
                         self.import_ui.fields[1] = folder.to_string();
                         self.import_ui.fields[2] = file.to_string();
                     }
-                    self.import_ui.preset_open = false;
+                    self.import_ui.menu = None;
                     self.refocus_ingest_field();
                     self.import_ui.changed();
                 }
@@ -999,7 +1026,7 @@ impl Workspace {
                 if let Some((folder, file)) = self.settings.ingest_presets.get(&action[7..]) {
                     self.import_ui.fields[1] = folder.clone();
                     self.import_ui.fields[2] = file.clone();
-                    self.import_ui.preset_open = false;
+                    self.import_ui.menu = None;
                     self.refocus_ingest_field();
                     self.import_ui.changed();
                 }
@@ -1020,6 +1047,28 @@ impl Workspace {
     ) -> bool {
         if !self.import_ui.open {
             return false;
+        }
+        if let Some(menu) = self.import_ui.menu {
+            let options = self.ingest_menu_options(menu);
+            let m = event.keystroke.modifiers;
+            if !m.control && !m.platform && !m.alt {
+                match event.keystroke.key.as_str() {
+                    "up" => self.import_ui.menu_index = self.import_ui.menu_index.saturating_sub(1),
+                    "down" => {
+                        self.import_ui.menu_index =
+                            (self.import_ui.menu_index + 1).min(options.len().saturating_sub(1))
+                    }
+                    "enter" | "space" => {
+                        if let Some(option) = options.get(self.import_ui.menu_index) {
+                            let action = option.action.clone();
+                            self.ingest_action(&action, cx);
+                        }
+                    }
+                    _ => {}
+                }
+                cx.notify();
+                return true;
+            }
         }
         if let Some(field) = self.import_ui.active_field {
             let layout = self.ingest_layout();
@@ -1322,21 +1371,666 @@ impl Workspace {
             )
             .into_any_element()
     }
-    fn ingest_option_button(
+    fn ingest_preset_label(&self) -> String {
+        let (folder, file) = (&self.import_ui.fields[1], &self.import_ui.fields[2]);
+        ingest::naming::PRESETS
+            .iter()
+            .find(|(_, f, n)| f == folder && n == file)
+            .map(|(label, _, _)| label.to_string())
+            .or_else(|| {
+                self.settings
+                    .ingest_presets
+                    .iter()
+                    .find(|(_, (f, n))| f == folder && n == file)
+                    .map(|(label, _)| label.clone())
+            })
+            .unwrap_or_else(|| "Custom".into())
+    }
+    fn ingest_menu_options(&self, menu: IngestMenu) -> Vec<MenuOption> {
+        match menu {
+            IngestMenu::Preset => {
+                let current = self.ingest_preset_label();
+                let mut options: Vec<_> = ingest::naming::PRESETS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (label, folder, file))| MenuOption {
+                        label: label.to_string(),
+                        detail: preset_detail(folder, file),
+                        action: format!("preset:{index}"),
+                        active: current == *label,
+                    })
+                    .collect();
+                options.extend(self.settings.ingest_presets.iter().map(
+                    |(label, (folder, file))| MenuOption {
+                        label: label.clone(),
+                        detail: preset_detail(folder, file),
+                        action: format!("custom:{label}"),
+                        active: current == *label,
+                    },
+                ));
+                let name = match self.import_ui.fields[3].trim() {
+                    "" => "Custom",
+                    code => code,
+                };
+                options.push(MenuOption {
+                    label: format!("Save current as “{name}”"),
+                    detail: "Named after the job code".into(),
+                    action: "save_preset".into(),
+                    active: false,
+                });
+                options
+            }
+            IngestMenu::Selection => SELECTIONS
+                .iter()
+                .map(|(value, label)| MenuOption {
+                    label: label.to_string(),
+                    detail: String::new(),
+                    action: format!("selection:{value}"),
+                    active: self.import_ui.options.selection == *value,
+                })
+                .collect(),
+        }
+    }
+    fn ingest_heading(&self, label: &str, first: bool) -> Div {
+        div()
+            .flex_shrink_0()
+            .px(px(space::SM))
+            .when(!first, |s| {
+                s.mt(px(space::SM))
+                    .pt(px(space::LG))
+                    .border_t_1()
+                    .border_color(self.border())
+            })
+            .text_size(px(11.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(self.muted())
+            .child(label.to_uppercase())
+    }
+    fn ingest_label(&self, label: &str) -> Div {
+        div()
+            .text_size(px(11.))
+            .text_color(self.muted())
+            .child(label.to_owned())
+    }
+    fn ingest_hint(&self, hint: &str) -> Div {
+        div()
+            .text_size(px(10.))
+            .line_height(px(14.))
+            .text_color(self.muted())
+            .child(hint.to_owned())
+    }
+    fn ingest_field(&self, n: usize, label: &str, cx: &gpui::Context<Self>) -> Div {
+        let active = self.import_ui.active_field == Some(n);
+        let text = &self.import_ui.fields[n];
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .min_w(px(0.))
+            .px(px(space::SM))
+            .gap(px(space::XS))
+            .child(self.ingest_label(label))
+            .child(
+                div()
+                    .id(("ingest-field", n))
+                    .h(px(ui::FIELD_HEIGHT))
+                    .flex_shrink_0()
+                    .min_w(px(0.))
+                    .p(px(ui::FIELD_INSET))
+                    .border_1()
+                    .border_color(if active { self.accent() } else { self.border() })
+                    .bg(self.bg())
+                    .overflow_hidden()
+                    .cursor(CursorStyle::IBeam)
+                    .child(self.input_text(
+                        &if (n == 0 || n == 4) && !active {
+                            tail_ellipsis(text, 34)
+                        } else {
+                            text.clone()
+                        },
+                        if n == 4 { "None" } else { "" },
+                        active,
+                    ))
+                    .tooltip(self.tip(text, ""))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.import_ui.menu = None;
+                        this.import_ui.active_field = Some(n);
+                        if n == 1 || n == 2 {
+                            this.import_ui.template_field = n;
+                        }
+                        this.text_edit.focus(&this.import_ui.fields[n]);
+                        cx.notify();
+                    })),
+            )
+    }
+    fn ingest_link(
         &self,
         id: impl Into<ElementId>,
         label: &str,
-        action: String,
-        active: bool,
         cx: &gpui::Context<Self>,
+        on_click: impl Fn(&mut Self, &mut gpui::Context<Self>) + 'static,
     ) -> Stateful<Div> {
-        self.button(id, label, "", Cmd::Ingest(action), active, cx)
-            .w_full()
+        let hover = self.text();
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .cursor_pointer()
+            .text_size(px(11.))
+            .text_color(self.muted())
+            .hover(move |s| s.text_color(hover))
+            .child(label.to_owned())
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+    }
+    /// Field-styled trigger whose menu drops below it, floating above the panel.
+    fn ingest_dropdown(
+        &self,
+        menu: IngestMenu,
+        label: &str,
+        value: &str,
+        width: f32,
+        cx: &gpui::Context<Self>,
+    ) -> Div {
+        let open = self.import_ui.menu == Some(menu);
+        let hover = self.hover_bg();
+        let id = match menu {
+            IngestMenu::Preset => "ingest-preset",
+            IngestMenu::Selection => "ingest-selection",
+        };
+        let trigger = div()
+            .id(id)
+            .h(px(ui::FIELD_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(space::SM))
+            .px(px(ui::FIELD_INSET))
+            .border_1()
+            .border_color(if open { self.accent() } else { self.border() })
+            .bg(self.bg())
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(value.to_owned()),
+            )
+            .child(icon("down", self.icon_muted()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    let dismissed = this
+                        .import_ui
+                        .menu_dismissed
+                        .take()
+                        .is_some_and(|(m, at)| m == menu && at == event.position);
+                    if dismissed || this.import_ui.menu == Some(menu) {
+                        this.import_ui.menu = None;
+                    } else {
+                        this.import_ui.menu = Some(menu);
+                        this.import_ui.active_field = None;
+                        this.import_ui.menu_index = this
+                            .ingest_menu_options(menu)
+                            .iter()
+                            .position(|o| o.active)
+                            .unwrap_or(0);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
             .min_w(px(0.))
-            .justify_start()
+            .px(px(space::SM))
+            .gap(px(space::XS))
+            .child(self.ingest_label(label))
+            .child(trigger);
+        if open {
+            let mut list = div()
+                .id("ingest-menu")
+                .w(px(width))
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .mt(px(space::XS))
+                .p(px(space::XS))
+                .flex()
+                .flex_col()
+                .bg(self.c("elevated_surface.background", "#202020"))
+                .border_1()
+                .border_color(self.c("border.variant", "#333333"))
+                .shadow_lg()
+                .occlude()
+                .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    if this.import_ui.menu == Some(menu) {
+                        this.import_ui.menu = None;
+                        this.import_ui.menu_dismissed = Some((menu, event.position));
+                        cx.notify();
+                    }
+                }));
+            let selected_bg = self.selected_bg();
+            for (index, option) in self.ingest_menu_options(menu).into_iter().enumerate() {
+                let action = option.action.clone();
+                let highlighted = self.import_ui.menu_index == index;
+                list = list.child(
+                    div()
+                        .id(("ingest-menu-option", index))
+                        .flex()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .px(px(space::SM))
+                        .py(px(space::XS + 1.))
+                        .min_h(px(ui::CONTROL_HEIGHT))
+                        .cursor_pointer()
+                        .when(highlighted, |s| s.bg(selected_bg))
+                        .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
+                            if this.import_ui.menu_index != index {
+                                this.import_ui.menu_index = index;
+                                cx.notify();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .w(px(16.))
+                                .flex_shrink_0()
+                                .when(option.active, |s| s.child(icon("check", self.accent()))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .child(option.label)
+                                .when(!option.detail.is_empty(), |s| {
+                                    s.child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(self.muted())
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(option.detail),
+                                    )
+                                }),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.ingest_action(&action, cx);
+                        })),
+                );
+            }
+            column = column.child(
+                div().relative().w_full().h(px(0.)).child(
+                    deferred(
+                        anchored()
+                            .anchor(Corner::TopLeft)
+                            .snap_to_window_with_margin(px(space::SM))
+                            .child(list),
+                    )
+                    .with_priority(1),
+                ),
+            );
+        }
+        column
+    }
+    /// Clickable naming reference; each token inserts at the template caret.
+    fn ingest_tokens(&self, cx: &gpui::Context<Self>) -> Div {
+        let hover = self.hover_bg();
+        let target = match self.import_ui.active_field {
+            Some(field @ (1 | 2)) => field,
+            _ => self.import_ui.template_field,
+        };
+        let mut reference = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .min_w(px(0.))
+            .px(px(space::SM))
+            .gap(px(space::XS))
+            .child(self.ingest_label(&format!(
+                "Tokens · click to insert into {}",
+                if target == 1 { "subfolder" } else { "filename" }
+            )));
+        let mut group_row: Option<(&str, Div)> = None;
+        let mut rows: Vec<(&str, Div)> = Vec::new();
+        for (index, &(group, token, meaning)) in ingest::naming::TOKENS.iter().enumerate() {
+            if group_row.as_ref().is_none_or(|(g, _)| *g != group) {
+                rows.extend(group_row.take());
+                group_row = Some((
+                    group,
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(space::XS)),
+                ));
+            }
+            let chip = div()
+                .id(("ingest-token", index))
+                .h(px(20.))
+                .px(px(space::XS))
+                .flex()
+                .items_center()
+                .border_1()
+                .border_color(self.border())
+                .text_size(px(11.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .tooltip(self.tip(meaning, ""))
+                .child(token)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.ingest_action(&format!("token:{token}"), cx);
+                }));
+            if let Some((_, row)) = group_row.take() {
+                group_row = Some((group, row.child(chip)));
+            }
+        }
+        rows.extend(group_row);
+        for (group, chips) in rows {
+            reference = reference.child(
+                div()
+                    .flex()
+                    .gap(px(space::XS))
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .h(px(20.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .text_size(px(10.))
+                            .text_color(self.muted())
+                            .child(group),
+                    )
+                    .child(chips),
+            );
+        }
+        reference
+    }
+    fn ingest_choice_row(
+        &self,
+        label: &str,
+        id: &str,
+        options: impl IntoIterator<Item = (String, Cmd, bool)>,
+        cx: &gpui::Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .flex_shrink_0()
+            .items_center()
+            .justify_between()
+            .gap(px(space::SM))
+            .px(px(space::SM))
+            .child(self.ingest_label(label))
+            .child(self.choices(id, options, cx))
+    }
+    fn ingest_destination(&self, width: f32, cx: &gpui::Context<Self>) -> AnyElement {
+        let inner = (width - 2. * (ui::BAR_INSET + space::SM)).max(160.);
+        let options = &self.import_ui.options;
+        let mut panel = div()
+            .id("ingest-destination")
+            .w(px(width))
+            .min_w(px(0.))
+            .h_full()
+            .flex_shrink_0()
             .overflow_hidden()
-            .whitespace_nowrap()
-            .tooltip(self.tip(label, ""))
+            .overflow_y_scroll()
+            .p(px(ui::BAR_INSET))
+            .pb(px(space::XL))
+            .flex()
+            .flex_col()
+            .gap(px(space::MD))
+            .child(self.ingest_heading("Destination", true))
+            .child(
+                self.ingest_field(0, "Library folder", cx)
+                    .child(self.ingest_link(
+                        "ingest-pick-library",
+                        "Choose folder…",
+                        cx,
+                        |this, cx| this.ingest_picker(0, cx),
+                    )),
+            )
+            .child(
+                self.ingest_field(4, "Backup copies (optional, separate with ;)", cx)
+                    .child(self.ingest_link(
+                        "ingest-pick-backup",
+                        "+ Add backup folder…",
+                        cx,
+                        |this, cx| this.ingest_picker(4, cx),
+                    )),
+            );
+        if let Some(plan) = &self.import_ui.plan {
+            for capacity in &plan.space {
+                let remaining = capacity.remaining as f64 / 1_000_000_000.;
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_shrink_0()
+                        .px(px(space::SM))
+                        .gap(px(space::XS))
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_color(if capacity.sufficient {
+                                    self.muted()
+                                } else {
+                                    self.c("error", "#d46a6a")
+                                })
+                                .child(format!(
+                                    "{:.2} GB free after import · {}",
+                                    remaining,
+                                    capacity.root.display()
+                                )),
+                        )
+                        .child(
+                            div().h(px(3.)).w_full().bg(self.border()).child(
+                                div()
+                                    .h_full()
+                                    .w(relative(
+                                        (capacity.remaining as f64
+                                            / capacity.available.max(1) as f64)
+                                            .clamp(0., 1.)
+                                            as f32,
+                                    ))
+                                    .bg(self.accent()),
+                            ),
+                        ),
+                );
+            }
+        }
+        panel = panel
+            .child(self.ingest_heading("Naming", false))
+            .child(self.ingest_dropdown(
+                IngestMenu::Preset,
+                "Preset",
+                &self.ingest_preset_label(),
+                inner,
+                cx,
+            ))
+            .child(self.ingest_field(1, "Subfolder template", cx).child(
+                self.ingest_hint("Use / to nest folders; empty imports into the library folder."),
+            ))
+            .child(
+                self.ingest_field(2, "Filename template", cx)
+                    .child(self.ingest_hint("The original extension is added automatically.")),
+            );
+        let example = self.import_ui.plan.as_ref().map_or_else(
+            || "Shown once the import is planned".into(),
+            |plan| {
+                plan.plan.example.as_ref().map_or_else(
+                    || "Select a photo to preview its name".into(),
+                    // Relative to the library root: the folder/file pattern is what matters.
+                    |p| {
+                        let root = std::path::Path::new(&self.import_ui.fields[0]);
+                        p.strip_prefix(root)
+                            .map(|r| format!("…/{}", r.display()))
+                            .unwrap_or_else(|_| p.display().to_string())
+                    },
+                )
+            },
+        );
+        panel = panel.child(
+            div()
+                .id("ingest-example")
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .mx(px(space::SM))
+                .p(px(space::SM))
+                .gap(px(space::XS))
+                .bg(self.c("elevated_surface.background", "#1b1b1b"))
+                .child(self.ingest_label("Example"))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_size(px(11.))
+                        .whitespace_normal()
+                        .child(example.clone()),
+                )
+                .tooltip(self.tip(&example, "")),
+        );
+        if let Some(error) = &self.import_ui.error {
+            panel = panel.child(
+                div()
+                    .px(px(space::SM))
+                    .flex_shrink_0()
+                    .text_color(self.c("error", "#d46a6a"))
+                    .child(error.clone()),
+            );
+        }
+        let mut job = self.ingest_field(3, "Job code", cx);
+        if self.import_ui.active_field == Some(3) && !self.settings.ingest_job_codes.is_empty() {
+            let mut recent = div().flex().flex_wrap().gap(px(space::XS));
+            for (index, code) in self.settings.ingest_job_codes.iter().take(5).enumerate() {
+                let action = format!("job:{code}");
+                recent = recent.child(
+                    self.button(
+                        ("ingest-job", index),
+                        code,
+                        "",
+                        Cmd::Ingest(action),
+                        false,
+                        cx,
+                    )
+                    .h(px(ui::COMPACT_CONTROL_HEIGHT))
+                    .border_color(self.border()),
+                );
+            }
+            job = job.child(recent);
+        }
+        panel = panel.child(job).child(self.ingest_tokens(cx));
+        let selection = SELECTIONS
+            .iter()
+            .find(|(value, _)| *value == options.selection)
+            .map_or(options.selection.as_str(), |(_, label)| label);
+        panel = panel
+            .child(self.ingest_heading("Options", false))
+            .child(self.ingest_dropdown(IngestMenu::Selection, "Import", selection, inner, cx));
+        if options.selection == "rated" {
+            let mut stars = div().flex().flex_shrink_0();
+            for rating in 1..=5u8 {
+                stars = stars.child(self.star(
+                    ("ingest-rating", rating as usize),
+                    rating <= options.min_rating,
+                    Cmd::Ingest(format!("rating:{rating}")),
+                    cx,
+                ));
+            }
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .px(px(space::SM))
+                    .child(self.ingest_label("Minimum rating"))
+                    .child(stars),
+            );
+        }
+        panel = panel
+            .child(self.ingest_choice_row(
+                "Videos",
+                "ingest-videos",
+                [
+                    (
+                        "Include".into(),
+                        Cmd::Ingest("videos:include".into()),
+                        options.include_videos,
+                    ),
+                    (
+                        "Skip".into(),
+                        Cmd::Ingest("videos:skip".into()),
+                        !options.include_videos,
+                    ),
+                ],
+                cx,
+            ))
+            .child(self.ingest_choice_row(
+                "Name already taken",
+                "ingest-collision",
+                [
+                    (
+                        "Add suffix".into(),
+                        Cmd::Ingest("collision:suffix".into()),
+                        options.collision == "suffix",
+                    ),
+                    (
+                        "Skip".into(),
+                        Cmd::Ingest("collision:skip".into()),
+                        options.collision == "skip",
+                    ),
+                ],
+                cx,
+            ))
+            .child(self.ingest_heading("More", false));
+        let mut more = div()
+            .flex()
+            .flex_wrap()
+            .flex_shrink_0()
+            .gap(px(space::XS))
+            .px(px(space::SM));
+        for (action, label, tip) in [
+            (
+                "save",
+                "Save as defaults",
+                "Remember the destination, templates and options for future imports",
+            ),
+            (
+                "cull",
+                "Cull first",
+                "Index the card in place so you can pick and rate before importing",
+            ),
+            (
+                "mark",
+                "Mark as imported",
+                "Record the selected photos as imported without copying them",
+            ),
+            ("eject", "Eject card", "Safely eject the source volume"),
+        ] {
+            more = more.child(
+                self.button(
+                    SharedString::from(format!("ingest-{action}")),
+                    label,
+                    "",
+                    Cmd::Ingest(action.into()),
+                    false,
+                    cx,
+                )
+                .border_color(self.border())
+                .tooltip(self.tip(tip, "")),
+            );
+        }
+        panel.child(more).into_any_element()
     }
     fn ingest_selection_controls(&self, cx: &gpui::Context<Self>) -> AnyElement {
         div()
@@ -1564,244 +2258,6 @@ impl Workspace {
             timeline.into_any_element(),
             cx,
         );
-        let mut destination = div()
-            .id("ingest-destination")
-            .w(px(if focus_destination {
-                self.center_size.0.max(0.)
-            } else {
-                layout.destination
-            }))
-            .min_w(px(0.))
-            .h_full()
-            .flex_shrink_0()
-            .overflow_hidden()
-            .overflow_y_scroll()
-            .p(px(ui::BAR_INSET))
-            .border_color(self.border())
-            .flex()
-            .flex_col()
-            .gap(px(space::LG))
-            .child(
-                div()
-                    .px(px(space::SM))
-                    .flex_shrink_0()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Destination"),
-            );
-        for (n, label) in [
-            "Library root",
-            "Subfolder template",
-            "Filename template",
-            "Job code",
-            "Backup roots (semicolon separated)",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut field = div()
-                .flex()
-                .flex_col()
-                .flex_shrink_0()
-                .min_w(px(0.))
-                .px(px(space::SM))
-                .gap(px(space::XS))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(self.muted())
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .id(("ingest-field", n))
-                        .h(px(ui::FIELD_HEIGHT))
-                        .flex_shrink_0()
-                        .min_w(px(0.))
-                        .p(px(ui::FIELD_INSET))
-                        .border_1()
-                        .border_color(if self.import_ui.active_field == Some(n) {
-                            self.accent()
-                        } else {
-                            self.border()
-                        })
-                        .bg(self.bg())
-                        .overflow_hidden()
-                        .cursor(CursorStyle::IBeam)
-                        .child(self.input_text(
-                            &if (n == 0 || n == 4) && self.import_ui.active_field != Some(n) {
-                                tail_ellipsis(&self.import_ui.fields[n], 34)
-                            } else {
-                                self.import_ui.fields[n].clone()
-                            },
-                            "",
-                            self.import_ui.active_field == Some(n),
-                        ))
-                        .tooltip(self.tip(&self.import_ui.fields[n], ""))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.import_ui.active_field = Some(n);
-                            this.text_edit.focus(&this.import_ui.fields[n]);
-                            cx.notify();
-                        })),
-                );
-            if n == 0 || n == 4 {
-                field = field.child(
-                    div()
-                        .id(("ingest-pick", n))
-                        .cursor_pointer()
-                        .text_color(self.muted())
-                        .child(if n == 0 {
-                            "Choose library…"
-                        } else {
-                            "+ Add backup…"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| this.ingest_picker(n, cx))),
-                );
-            }
-            destination = destination.child(field);
-        }
-        if let Some(plan) = &self.import_ui.plan {
-            destination = destination.child(
-                div()
-                    .px(px(space::SM))
-                    .flex_shrink_0()
-                    .text_size(px(11.))
-                    .child(format!(
-                        "Example: {}",
-                        plan.plan.example.as_ref().map_or_else(
-                            || "No selection".into(),
-                            // Relative to the library root: the folder/file pattern is what matters.
-                            |p| {
-                                let root = std::path::Path::new(&self.import_ui.fields[0]);
-                                p.strip_prefix(root)
-                                    .map(|r| format!("…/{}", r.display()))
-                                    .unwrap_or_else(|_| p.display().to_string())
-                            }
-                        )
-                    )),
-            );
-            for capacity in &plan.space {
-                let remaining = capacity.remaining as f64 / 1_000_000_000.;
-                destination = destination
-                    .child(
-                        div()
-                            .px(px(space::SM))
-                            .flex_shrink_0()
-                            .text_size(px(10.))
-                            .text_color(if capacity.sufficient {
-                                self.muted()
-                            } else {
-                                self.c("error", "#d46a6a")
-                            })
-                            .child(format!(
-                                "{} · {:.2} GB after import",
-                                capacity.root.display(),
-                                remaining
-                            )),
-                    )
-                    .child(
-                        div()
-                            .h(px(3.))
-                            .flex_shrink_0()
-                            .w_full()
-                            .bg(self.border())
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(
-                                        (capacity.remaining as f64
-                                            / capacity.available.max(1) as f64)
-                                            .clamp(0., 1.)
-                                            as f32,
-                                    ))
-                                    .bg(self.accent()),
-                            ),
-                    );
-            }
-        }
-        if let Some(error) = &self.import_ui.error {
-            destination = destination.child(
-                div()
-                    .px(px(space::SM))
-                    .flex_shrink_0()
-                    .text_color(self.c("error", "#d46a6a"))
-                    .child(error.clone()),
-            );
-        }
-        if self.import_ui.preset_open {
-            for (index, (label, _, _)) in ingest::naming::PRESETS.iter().enumerate() {
-                destination = destination.child(self.ingest_option_button(
-                    SharedString::from(format!("ingest-preset-{index}")),
-                    label,
-                    format!("preset:{index}"),
-                    self.import_ui.preset == index,
-                    cx,
-                ));
-            }
-            for (index, (label, _)) in self.settings.ingest_presets.iter().enumerate() {
-                destination = destination.child(self.ingest_option_button(
-                    SharedString::from(format!("ingest-custom-{index}")),
-                    label,
-                    format!("custom:{label}"),
-                    false,
-                    cx,
-                ));
-            }
-            destination = destination.child(self.ingest_option_button(
-                "ingest-save-preset",
-                "Save custom preset (job code / Custom)",
-                "save_preset".into(),
-                false,
-                cx,
-            ));
-        }
-        if self.import_ui.active_field == Some(3) {
-            for (index, code) in self.settings.ingest_job_codes.iter().take(5).enumerate() {
-                destination = destination.child(self.ingest_option_button(
-                    SharedString::from(format!("ingest-job-{index}")),
-                    code,
-                    format!("job:{code}"),
-                    false,
-                    cx,
-                ));
-            }
-        }
-        let buttons = [
-            (
-                "preset",
-                format!(
-                    "Preset: {} ▾",
-                    ingest::naming::PRESETS[self.import_ui.preset].0
-                ),
-            ),
-            (
-                "videos",
-                format!("Videos: {}", self.import_ui.options.include_videos),
-            ),
-            (
-                "collision",
-                format!("Collisions: {}", self.import_ui.options.collision),
-            ),
-            (
-                "selection",
-                format!("Import: {} ▾", self.import_ui.options.selection),
-            ),
-            (
-                "rating",
-                format!("Rated ≥ {}", self.import_ui.options.min_rating),
-            ),
-            ("save", "Save as defaults".into()),
-            ("cull", "Cull first".into()),
-            ("mark", "Mark as imported".into()),
-        ];
-        for (action, label) in buttons {
-            destination = destination.child(self.ingest_option_button(
-                SharedString::from(format!("ingest-{action}")),
-                &label,
-                action.into(),
-                false,
-                cx,
-            ));
-        }
         let label = self.import_ui.plan.as_ref().map_or_else(
             || {
                 format!(
@@ -1820,21 +2276,14 @@ impl Workspace {
                 )
             },
         );
-        destination = destination
-            .child(self.ingest_option_button(
-                "ingest-eject",
-                "Eject card",
-                "eject".into(),
-                false,
-                cx,
-            ))
-            .child(self.ingest_option_button(
-                "ingest-hide",
-                "Close panel",
-                "close".into(),
-                false,
-                cx,
-            ));
+        let destination = self.ingest_destination(
+            if focus_destination {
+                self.center_size.0.max(0.)
+            } else {
+                layout.destination
+            },
+            cx,
+        );
         let title = self
             .import_ui
             .source
@@ -2290,6 +2739,21 @@ impl Workspace {
                 cx,
             ))
             .into_any_element()
+    }
+}
+
+pub(super) struct MenuOption {
+    label: String,
+    detail: String,
+    action: String,
+    active: bool,
+}
+
+fn preset_detail(folder: &str, file: &str) -> String {
+    if folder.is_empty() {
+        file.to_owned()
+    } else {
+        format!("{folder}/{file}")
     }
 }
 

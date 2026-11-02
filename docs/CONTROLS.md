@@ -24,6 +24,7 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
+| Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports |
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
 

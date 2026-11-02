@@ -36,6 +36,13 @@ impl Edit {
     fn range(&self) -> std::ops::Range<usize> {
         self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
     }
+    /// Replaces the selection (or inserts at the caret) as if typed.
+    pub fn insert(&mut self, text: &mut String, value: &str) {
+        self.cursor = boundary(text, self.cursor);
+        self.anchor = boundary(text, self.anchor);
+        self.replace(text, value);
+        self.reset();
+    }
     fn replace(&mut self, text: &mut String, insert: &str) {
         let range = self.range();
         self.cursor = range.start + insert.len();
