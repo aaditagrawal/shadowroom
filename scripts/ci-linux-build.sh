@@ -20,7 +20,7 @@ cargo_cache=$(cd "$cargo_cache" && pwd)
     -v "$project_root/.local/release-inputs:/inputs:ro" \
     -w /src -e PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -e HOME=/output/home -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/output/target -e LCMS2_STATIC=1 \
-    -e CARGO_INCREMENTAL=0 -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
+    -e CARGO_INCREMENTAL=0 -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}" \
     -e CARGO_PROFILE_DEV_DEBUG=0 -e CARGO_PROFILE_TEST_DEBUG=0 -e RUST_TEST_THREADS=2 \
     "$image" bash -euo pipefail -c '
         cargo build --locked --release --features desktop --bins

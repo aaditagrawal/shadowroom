@@ -24,7 +24,7 @@ else
         --title "Shadowroom $RELEASE_TAG" --notes-file "$notes"
 fi
 assets=()
-for path in dist/*.tar.gz dist/*.zip dist/*.AppImage dist/*.rpm dist/*.sha256 dist/SHA256SUMS; do
+for path in dist/*.tar.gz dist/*.zip dist/*.AppImage dist/*.rpm dist/*.sha256 dist/SHA256SUMS dist/BUILD-PROVENANCE.json; do
     [[ ! -f "$path" ]] || assets+=("$path")
 done
 gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

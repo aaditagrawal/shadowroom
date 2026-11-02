@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -19,20 +20,27 @@ env:
   LCMS2_STATIC: '1'
   RUST_VERSION: '1.99.1'
   CARGO_INCREMENTAL: '0'
-  CARGO_BUILD_JOBS: '2'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
   RUST_TEST_THREADS: '2'
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
 
 jobs:
   preflight:
     name: Release preflight
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse_run_id: ${{ steps.plan.outputs.reuse_run_id }}
+      native: ${{ steps.plan.outputs.native }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: '0.13.5'
@@ -46,10 +54,18 @@ jobs:
         run: for script in scripts/*.sh; do bash -n "$script" || exit; done
       - name: Documentation links
         run: uv run --no-project python scripts/check-docs.py
+      - name: Plan native checks and exact-commit artifact reuse
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          IS_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft || false }}
+        run: uv run --no-project python scripts/ci-plan.py
 
   core:
     name: Core / ${{ matrix.os }}
     needs: preflight
+    if: needs.preflight.outputs.native == 'true' && needs.preflight.outputs.reuse_run_id == ''
     strategy:
       fail-fast: false
       matrix:
@@ -70,9 +86,13 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        # Scheduling concurrency is not a compiler input; retain the warm cache namespace.
+        env:
+          CARGO_BUILD_JOBS: '2'
         with:
           shared-key: core-${{ matrix.os }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
       - name: Validate version and tag
         run: uv run --no-project python scripts/release-metadata.py
       - name: Formatting
@@ -91,9 +111,11 @@ jobs:
         run: |
           cargo fmt --manifest-path tools/compat-desktop/Cargo.toml -- --check
           cargo test --locked --manifest-path tools/compat-desktop/Cargo.toml
+
   linux:
     name: Linux x86_64 / glibc 2.28
     needs: preflight
+    if: needs.preflight.outputs.native == 'true' && needs.preflight.outputs.reuse_run_id == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -109,10 +131,14 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        # Scheduling concurrency is not a compiler input; retain the warm cache namespace.
+        env:
+          CARGO_BUILD_JOBS: '2'
         with:
           shared-key: release-linux-el8-${{ hashFiles('packaging/linux/Containerfile', 'vendor/**', 'scripts/normalize-xattr-mtimes.py') }}
           workspaces: '. -> .local/ci-linux/target'
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
       - name: Stabilize tracked xattr source timestamps
         run: uv run --no-project python scripts/normalize-xattr-mtimes.py
       - name: Cache patched xattr dependency artifacts
@@ -137,7 +163,7 @@ jobs:
           tags: shadowroom-release-el8:ci
           load: true
           cache-from: type=gha,scope=shadowroom-el8
-          cache-to: type=gha,mode=max,scope=shadowroom-el8
+          cache-to: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'type=gha,mode=min,scope=shadowroom-el8' || '' }}
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .local/ci-linux-tools/debs/*.deb
@@ -184,7 +210,7 @@ jobs:
             dist/*.AppImage
             dist/*.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
@@ -200,6 +226,7 @@ jobs:
   macos:
     name: macOS arm64 native package
     needs: preflight
+    if: needs.preflight.outputs.native == 'true' && needs.preflight.outputs.reuse_run_id == ''
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -217,9 +244,13 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        # Scheduling concurrency is not a compiler input; retain the warm cache namespace.
+        env:
+          CARGO_BUILD_JOBS: '2'
         with:
           shared-key: release-macos-arm64-${{ hashFiles('vendor/**', 'scripts/normalize-xattr-mtimes.py') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
       - name: Stabilize tracked xattr source timestamps
         run: uv run --no-project python scripts/normalize-xattr-mtimes.py
       - name: Cache patched xattr dependency artifacts
@@ -250,11 +281,12 @@ jobs:
             dist/*.zip
             dist/*.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
 
   fedora:
     name: Fedora 44 x86_64 RPM
     needs: preflight
+    if: needs.preflight.outputs.native == 'true' && needs.preflight.outputs.reuse_run_id == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -270,10 +302,14 @@ jobs:
           python-version: '3.12'
           enable-cache: false
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        # Scheduling concurrency is not a compiler input; retain the warm cache namespace.
+        env:
+          CARGO_BUILD_JOBS: '2'
         with:
           shared-key: release-fedora44-${{ hashFiles('packaging/rpm/Containerfile', 'packaging/rpm/shadowroom.spec.in', 'scripts/rpm-build-srpm.sh', 'scripts/ci-fedora-build.sh', 'vendor/**') }}
           workspaces: '. -> .local/ci-rpm/target'
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Prepare Fedora build dependencies
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -283,7 +319,7 @@ jobs:
           tags: shadowroom-release-fedora44:ci
           load: true
           cache-from: type=gha,scope=shadowroom-fedora44
-          cache-to: type=gha,mode=max,scope=shadowroom-fedora44
+          cache-to: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'type=gha,mode=min,scope=shadowroom-fedora44' || '' }}
       - name: Source RPM tools
         run: |
           sudo apt-get update
@@ -303,12 +339,13 @@ jobs:
             dist/*.rpm
             dist/*.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
 
   source:
     name: Public source bundle
     needs: preflight
-    runs-on: ubuntu-24.04
+    if: needs.preflight.outputs.native == 'true' && needs.preflight.outputs.reuse_run_id == ''
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -331,16 +368,22 @@ jobs:
             dist/*-source.tar.gz
             dist/*-source.tar.gz.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
 
   publish:
     name: Publish verified GitHub release
-    needs: [core, linux, macos, fedora, source]
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    needs: [preflight, core, linux, macos, fedora, source]
+    if: >-
+      always() && !cancelled() && needs.preflight.result == 'success' &&
+      github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.event_name == 'push' &&
+      (needs.preflight.outputs.reuse_run_id != '' ||
+       (needs.core.result == 'success' && needs.linux.result == 'success' &&
+        needs.macos.result == 'success' && needs.fedora.result == 'success' && needs.source.result == 'success'))
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -355,6 +398,13 @@ jobs:
           pattern: shadowroom-*
           path: dist
           merge-multiple: true
+          run-id: ${{ needs.preflight.outputs.reuse_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Record and revalidate native build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ needs.preflight.outputs.reuse_run_id || github.run_id }}
+        run: uv run --no-project python scripts/ci-plan.py --receipt dist/BUILD-PROVENANCE.json
       - name: Validate archives and publish preview release
         env:
           GH_TOKEN: ${{ github.token }}

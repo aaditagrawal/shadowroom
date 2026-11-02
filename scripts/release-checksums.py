@@ -14,7 +14,10 @@ def main():
         path
         for path in args.directory.iterdir()
         if path.is_file()
-        and path.name.endswith((".tar.gz", ".zip", ".AppImage", ".rpm"))
+        and (
+            path.name.endswith((".tar.gz", ".zip", ".AppImage", ".rpm"))
+            or path.name == "BUILD-PROVENANCE.json"
+        )
     )
     if not artifacts:
         raise SystemExit("No release archives found")

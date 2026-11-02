@@ -33,6 +33,13 @@ REQUIRED_JOBS = {
     "Public source bundle",
     "Publish verified GitHub release",
 }
+NATIVE_JOBS = REQUIRED_JOBS - {"Publish verified GitHub release"}
+NATIVE_ARTIFACTS = {
+    "shadowroom-linux-x86_64",
+    "shadowroom-macos-arm64",
+    "shadowroom-fedora44-x86_64",
+    "shadowroom-source",
+}
 TERMINAL_FAILURES = {"failed", "canceled", "cancelled", "skipped"}
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 
@@ -110,7 +117,41 @@ def release_commit(tag, api=github):
     raise ValueError("Excessively nested release tag")
 
 
-def validate_source_run(run, jobs, tag, sha, current=False):
+def validate_build_run(run, jobs, sha):
+    """Only successful mainline builds of this exact commit may be promoted."""
+    require(
+        run.get("event") == "push"
+        and run.get("head_branch") == "main"
+        and run.get("head_sha") == sha
+        and run.get("path", "").split("@", 1)[0] == ".github/workflows/ci.yml"
+        and run.get("head_repository", {}).get("full_name") == REPOSITORY,
+        "Artifact source must be an exact-commit mainline Native checks push",
+    )
+    require(
+        run.get("status") == "completed" and run.get("conclusion") == "success",
+        "Artifact source run did not complete successfully",
+    )
+    succeeded = {job["name"] for job in jobs if job.get("conclusion") == "success"}
+    require(NATIVE_JOBS <= succeeded, "Artifact source is missing successful native jobs")
+
+
+def validate_artifacts(artifacts):
+    selected = [a for a in artifacts if a["name"] in NATIVE_ARTIFACTS]
+    require(
+        len(selected) == len(NATIVE_ARTIFACTS)
+        and {a["name"] for a in selected} == NATIVE_ARTIFACTS
+        and all(
+            a.get("expired") is False
+            and a.get("size_in_bytes", 0) > 0
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", a.get("digest", ""))
+            for a in selected
+        ),
+        "Native artifacts are missing, expired, ambiguous or lack digests",
+    )
+    return selected
+
+
+def validate_source_run(run, jobs, tag, sha, current=False, promoted=None):
     require(run.get("event") == "push", "Release source was not a push run")
     require(
         run.get("head_sha") == sha and run.get("head_branch") == tag,
@@ -129,9 +170,46 @@ def validate_source_run(run, jobs, tag, sha, current=False):
             run.get("status") == "completed", "Native source checks are still running"
         )
     succeeded = {job["name"] for job in jobs if job.get("conclusion") == "success"}
+    required = REQUIRED_JOBS
+    if promoted is not None:
+        validate_build_run(promoted[0], promoted[1], sha)
+        required = {"Release preflight", "Publish verified GitHub release"}
     require(
-        REQUIRED_JOBS <= succeeded,
+        required <= succeeded,
         "Required native checks or GitHub publication did not succeed",
+    )
+
+
+def promoted_build(release, tag, sha, run_id, api=github):
+    assets = [a for a in release["assets"] if a["name"] == "BUILD-PROVENANCE.json"]
+    if not assets:
+        return None  # Releases predating artifact promotion retain the old checks.
+    require(len(assets) == 1, "Ambiguous build provenance")
+    asset = assets[0]
+    require(
+        0 < asset.get("size", 0) < 32 * 1024
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", asset.get("digest", "")),
+        "Invalid build provenance asset",
+    )
+    with tempfile.TemporaryDirectory(prefix="shadowroom-provenance-") as folder:
+        path = Path(folder) / "BUILD-PROVENANCE.json"
+        download(asset["browser_download_url"], path, asset["digest"][7:])
+        provenance = json.loads(path.read_text())
+    require(
+        provenance.get("schema") == 1
+        and provenance.get("source_commit") == sha
+        and provenance.get("tag") == tag
+        and provenance.get("publish_run_id") == run_id,
+        "Build provenance does not match the published tag, commit and run",
+    )
+    build_id = provenance.get("build_run_id")
+    require(type(build_id) is int and build_id > 0, "Invalid provenance build run ID")
+    validate_artifacts(provenance.get("artifacts", []))
+    if build_id == run_id:
+        return None
+    return (
+        api(f"actions/runs/{build_id}"),
+        api(f"actions/runs/{build_id}/jobs?per_page=100")["jobs"],
     )
 
 
@@ -166,7 +244,10 @@ def verified_release(tag, current_run=None, api=github):
         if run.get("head_branch") != tag:
             continue
         jobs = api(f"actions/runs/{run['id']}/jobs?per_page=100")["jobs"]
-        validate_source_run(run, jobs, tag, sha, current=bool(current_run))
+        promoted = promoted_build(release, tag, sha, run["id"], api)
+        validate_source_run(
+            run, jobs, tag, sha, current=bool(current_run), promoted=promoted
+        )
         return release, sha, run["id"]
     raise ValueError(
         "No successful Native checks run was found for the exact release tag"

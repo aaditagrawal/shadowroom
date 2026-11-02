@@ -18,7 +18,7 @@ mkdir -p .local/ci-rpm/target .local/ci-rpm/home dist
     -e PATH=/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -e CARGO_INCREMENTAL=0 "$image" bash -euo pipefail -c '
         rpmbuild --rebuild /output/sources/*.src.rpm \
-            --define "_topdir /output/rpm" --define "_smp_build_ncpus 2"
+            --define "_topdir /output/rpm" --define "_smp_build_ncpus $(getconf _NPROCESSORS_ONLN)"
     '
 cp .local/ci-rpm/sources/*.src.rpm dist/
 for package in .local/ci-rpm/rpm/RPMS/x86_64/shadowroom-[0-9]*.x86_64.rpm; do

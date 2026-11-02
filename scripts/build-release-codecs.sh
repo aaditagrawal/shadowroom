@@ -24,7 +24,7 @@ for archive in LibRaw-0.22.2.tar.gz libde265-1.0.18.tar.gz libheif-1.23.5.tar.gz
     cp "$inputs/$archive" "$output/sources/"
 done
 stage="$work/stage"
-jobs=${CARGO_BUILD_JOBS:-2}
+jobs=${CARGO_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 # Preserve the oldest available ABI for LibRaw; only the thread-safe shared object.
 mkdir "$work/raw-build"
 (

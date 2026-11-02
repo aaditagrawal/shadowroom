@@ -3,7 +3,7 @@
 Shadowroom uses the version in `Cargo.toml` for native package names. The
 [Native checks workflow](../.github/workflows/ci.yml) checks main-branch pushes and
 pull requests, retains native artifacts, and publishes a preview GitHub Release after
-a matching `v<VERSION>` tag passes every required job. Ordinary branch pushes and
+a matching `v<VERSION>` tag has verified native artifacts and all required checks. Ordinary branch pushes and
 pull requests never publish releases.
 
 ## Validate the source
@@ -71,9 +71,15 @@ build instructions and versioned inputs, not a claim that different OS package
 mirrors or toolchains always produce byte-identical native executables.
 
 A short release preflight validates both lockfiles, tag/version agreement, scripts,
-and documentation before compilation. Core tests and platform packaging then run
-in parallel; publication requires every core and platform job to succeed. The
-CPU/X11 prototype shares the core target directory to reuse compiled dependencies.
+and documentation before compilation. Explicit documentation-only branch/PR edits
+skip native builds; new or unknown file paths build normally. Draft PRs run
+preflight, with native checks triggered when marked ready for review. Tags always require
+full native validation. Core tests and platform packaging run in parallel;
+publication requires every core and platform job to succeed, either in the tag
+run or in its verified source run. The CPU/X11 prototype shares the core target
+directory to reuse compiled dependencies. Preflight, source bundling and release
+publication use the standard single-CPU `ubuntu-slim` runner; compilers use
+standard Linux/macOS runners and their available CPU cores.
 
 Core caches separate Ubuntu and macOS targets; release caches separate EL8 and
 macOS targets. The EL8 target directory restored on the host is the same directory
@@ -81,7 +87,14 @@ mounted into the container, and the host Cargo registry is shared with the build
 Dependency caches are keyed by toolchain/lock/configuration rather than every app
 source edit. Container layers and the independently keyed codec payload also have
 caches. Incremental compilation and dev/test debug info are disabled to reduce
-cache size; test assertions and coverage remain enabled. Measure completed job and
+cache size; test assertions and coverage remain enabled. Rust caches are restored
+for all builds but written only by main-branch pushes. The cache action retains
+its existing scheduling-variable namespace while compilers use available CPUs,
+so changing concurrency does not discard usable compiled dependencies.
+Container cache exports likewise run only on main and retain
+final image layers. Fedora cache namespaces do not change with package-version
+bumps. Native artifacts last seven days on main/tags and one day on PRs;
+GitHub Release assets remain available independently of Actions retention. Measure completed job and
 step timings before attributing a speed change to a cache or build setting.
 Desktop unit tests use the same optimized release profile as the native binaries,
 so their GPUI dependencies share build outputs. Core tests retain the default
@@ -98,6 +111,16 @@ Update `Cargo.toml`, `Cargo.lock`, and `tools/compat-desktop/Cargo.lock`, and wr
 the actual platform support, changes and known limitations. Push the reviewed
 source and check the branch run before tagging that revision. The tag must exactly
 match `v` plus the Cargo package version; mismatches fail before packaging.
+
+A tag first looks for a completed, successful `main` push run of this exact
+commit, in this repository and the Native checks workflow. Every native job must
+have succeeded and all four artifact bundles must be present, unexpired and
+have SHA-256 digests. If no eligible run exists, the tag builds fresh artifacts.
+A matching commit alone is insufficient: PR, fork, failed, incomplete and
+documentation-only runs cannot supply release artifacts. The publish job
+revalidates the source and adds checksummed `BUILD-PROVENANCE.json`, recording
+both run IDs, the commit and original artifact IDs/digests. Thus a checked main
+commit is released without compiling and testing the identical source again.
 
 Only the publish job receives `contents: write`. GitHub's per-job `GITHUB_TOKEN`
 supplies release access; no personal publishing token is required. After all
@@ -118,7 +141,8 @@ runs also support an already-published tag.
 
 COPR receives only its specific API secret and read-only GitHub permissions.
 Its publisher runs from the default branch, verifies the exact release tag/SHA,
-required native job results, asset checksums, and SRPM source/lock provenance,
+required native job results (including the exact mainline source run when
+artifacts were promoted), asset checksums, and SRPM source/lock provenance,
 then uploads the verified local SRPM for Fedora 44 x86_64 without build networking.
 The reusable call validates successful predecessor jobs instead of requiring its
 own still-running workflow to have a final conclusion. External/manual runs
