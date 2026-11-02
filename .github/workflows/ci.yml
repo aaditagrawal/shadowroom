@@ -19,6 +19,8 @@ env:
   CARGO_TERM_COLOR: always
   LCMS2_STATIC: '1'
   RUST_VERSION: '1.99.1'
+  # rust-cache hashes installed toolchains; exclude unrelated hosted-image updates.
+  RUSTUP_HOME: ${{ github.workspace }}/.local/ci-rustup
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'

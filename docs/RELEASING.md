@@ -91,6 +91,8 @@ cache size; test assertions and coverage remain enabled. Rust caches are restore
 for all builds but written only by main-branch pushes. The cache action retains
 its existing scheduling-variable namespace while compilers use available CPUs,
 so changing concurrency does not discard usable compiled dependencies.
+The pinned Rust toolchain has an isolated Rustup home: unused preinstalled
+toolchain changes on hosted runners cannot invalidate its dependency cache.
 Container cache exports likewise run only on main and retain
 final image layers. Fedora cache namespaces do not change with package-version
 bumps. Native artifacts last seven days on main/tags and one day on PRs;
