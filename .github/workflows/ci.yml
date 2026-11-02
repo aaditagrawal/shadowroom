@@ -417,7 +417,12 @@ jobs:
   copr:
     name: Publish Fedora COPR
     needs: publish
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.event_name == 'push' && vars.COPR_PROJECT == 'aaditagrawal/shadowroom'
+    # Native jobs are intentionally skipped when artifacts are promoted. Override
+    # the implicit success() check so those transitive skips do not skip COPR.
+    if: >-
+      always() && !cancelled() && needs.publish.result == 'success' &&
+      github.ref_type == 'tag' && startsWith(github.ref_name, 'v') &&
+      github.event_name == 'push' && vars.COPR_PROJECT == 'aaditagrawal/shadowroom'
     permissions:
       contents: read
       actions: read
