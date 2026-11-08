@@ -465,10 +465,16 @@ fn multiplexing_cancellation_and_deadlines() {
         client.try_clone().unwrap(),
         client,
         temp.path().join("silent-cache"),
-        Duration::from_millis(30),
+        // Generous for hello on a loaded machine; the request below is short.
+        Duration::from_secs(10),
     )
     .unwrap();
-    assert!(silent.ping().unwrap_err().to_string().contains("timed out"));
+    let error = silent
+        .request_with_timeout(Request::Ping, Duration::from_millis(30))
+        .unwrap()
+        .recv()
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error:#}");
     silent.disconnect();
     control.shutdown(std::net::Shutdown::Both).unwrap();
     peer_worker.join().unwrap();
