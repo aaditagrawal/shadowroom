@@ -1716,7 +1716,7 @@ impl Workspace {
             .background_executor()
             .spawn(async move { done.recv_timeout(Duration::from_secs(5)) });
         cx.spawn(async move|this,cx|{let result=task.await;let _=this.update(cx,|this,cx|{
-            if result.is_ok(){this.prefs_sync=PrefsSync::Durable;cx.quit();}else{this.quit=QuitState::Open;this.error=Some("Could not confirm catalog flush. The window stays open; your decisions have not been discarded.".into());cx.notify();}
+            if result.is_ok(){/* A save re-queued during the flush stays dirty so on_app_quit journals it. */if this.prefs_sync==PrefsSync::Writing{this.prefs_sync=PrefsSync::Durable;}cx.quit();}else{this.quit=QuitState::Open;this.error=Some("Could not confirm catalog flush. The window stays open; your decisions have not been discarded.".into());cx.notify();}
         });}).detach();
     }
 

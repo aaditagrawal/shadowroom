@@ -29,29 +29,40 @@ struct Trash {
 
 /// Directories whose post-move entries still need a best-effort fsync. One
 /// sync per distinct directory after the batch replaces two per file; restore
-/// metadata is still durable before each individual move.
+/// metadata is still durable before each individual move. Held descriptors are
+/// capped so a batch spanning many folders syncs early instead of exhausting
+/// the process file-descriptor limit.
 #[derive(Default)]
-pub(super) struct PendingSyncs(Vec<File>);
+pub(super) struct PendingSyncs {
+    held: Vec<File>,
+    ids: std::collections::HashSet<(u64, u64)>,
+}
+const MAX_PENDING_SYNCS: usize = 64;
 impl PendingSyncs {
     fn push(&mut self, directory: File) {
         let Ok(metadata) = directory.metadata() else {
             return;
         };
-        let known = self.0.iter().any(|existing| {
-            existing
-                .metadata()
-                .is_ok_and(|m| m.dev() == metadata.dev() && m.ino() == metadata.ino())
-        });
-        if !known {
-            self.0.push(directory);
+        let id = (metadata.dev(), metadata.ino());
+        if self.ids.contains(&id) {
+            return;
         }
+        if self.held.len() >= MAX_PENDING_SYNCS {
+            self.flush();
+        }
+        self.ids.insert(id);
+        self.held.push(directory);
     }
-    pub(super) fn sync(self) {
+    fn flush(&mut self) {
         // A completed move remains successful if a directory fsync is
         // unsupported; the restore metadata was synced before it moved.
-        for directory in self.0 {
+        for directory in self.held.drain(..) {
             let _ = directory.sync_all();
         }
+        self.ids.clear();
+    }
+    pub(super) fn sync(mut self) {
+        self.flush();
     }
 }
 
@@ -357,6 +368,22 @@ mod tests {
         model::Photo,
     };
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn pending_syncs_cap_held_descriptors_and_dedupe_by_inode() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut pending = PendingSyncs::default();
+        for n in 0..200 {
+            let dir = temp.path().join(format!("d{n}"));
+            fs::create_dir(&dir).unwrap();
+            pending.push(File::open(&dir).unwrap());
+            // Re-pushing the same directory is a no-op while it is held.
+            pending.push(File::open(&dir).unwrap());
+            assert!(pending.held.len() <= MAX_PENDING_SYNCS);
+            assert_eq!(pending.held.len(), pending.ids.len());
+        }
+        pending.sync();
+    }
 
     fn planned(path: &Path) -> DeletionPlan {
         DeletionPlan::prepare(
