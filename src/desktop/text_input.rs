@@ -137,8 +137,11 @@ fn next(text: &str, index: usize) -> usize {
 
 impl Workspace {
     /// A field edited through the shared `text_edit` state (import form).
+    /// Its caret hides while an overlay (palette, Preferences, …) owns the
+    /// keyboard; the field stays active and resumes when the overlay closes.
     pub(super) fn input_text(&self, text: &str, placeholder: &str, active: bool) -> AnyElement {
-        self.input_field(&self.text_edit, text, placeholder, active, active)
+        let focused = active && self.top_overlay().is_none();
+        self.input_field(&self.text_edit, text, placeholder, active, focused)
     }
     /// Paints `text` with `edit`'s caret and selection. `active` marks the
     /// field's own current input (selection and scroll); `focused` is false

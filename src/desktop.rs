@@ -448,6 +448,11 @@ impl CollectionCounts {
     }
 }
 
+/// Selection after the visible list changes: the kept photo's new position
+/// while it is still visible, else the old index clamped to the new list.
+fn retained_position(kept: Option<usize>, previous: usize, len: usize) -> usize {
+    kept.unwrap_or(previous.min(len.saturating_sub(1)))
+}
 fn index_filtered_positions(positions: &mut Vec<usize>, photo_count: usize, filtered: &[usize]) {
     positions.resize(photo_count, usize::MAX);
     positions.fill(usize::MAX);
@@ -653,6 +658,42 @@ const ACTIVE_POLL: Duration = Duration::from_millis(50);
 const IDLE_POLL: Duration = Duration::from_millis(250);
 /// Input keeps the fast poll for a while: its decodes and saves follow shortly.
 const INPUT_GRACE: Duration = Duration::from_secs(2);
+/// Longest a navigation-only settings change (selected photo, keyboard dock
+/// resizing) waits before it is handed to the preferences writer.
+const NAVIGATION_PERSIST: Duration = Duration::from_secs(1);
+
+/// Throttles persistence of high-frequency navigation state.
+///
+/// `Clean ─touch─▶ Due(t₀ + NAVIGATION_PERSIST) ─poll at/after due─▶ Clean`.
+/// Later touches ride along with the scheduled write instead of extending it,
+/// so a held arrow key persists at most once per interval and never loses more
+/// than one interval of position on a crash. Quit, window deactivation and any
+/// other settings save flush it at once (a settings snapshot carries it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeferredSave {
+    due: Option<Instant>,
+}
+impl DeferredSave {
+    fn touch(&mut self, now: Instant) {
+        self.due.get_or_insert(now + NAVIGATION_PERSIST);
+    }
+    fn pending(self) -> bool {
+        self.due.is_some()
+    }
+    /// Clears and reports a write whose interval has elapsed.
+    fn take_due(&mut self, now: Instant) -> bool {
+        if self.due.is_some_and(|due| now >= due) {
+            self.due = None;
+            true
+        } else {
+            false
+        }
+    }
+    /// Clears and reports any scheduled write, due or not.
+    fn take(&mut self) -> bool {
+        self.due.take().is_some()
+    }
+}
 
 /// Poll cadence: `Active` (50 ms) while any background state machine has work
 /// or input was recent, `Idle` (250 ms) otherwise. An idle sleep is cut short
@@ -708,6 +749,21 @@ enum Overlay {
     Preferences,
     Palette,
     AddHost,
+}
+impl Overlay {
+    /// Every overlay, topmost first. `render` paints them in reverse of this
+    /// order and `key()` routes to the first open one; the palette and the
+    /// guide layer over Preferences so they never discard its draft.
+    const STACK: [Self; 8] = [
+        Self::FolderPicker,
+        Self::Deletion,
+        Self::ImageContext,
+        Self::GettingStarted,
+        Self::RatingFilter,
+        Self::Palette,
+        Self::Preferences,
+        Self::AddHost,
+    ];
 }
 /// Durability of review decisions, derived from the optimistic `unsaved` map
 /// and the count of unacknowledged writer batches.
@@ -954,6 +1010,8 @@ pub struct Workspace {
     visible_textures: HashSet<TextureKey>,
     settings_writable: bool,
     prefs_sync: PrefsSync,
+    /// Navigation state changed in `settings` but not yet queued; see `DeferredSave`.
+    navigation_save: DeferredSave,
     settings_failure: Option<String>,
     unsaved: HashMap<i64, Decision>,
     outbox: VecDeque<Vec<PhotoDecision>>,
@@ -1085,6 +1143,8 @@ impl Workspace {
             // applicationWillTerminate cannot veto exit. Preserve the exact latest
             // optimistic/failed values, including batches still in the UI outbox,
             // before asking the actor to flush. Startup replays this synced journal.
+            this.flush_navigation();
+            this.drain_settings();
             if !this.unsaved.is_empty()||this.prefs_sync.dirty()||this.recovery_pending {
                 let decisions=this.unsaved.values().map(|d|PhotoDecision{id:d.id,rating:d.rating,flag:d.flag,label:d.label,trashed:d.trashed}).collect();
                 let journal=shadowroom::recovery::RecoveryJournal::new(decisions,if this.prefs_sync.dirty()||this.recovery_settings.is_some(){Some(this.settings.clone())}else{None});
@@ -1213,6 +1273,7 @@ impl Workspace {
             visible_textures: HashSet::new(),
             settings_writable,
             prefs_sync: PrefsSync::Durable,
+            navigation_save: DeferredSave::default(),
             settings_failure: None,
             history: History::default(),
             status: "Opening local catalog…".into(),
@@ -1374,11 +1435,22 @@ impl Workspace {
             .get(self.selected)
             .and_then(|&i| self.photos.get(i))
     }
+    /// The pinned reference pane owns review shortcuts: Compare is showing,
+    /// Tab moved focus to it, and the reference is still in the catalog. A
+    /// focus flag left over from Compare (or a reference that has since left
+    /// the catalog) must neither swallow decisions nor stop auto-advance.
+    fn reference_focused(&self) -> bool {
+        self.mode == ViewMode::Compare && self.reference_focus && self.reference_available()
+    }
+    fn reference_available(&self) -> bool {
+        self.reference
+            .is_some_and(|id| self.photo_index.contains_key(&id))
+    }
     fn review_photo(&self) -> Option<&Photo> {
         if self.filter == Filter::Trash {
             return self.selected_photo();
         }
-        if self.mode == ViewMode::Compare && self.reference_focus {
+        if self.reference_focused() {
             self.reference
                 .and_then(|id| self.photo_index.get(&id).map(|&i| &self.photos[i]))
         } else {
@@ -1403,9 +1475,27 @@ impl Workspace {
         self.theme_stale = true;
         if self.settings_writable {
             self.prefs_sync = PrefsSync::Queued;
+            // The snapshot carries any deferred navigation state too.
+            self.navigation_save.take();
+        }
+    }
+    /// Persists navigation-only state (`last_photo_id`, keyboard dock widths)
+    /// on the `DeferredSave` throttle instead of once per keypress.
+    fn save_navigation(&mut self) {
+        if self.settings_writable {
+            self.navigation_save.touch(Instant::now());
+        }
+    }
+    /// Queues deferred navigation state now (quit, window deactivation).
+    fn flush_navigation(&mut self) {
+        if self.navigation_save.take() {
+            self.save_settings();
         }
     }
     fn drain_settings(&mut self) {
+        if self.navigation_save.take_due(Instant::now()) {
+            self.save_settings();
+        }
         if self.prefs_sync == PrefsSync::Queued && self.settings_writable {
             match self.io.try_send(IoCommand::Settings(self.settings.clone())) {
                 Ok(()) => self.prefs_sync = PrefsSync::Writing,
@@ -1605,6 +1695,7 @@ impl Workspace {
             cx.notify();
             return;
         }
+        self.flush_navigation();
         self.drain_settings();
         if self.awaiting > 0 || !self.outbox.is_empty() || self.prefs_sync == PrefsSync::Queued {
             cx.notify();
@@ -2078,9 +2169,11 @@ impl Workspace {
             .filter(|&pos| pos != usize::MAX)
     }
     fn retain_selection(&mut self, keep: Option<i64>) {
-        self.selected = keep
-            .and_then(|id| self.visible_position(id))
-            .unwrap_or(self.selected.min(self.filtered.len().saturating_sub(1)));
+        self.selected = retained_position(
+            keep.and_then(|id| self.visible_position(id)),
+            self.selected,
+            self.filtered.len(),
+        );
     }
     fn rebuild(&mut self, keep: Option<i64>) {
         self.survey_cache = None;
@@ -2288,7 +2381,7 @@ impl Workspace {
         }
         self.selection_anchor = self.selected_id();
         self.settings.last_photo_id = self.selected_id();
-        self.save_settings();
+        self.save_navigation();
         self.grid_scroll
             .scroll_to_item(self.selected / self.grid_cols(), ScrollStrategy::Center);
         self.read_ahead();
@@ -2333,7 +2426,7 @@ impl Workspace {
         self.reference_focus = false;
         self.selected = position;
         self.settings.last_photo_id = self.selected_id();
-        self.save_settings();
+        self.save_navigation();
         self.read_ahead();
         cx.notify();
     }
@@ -2461,18 +2554,19 @@ impl Workspace {
         }
         self.history.push(before, after);
         let old = self.selected_id();
-        let position = self.selected;
+        // Keeps the selected photo when it is still visible (even if earlier
+        // batch members left the view and shifted it), else holds the position
+        // so the next photo slides in. Never re-pin the old index: that would
+        // move the selection onto a different photo.
         self.rebuild_after_decisions(old);
         if allow_advance
             && self.settings.auto_advance
-            && !self.reference_focus
+            && !self.reference_focused()
             && (self.multi.is_empty()
                 || (self.multi.len() == 1 && old.is_some_and(|id| self.multi.contains(&id))))
             && self.selected_id() == old
         {
             self.navigate(1, cx);
-        } else {
-            self.selected = position.min(self.filtered.len().saturating_sub(1));
         }
         cx.notify();
     }
@@ -2808,14 +2902,17 @@ impl Workspace {
             Cmd::ExportPicks => self.choose_folder(Some(true), cx),
             Cmd::ExportXmp => self.choose_folder(Some(false), cx),
             Cmd::Palette => {
+                // The palette layers over Preferences and the import form: an
+                // unapplied preferences draft and the import field's focus and
+                // caret survive it (the palette has its own edit state, and
+                // `focused_edit`/`ingest_key` defer to it while it is open).
                 self.getting_started = false;
-                self.import_ui.active_field = None;
+                self.import_ui.menu = None;
                 self.palette = !self.palette;
                 self.palette_query.clear();
                 self.palette_edit.focus("");
                 self.palette_cache.borrow_mut().take();
                 self.palette_index = 0;
-                self.close_preferences();
             }
             Cmd::Preferences => {
                 self.getting_started = false;
@@ -2829,7 +2926,8 @@ impl Workspace {
             Cmd::ApplyPreferences => self.apply_preferences(false, cx),
             Cmd::ApplyClosePreferences => self.apply_preferences(true, cx),
             Cmd::GettingStarted => {
-                self.close_preferences();
+                // The guide layers over Preferences; Escape returns to the
+                // draft instead of discarding it.
                 self.palette = false;
                 self.getting_started = true;
             }
@@ -2950,11 +3048,7 @@ impl Workspace {
                 let current = if self.zoom {
                     self.zoom_factor
                 } else {
-                    let reference_pane = self.mode == ViewMode::Compare
-                        && self.reference_focus
-                        && self
-                            .reference
-                            .is_some_and(|id| self.photo_index.contains_key(&id));
+                    let reference_pane = self.reference_focused();
                     self.fit_scales.get()[usize::from(!reference_pane)]
                 };
                 self.zoom_factor =
@@ -3827,6 +3921,23 @@ impl Workspace {
         }
         items
     }
+    fn run_palette_command(
+        &mut self,
+        cmd: Cmd,
+        title: String,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.remember_command(title);
+        self.palette = false;
+        // Preferences already open beneath the palette: reveal them rather
+        // than toggling them shut and discarding the draft.
+        if matches!(cmd, Cmd::Preferences) && self.preferences {
+            cx.notify();
+            return;
+        }
+        self.execute(cmd, window, cx);
+    }
     fn remember_command(&mut self, title: String) {
         self.palette_recent.retain(|t| *t != title);
         self.palette_recent.insert(0, title);
@@ -3877,8 +3988,7 @@ impl Workspace {
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::Context<Self>) {
         // Quit works from every view, field, menu and dialog; request_quit still
         // waits for decision writes, exports and imports to settle.
-        let m = event.keystroke.modifiers;
-        if (m.control || m.platform) && !m.shift && !m.alt && event.keystroke.key == "q" {
+        if is_quit_chord(&event.keystroke) {
             self.request_quit(cx);
             return;
         }
@@ -3937,7 +4047,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if self.preferences {
+        if self.preferences && !self.palette {
             return;
         }
         if !self.palette && self.add_host.is_none() && self.ingest_key(event, cx) {
@@ -3977,9 +4087,7 @@ impl Workspace {
                         })
                     };
                     if let Some((cmd, title)) = selected {
-                        self.remember_command(title);
-                        self.palette = false;
-                        self.execute(cmd, window, cx);
+                        self.run_palette_command(cmd, title, window, cx);
                     }
                 }
                 _ => {
@@ -3991,7 +4099,8 @@ impl Workspace {
             return;
         }
         if key == "tab" && self.mode == ViewMode::Compare {
-            self.reference_focus = !self.reference_focus;
+            // Only toggle onto a reference pane that is actually shown.
+            self.reference_focus = !self.reference_focus && self.reference_available();
             cx.notify();
             return;
         }
@@ -4144,6 +4253,24 @@ impl Workspace {
     }
 }
 
+/// Ctrl+Q (Cmd+Q on macOS) quits from every view, field, menu and dialog.
+/// `key()` tests it before any other routing, and handlers on focused child
+/// elements must let it bubble.
+fn is_quit_chord(keystroke: &Keystroke) -> bool {
+    let m = keystroke.modifiers;
+    (m.control || m.platform) && !m.shift && !m.alt && keystroke.key == "q"
+}
+/// Whether the focused dock grip handles (and stops) this key itself.
+fn grip_owns_key(keystroke: &Keystroke, overlay_open: bool) -> bool {
+    let m = keystroke.modifiers;
+    let palette = (m.control || m.platform) && keystroke.key == "k";
+    !overlay_open && !palette && !is_quit_chord(keystroke)
+}
+/// Star rating text without a per-cell, per-frame allocation.
+fn stars(rating: u8) -> &'static str {
+    const STARS: [&str; 6] = ["", "★", "★★", "★★★", "★★★★", "★★★★★"];
+    STARS[usize::from(rating.min(5))]
+}
 fn preview_mtime(p: &Photo) -> i64 {
     if p.companion_path.is_some() {
         p.companion_modified_at
@@ -4375,10 +4502,10 @@ impl Workspace {
                 }
             }))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                // Any overlay owns the keyboard, even if focus stayed on this grip.
-                if this.top_overlay().is_some() { return; }
+                // Any overlay owns the keyboard, even if focus stayed on this grip;
+                // global chords (quit, palette) always bubble to `key()`.
+                if !grip_owns_key(&event.keystroke, this.top_overlay().is_some()) { return; }
                 let key = event.keystroke.key.as_str();
-                if (event.keystroke.modifiers.platform || event.keystroke.modifiers.control) && key == "k" { return; }
                 cx.stop_propagation();
                 match key {
                     "left" | "right" => {
@@ -4386,7 +4513,7 @@ impl Workspace {
                         let sign = if (key == "right") == (side == DockSide::Library) { 1 } else { -1 };
                         let width = match side { DockSide::Library => this.docks.library, DockSide::Inspector => this.docks.inspector };
                         this.set_manual_dock_width(side, width + (step * sign) as f32);
-                        this.save_settings();
+                        this.save_navigation();
                     }
                     "home" => { match side { DockSide::Library => this.settings.sidebar_width = LIBRARY_WIDTH as u32, DockSide::Inspector => this.settings.inspector_width = INFO_WIDTH as u32 }; this.save_settings(); }
                     "enter" | "space" => { this.execute(if side == DockSide::Library { Cmd::Sidebar } else { Cmd::Inspector }, window, cx); window.focus(&this.focus); }
@@ -5588,23 +5715,30 @@ impl Workspace {
     /// Several can be set at once (a folder picker over preferences or import,
     /// add-host beneath the palette), so guards must ask here rather than
     /// re-listing fields.
+    fn overlay_open(&self, overlay: Overlay) -> bool {
+        match overlay {
+            Overlay::FolderPicker => self.folder_picker.is_some(),
+            Overlay::Deletion => self.deletion.open(),
+            Overlay::ImageContext => self.image_context.is_some(),
+            Overlay::GettingStarted => self.getting_started,
+            Overlay::RatingFilter => self.rating_filter_open,
+            Overlay::Palette => self.palette,
+            Overlay::Preferences => self.preferences,
+            Overlay::AddHost => self.add_host.is_some(),
+        }
+    }
+    /// Open overlays, topmost first (`Overlay::STACK`).
     fn overlays(&self) -> impl Iterator<Item = Overlay> + '_ {
-        [
-            (Overlay::FolderPicker, self.folder_picker.is_some()),
-            (Overlay::Deletion, self.deletion.open()),
-            (Overlay::ImageContext, self.image_context.is_some()),
-            (Overlay::GettingStarted, self.getting_started),
-            (Overlay::RatingFilter, self.rating_filter_open),
-            (Overlay::Preferences, self.preferences),
-            (Overlay::Palette, self.palette),
-            (Overlay::AddHost, self.add_host.is_some()),
-        ]
-        .into_iter()
-        .filter_map(|(overlay, open)| open.then_some(overlay))
+        Overlay::STACK
+            .into_iter()
+            .filter(|&overlay| self.overlay_open(overlay))
     }
     /// The text field that owns the keyboard, following `key()`'s routing order;
     /// only its caret blinks, so idle windows do not repaint for hidden fields.
     fn focused_edit(&mut self) -> Option<&mut text_input::Edit> {
+        // A field beneath Preferences or another overlay keeps its caret
+        // for when it regains the keyboard, but must not blink meanwhile.
+        let covered = self.top_overlay().is_some();
         if let Some(picker) = &mut self.folder_picker {
             return picker.focused_edit();
         }
@@ -5614,10 +5748,7 @@ impl Workspace {
         if let Some(form) = &mut self.add_host {
             return Some(&mut form.edit);
         }
-        self.import_ui
-            .active_field
-            .is_some()
-            .then_some(&mut self.text_edit)
+        (self.import_ui.active_field.is_some() && !covered).then_some(&mut self.text_edit)
     }
     fn top_overlay(&self) -> Option<Overlay> {
         self.overlays().next()
@@ -5985,7 +6116,7 @@ impl Workspace {
                 }
             });
         let mut quality_note = None;
-        let active = self.mode == ViewMode::Compare && self.reference_focus == reference;
+        let active = self.mode == ViewMode::Compare && self.reference_focused() == reference;
         let show_quality = self.zoom
             || requested_error.is_some()
             || matches!(&texture, Some((.., source, _, _)) if source.note.is_some())
@@ -6495,7 +6626,7 @@ impl Workspace {
                                                     div()
                                                         .flex_shrink_0()
                                                         .text_color(this.rating_color())
-                                                        .child("★".repeat(photo.rating as usize)),
+                                                        .child(stars(photo.rating)),
                                                 ),
                                         )
                                         .on_hover(cx.listener(
@@ -6748,7 +6879,7 @@ impl Workspace {
                         .bg(rgba(0x0f0f0fd0))
                         .text_size(px(11.))
                         .text_color(self.rating_color())
-                        .child("★".repeat(p.rating as usize)),
+                        .child(stars(p.rating)),
                 );
             }
             if let Some(bar) = self.label_bar(p.label) {
@@ -6991,7 +7122,7 @@ impl Workspace {
                         .bg(rgba(0x0f0f0fd0))
                         .text_size(px(9.))
                         .text_color(self.rating_color())
-                        .child("★".repeat(p.rating as usize)),
+                        .child(stars(p.rating)),
                 );
             }
             let burst = self.burst_slot(p.id);
@@ -8666,9 +8797,7 @@ impl Workspace {
                         s.child(self.keycaps(&item.shortcut))
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.remember_command(title.clone());
-                        this.palette = false;
-                        this.execute(cmd.clone(), window, cx);
+                        this.run_palette_command(cmd.clone(), title.clone(), window, cx);
                     })),
             )
         }
@@ -8694,7 +8823,10 @@ impl Workspace {
                     .id("command-palette")
                     .occlude()
                     .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                        if event.button == MouseButton::Left {
+                        // Outside-click dismissal belongs to the topmost overlay only.
+                        if event.button == MouseButton::Left
+                            && this.top_overlay() == Some(Overlay::Palette)
+                        {
                             cx.stop_propagation();
                             this.execute(Cmd::Close, window, cx);
                         }
@@ -9172,7 +9304,11 @@ impl Workspace {
                     .id("preferences")
                     .occlude()
                     .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                        if event.button == MouseButton::Left {
+                        // A click in the palette, guide or theme picker layered
+                        // above must not close them (or discard this draft).
+                        if event.button == MouseButton::Left
+                            && this.top_overlay() == Some(Overlay::Preferences)
+                        {
                             cx.stop_propagation();
                             this.execute(Cmd::Close, window, cx);
                         }
@@ -9963,11 +10099,11 @@ impl Render for Workspace {
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
             root = root.child(self.rating_filter_menu(cx));
         }
-        if self.palette {
-            root = root.child(self.palette_view(cx));
-        }
         if self.preferences {
             root = root.child(self.preferences_view(window, cx));
+        }
+        if self.palette {
+            root = root.child(self.palette_view(cx));
         }
         if self.getting_started {
             root = root.child(self.getting_started_view(cx));
@@ -10151,7 +10287,18 @@ pub fn run() -> Result<()> {
                     ..Default::default()
                 },
                 move |window, cx| {
-                    let view = cx.new(|cx| Workspace::new(cx, import, window.window_handle()));
+                    let view = cx.new(|cx| {
+                        // Leaving the window is a natural checkpoint for the
+                        // throttled selection/position write.
+                        cx.observe_window_activation(window, |this: &mut Workspace, window, _| {
+                            if !window.is_window_active() {
+                                this.flush_navigation();
+                                this.drain_settings();
+                            }
+                        })
+                        .detach();
+                        Workspace::new(cx, import, window.window_handle())
+                    });
                     window.focus(&view.read(cx).focus);
                     let weak = view.downgrade();
                     window.on_window_should_close(cx, move |_window, cx| {
@@ -10176,16 +10323,19 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod ui_tests {
     use super::{
-        AddHostForm, BurstIndex, Cmd, CollectionCounts, Notice, NoticeKind, PaletteCache, PanDrag,
-        SurveySummary, UiInbox, adjust_folder, clear_notice, index_filtered_positions, item,
-        label_index, text_input,
+        AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
+        NoticeKind, Overlay, PaletteCache, PanDrag, SurveySummary, UiInbox, ViewMode,
+        adjust_folder, clear_notice, grip_owns_key, index_filtered_positions, is_quit_chord, item,
+        label_index, retained_position, text_input,
     };
+    use gpui::Keystroke;
     use gpui::{point, px};
     use serde_json::json;
     use shadowroom::{
         model::{ColorLabel, Flag, Photo},
         workspace::{Decision, Filter, fuzzy_score},
     };
+    use std::time::Instant;
     use std::{
         collections::{HashMap, HashSet},
         future::Future,
@@ -10562,5 +10712,215 @@ mod ui_tests {
         assert_eq!(form.edit.caret(), form.fields[1].len());
         form.focus(0);
         assert_eq!(form.edit.caret(), "studio".len());
+    }
+
+    #[test]
+    fn navigation_persistence_is_throttled_and_flushes_on_demand() {
+        // 100 arrow presses at a 30 Hz key repeat, polled at the 50 ms
+        // active cadence. The old path queued a settings write whenever a
+        // poll saw a dirty flag, i.e. once per press-bearing poll.
+        let start = Instant::now();
+        let press = Duration::from_millis(33);
+        let poll = Duration::from_millis(50);
+        let end = start + press * 100 + NAVIGATION_PERSIST + poll;
+        let (mut before, mut after) = (0, 0);
+        let (mut dirty, mut save) = (false, DeferredSave::default());
+        let (mut next_press, mut presses) = (start, 0);
+        let mut now = start;
+        while now <= end {
+            while presses < 100 && next_press <= now {
+                dirty = true;
+                save.touch(next_press);
+                presses += 1;
+                next_press += press;
+            }
+            before += usize::from(std::mem::take(&mut dirty));
+            after += usize::from(save.take_due(now));
+            now += poll;
+        }
+        assert_eq!(presses, 100);
+        assert_eq!(before, 67, "writes per 100 presses before throttling");
+        // 3.3 s of navigation: at most one write per elapsed interval, plus
+        // the trailing one.
+        assert_eq!(after, 4, "writes per 100 presses after throttling");
+        assert!(!save.pending(), "the final position is always written");
+
+        // Later presses never postpone a scheduled write (bounded loss).
+        let mut save = DeferredSave::default();
+        save.touch(start);
+        save.touch(start + Duration::from_millis(900));
+        assert!(!save.take_due(start + Duration::from_millis(999)));
+        assert!(save.take_due(start + NAVIGATION_PERSIST));
+        assert!(!save.take_due(start + NAVIGATION_PERSIST * 5));
+        // Quit and blur flush a pending write before it is due.
+        save.touch(start);
+        assert!(save.pending() && save.take() && !save.pending() && !save.take());
+    }
+
+    #[test]
+    fn quit_chord_is_recognised_and_never_swallowed() {
+        let key = |s: &str| Keystroke::parse(s).unwrap();
+        for chord in ["ctrl-q", "cmd-q"] {
+            assert!(is_quit_chord(&key(chord)), "{chord}");
+        }
+        for other in [
+            "q",
+            "shift-q",
+            "ctrl-shift-q",
+            "alt-q",
+            "ctrl-alt-q",
+            "ctrl-w",
+        ] {
+            assert!(!is_quit_chord(&key(other)), "{other}");
+        }
+        // The focused dock grip is the only element below the root with its
+        // own key handler; it must let quit (and the palette) bubble to
+        // `key()` whether or not an overlay is up.
+        for overlay_open in [false, true] {
+            for chord in ["ctrl-q", "cmd-q", "ctrl-k"] {
+                assert!(!grip_owns_key(&key(chord), overlay_open), "{chord}");
+            }
+        }
+        assert!(grip_owns_key(&key("left"), false));
+        assert!(!grip_owns_key(&key("left"), true));
+    }
+
+    /// `key()` must test the quit chord before consulting any overlay, view or
+    /// field state, and every other key handler must let it through. Routing
+    /// past that first check depends on `Overlay`/`ViewMode` state, so this
+    /// holds for every surface in `Overlay::STACK` and every `ViewMode`.
+    #[test]
+    fn every_key_handler_lets_quit_through_before_routing() {
+        let _surfaces = (
+            Overlay::STACK,
+            [
+                ViewMode::Grid,
+                ViewMode::Loupe,
+                ViewMode::Compare,
+                ViewMode::Survey,
+            ],
+        );
+        let sources = [
+            ("desktop.rs", include_str!("desktop.rs")),
+            ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
+            ("folder_picker.rs", include_str!("desktop/folder_picker.rs")),
+            ("help.rs", include_str!("desktop/help.rs")),
+            ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
+            ("layout.rs", include_str!("desktop/layout.rs")),
+            ("preferences.rs", include_str!("desktop/preferences.rs")),
+            (
+                "review_actions.rs",
+                include_str!("desktop/review_actions.rs"),
+            ),
+            ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
+            ("text_input.rs", include_str!("desktop/text_input.rs")),
+        ];
+        let root = sources[0].1;
+        let body = &root[root
+            .find("    fn key(&mut self, event: &KeyDownEvent")
+            .expect("root key handler")..];
+        let first = body.lines().skip(1).find(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with("//")
+        });
+        assert_eq!(
+            first.map(str::trim),
+            Some("if is_quit_chord(&event.keystroke) {")
+        );
+        let mut handlers = 0;
+        for (name, source) in sources {
+            for marker in [".on_key_down(", ".capture_key_down(", ".on_key_up("] {
+                for (at, _) in source.match_indices(marker) {
+                    // Skip this test's own marker literals.
+                    if source[..at].ends_with('"') {
+                        continue;
+                    }
+                    handlers += 1;
+                    let window = &source[at..(at + 600).min(source.len())];
+                    assert!(
+                        window.starts_with(".on_key_down(cx.listener(Self::key))")
+                            || window.contains("grip_owns_key(")
+                            || window.contains("is_quit_chord("),
+                        "{name}: key handler at byte {at} must let Ctrl+Q reach request_quit"
+                    );
+                }
+            }
+        }
+        assert_eq!(handlers, 2, "root and dock-grip handlers");
+    }
+
+    #[test]
+    fn overlays_stack_palette_and_guide_above_preferences() {
+        let rank = |overlay| Overlay::STACK.iter().position(|&o| o == overlay).unwrap();
+        assert!(rank(Overlay::Palette) < rank(Overlay::Preferences));
+        assert!(rank(Overlay::GettingStarted) < rank(Overlay::Preferences));
+        assert!(rank(Overlay::FolderPicker) < rank(Overlay::Preferences));
+        let mut seen = Overlay::STACK.to_vec();
+        seen.dedup();
+        assert_eq!(seen.len(), 8);
+    }
+
+    #[test]
+    fn decisions_keep_the_selected_photo_when_others_leave_the_view() {
+        // Unreviewed view [A B C D]; C is selected while a ctrl-click batch
+        // holds only A. Rating A removes it, shifting C to index 1.
+        let before = ["A", "B", "C", "D"];
+        let after = ["B", "C", "D"];
+        let selected = 2;
+        let kept = after.iter().position(|&id| id == before[selected]);
+        let position = retained_position(kept, selected, after.len());
+        assert_eq!(after[position], "C", "selection must not slide onto D");
+        // The selected photo itself left the view: its successor slides in.
+        let after = ["A", "B", "D"];
+        let kept = after.iter().position(|&id| id == before[selected]);
+        assert_eq!(after[retained_position(kept, selected, after.len())], "D");
+        // The last photo left: clamp to the new end; empty views stay at 0.
+        assert_eq!(retained_position(None, 3, 3), 2);
+        assert_eq!(retained_position(None, 3, 0), 0);
+    }
+
+    /// Per-frame, per-cell work in the grid/filmstrip that does not need a
+    /// window: display identity (twice per cell: `has_texture` and
+    /// `texture_photo`), the filename label and the star string. Run with
+    /// `--ignored --nocapture`; prints ns per cell over 10k RAW+JPEG photos.
+    #[test]
+    #[ignore]
+    fn bench_grid_cell_frame_work() {
+        use std::hint::black_box;
+        let photos: Vec<Photo> = (0..10_000)
+            .map(|id| Photo {
+                id,
+                rating: (id % 6) as u8,
+                filename: format!("IMG_{id:05}.CR3"),
+                path: format!("/home/user/Pictures/2026/11-09 Shoot/IMG_{id:05}.CR3").into(),
+                companion_path: Some(
+                    format!("/home/user/Pictures/2026/11-09 Shoot/IMG_{id:05}.JPG").into(),
+                ),
+                ..Photo::default()
+            })
+            .collect();
+        let time = |label: &str, f: &dyn Fn(&Photo) -> usize| {
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let start = Instant::now();
+                let mut sum = 0;
+                for p in &photos {
+                    sum += f(black_box(p));
+                }
+                black_box(sum);
+                best = best.min(start.elapsed().as_secs_f64() * 1e9 / photos.len() as f64);
+            }
+            println!("{label}: {best:.1} ns/cell");
+            best
+        };
+        time("display identity x2", &|p| {
+            let a = (super::preview_mtime(p), super::preview_size(p));
+            let b = (super::preview_mtime(p), super::preview_size(p));
+            (a.1 ^ b.1) as usize
+        });
+        time("filename clone", &|p| p.filename.clone().len());
+        let repeat = time("stars via repeat", &|p| "★".repeat(p.rating as usize).len());
+        let table = time("stars via table", &|p| super::stars(p.rating).len());
+        println!("star string saved {:.1} ns/cell", repeat - table);
     }
 }

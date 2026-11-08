@@ -173,7 +173,7 @@ impl Workspace {
             self.select(visible, false, false, cx);
         }
         self.settings.last_photo_id = self.selected_id();
-        self.save_settings();
+        self.save_navigation();
         self.read_ahead();
         self.rating_filter_open = false;
         self.image_context = Some(ImageContextMenu {
