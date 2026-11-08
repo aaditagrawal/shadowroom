@@ -677,6 +677,7 @@ impl DeferredSave {
     fn touch(&mut self, now: Instant) {
         self.due.get_or_insert(now + NAVIGATION_PERSIST);
     }
+    #[cfg(test)]
     fn pending(self) -> bool {
         self.due.is_some()
     }
