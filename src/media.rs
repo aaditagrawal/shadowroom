@@ -219,11 +219,25 @@ struct Task {
 }
 struct Entry<T> {
     value: T,
+    /// Last use (a `State::tick`). Readers bump only this, never the index.
     touched: u64,
+    /// The key of this entry's record in `State::lru`. Lags `touched` after
+    /// reads; eviction re-files a stale record lazily, so each read costs O(1)
+    /// and each eviction amortized O(log n) instead of a whole-cache scan.
+    stamp: u64,
     bytes: usize,
     fresh: bool,
     published: std::time::Instant,
 }
+
+/// One LRU index record, naming a preview or a compressed source.
+enum Slot {
+    Preview(Key),
+    Source(SourceKey),
+}
+
+/// A just-published preview stays until it is first displayed, or this long.
+const FRESH_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 enum Retired {
     Preview(Weak<Preview>, usize),
@@ -242,6 +256,7 @@ impl Retired {
         }
     }
 }
+
 struct PersistTask {
     task: Task,
     preview: Arc<Preview>,
@@ -252,6 +267,9 @@ struct State {
     pending: HashMap<Key, u64>,
     previews: HashMap<Key, Entry<Arc<Preview>>>,
     sources: HashMap<SourceKey, Entry<Arc<Vec<u8>>>>,
+    /// Exactly one record per cached preview/source, keyed by its `stamp`.
+    /// Ticks are unique, so stamps never collide.
+    lru: std::collections::BTreeMap<u64, Slot>,
     errors: HashMap<Key, MediaError>,
     error_order: VecDeque<Key>,
     recent_errors: VecDeque<RecentMediaError>,
@@ -264,6 +282,17 @@ struct State {
     display: usize,
     persist: VecDeque<PersistTask>,
     persist_bytes: usize,
+    /// Set by the persister when it exits (after any shutdown drain).
+    persister_done: bool,
+}
+
+/// How `State::evict` treats a shortfall that it cannot cover right now.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shortfall {
+    /// Admission: evict nothing that cannot make the request fit.
+    Admit,
+    /// Budget enforcement: shed every reclaimable byte regardless.
+    Shed,
 }
 
 impl State {
@@ -271,68 +300,296 @@ impl State {
         self.clock = self.clock.wrapping_add(1);
         self.clock
     }
-    fn evict_for(&mut self, bytes: usize) -> bool {
-        self.reap();
-        if bytes > self.budget {
-            return false;
+
+    fn store_preview(&mut self, key: Key, value: Arc<Preview>, fresh: bool) {
+        if let Some(old) = self.remove_preview(&key) {
+            self.release_preview(old);
         }
-        while self
-            .memory
-            .saturating_add(self.inflight)
-            .saturating_add(bytes)
-            > self.budget
-        {
-            let preview = self
-                .previews
-                .iter()
-                .filter(|(_, entry)| {
-                    !entry.fresh
-                        || entry.published.elapsed() > std::time::Duration::from_millis(300)
-                })
-                .min_by_key(|(_, v)| v.touched)
-                .map(|(k, v)| (k.clone(), v.touched));
-            let source = self
-                .sources
-                .iter()
-                .min_by_key(|(_, v)| v.touched)
-                .map(|(k, v)| (k.clone(), v.touched));
-            match (preview, source) {
-                (Some((key, p)), Some((source, s))) if s < p => {
-                    let entry = self.sources.remove(&source).unwrap();
-                    if Arc::strong_count(&entry.value) > 1 {
-                        self.retired
-                            .push(Retired::Source(Arc::downgrade(&entry.value), entry.bytes));
-                    } else {
-                        self.memory -= entry.bytes;
-                    }
-                    let _ = key;
-                }
-                (Some((key, _)), _) => {
-                    let entry = self.previews.remove(&key).unwrap();
-                    if Arc::strong_count(&entry.value) > 1 {
-                        self.retired
-                            .push(Retired::Preview(Arc::downgrade(&entry.value), entry.bytes));
-                    } else {
-                        self.memory -= entry.bytes;
-                    }
-                }
-                (_, Some((source, _))) => {
-                    let entry = self.sources.remove(&source).unwrap();
-                    if Arc::strong_count(&entry.value) > 1 {
-                        self.retired
-                            .push(Retired::Source(Arc::downgrade(&entry.value), entry.bytes));
-                    } else {
-                        self.memory -= entry.bytes;
-                    }
-                }
-                _ => break,
+        let stamp = self.tick();
+        let bytes = value.byte_len();
+        self.memory += bytes;
+        self.lru.insert(stamp, Slot::Preview(key.clone()));
+        self.previews.insert(
+            key,
+            Entry {
+                value,
+                touched: stamp,
+                stamp,
+                bytes,
+                fresh,
+                published: std::time::Instant::now(),
+            },
+        );
+    }
+    fn store_source(&mut self, key: SourceKey, value: Arc<Vec<u8>>) {
+        if let Some(old) = self.remove_source(&key) {
+            self.release_source(old);
+        }
+        let stamp = self.tick();
+        let bytes = value.len();
+        self.memory += bytes;
+        self.lru.insert(stamp, Slot::Source(key.clone()));
+        self.sources.insert(
+            key,
+            Entry {
+                value,
+                touched: stamp,
+                stamp,
+                bytes,
+                fresh: false,
+                published: std::time::Instant::now(),
+            },
+        );
+    }
+    /// Unlinks an entry; its bytes stay charged until `release_*`.
+    fn remove_preview(&mut self, key: &Key) -> Option<Entry<Arc<Preview>>> {
+        let entry = self.previews.remove(key)?;
+        self.lru.remove(&entry.stamp);
+        Some(entry)
+    }
+    fn remove_source(&mut self, key: &SourceKey) -> Option<Entry<Arc<Vec<u8>>>> {
+        let entry = self.sources.remove(key)?;
+        self.lru.remove(&entry.stamp);
+        Some(entry)
+    }
+    fn release_preview(&mut self, entry: Entry<Arc<Preview>>) {
+        if Arc::strong_count(&entry.value) > 1 {
+            self.retired
+                .push(Retired::Preview(Arc::downgrade(&entry.value), entry.bytes));
+        } else {
+            self.memory -= entry.bytes;
+        }
+    }
+    fn release_source(&mut self, entry: Entry<Arc<Vec<u8>>>) {
+        if Arc::strong_count(&entry.value) > 1 {
+            self.retired
+                .push(Retired::Source(Arc::downgrade(&entry.value), entry.bytes));
+        } else {
+            self.memory -= entry.bytes;
+        }
+    }
+    /// Evicts the entry filed under `stamp`.
+    fn evict_stamp(&mut self, stamp: u64) {
+        match self.lru.remove(&stamp) {
+            Some(Slot::Preview(key)) => {
+                let entry = self.previews.remove(&key).expect("indexed preview");
+                self.release_preview(entry);
             }
-            self.reap();
+            Some(Slot::Source(key)) => {
+                let entry = self.sources.remove(&key).expect("indexed source");
+                self.release_source(entry);
+            }
+            None => {}
         }
+    }
+    fn persisted(&self, preview: &Arc<Preview>) -> Option<usize> {
+        self.persist
+            .iter()
+            .position(|p| Arc::ptr_eq(&p.preview, preview))
+    }
+    fn drop_persist(&mut self, index: usize) {
+        if let Some(old) = self.persist.remove(index) {
+            self.persist_bytes -= old.preview.byte_len();
+            self.stats.persistence_dropped += 1;
+        }
+    }
+
+    fn excess(&self, bytes: usize) -> usize {
         self.memory
             .saturating_add(self.inflight)
             .saturating_add(bytes)
-            <= self.budget
+            .saturating_sub(self.budget)
+    }
+
+    /// Admission without discarding queued disk writes.
+    fn evict_for(&mut self, bytes: usize) -> bool {
+        self.evict(bytes, false, Shortfall::Admit)
+    }
+    /// Admission that may also drop queued disk writes, as a last resort.
+    fn evict_with_persistence(&mut self, bytes: usize) -> bool {
+        self.evict(bytes, true, Shortfall::Admit)
+    }
+
+    /// Makes room for `bytes` more, oldest use first. Admission first decides
+    /// whether eviction can satisfy the request at all and, if it cannot,
+    /// keeps the cache and persistence queue intact: a request blocked by
+    /// live display copies or other decodes is retried when those release
+    /// (see `reserve_growth`), and emptying the cache would not help it.
+    fn evict(&mut self, bytes: usize, use_persist: bool, shortfall: Shortfall) -> bool {
+        self.reap();
+        if bytes > self.budget && shortfall == Shortfall::Admit {
+            return false;
+        }
+        let excess = self.excess(bytes);
+        if excess == 0 {
+            return true;
+        }
+        // Everything reclaimable is part of `memory`; anything more is held by
+        // in-flight work or display copies and only their release can help.
+        if excess > self.memory && shortfall == Shortfall::Admit {
+            return false;
+        }
+        // Classify oldest-first. Stop as soon as immediately reclaimable
+        // entries cover the excess, so the common case walks only the victims.
+        let mut free_now = Vec::new();
+        let mut free_now_bytes = 0;
+        let mut queued = Vec::new(); // freed by also dropping a queued write
+        let mut queued_bytes = 0;
+        let mut held = Vec::new(); // freed once an external holder releases
+        let mut held_bytes = 0;
+        let queued_writes: std::collections::HashSet<*const Preview> = if use_persist {
+            self.persist
+                .iter()
+                .map(|p| Arc::as_ptr(&p.preview))
+                .collect()
+        } else {
+            Default::default()
+        };
+        let mut cursor = None;
+        while free_now_bytes < excess || shortfall == Shortfall::Shed {
+            let next = match cursor {
+                None => self.lru.iter().next(),
+                Some(at) => self
+                    .lru
+                    .range((std::ops::Bound::Excluded(at), std::ops::Bound::Unbounded))
+                    .next(),
+            };
+            let Some((&stamp, slot)) = next else {
+                break;
+            };
+            cursor = Some(stamp);
+            let (touched, size, strong, protected, persist) = match slot {
+                Slot::Preview(key) => {
+                    let entry = &self.previews[key];
+                    let strong = Arc::strong_count(&entry.value);
+                    (
+                        entry.touched,
+                        entry.bytes,
+                        strong,
+                        entry.fresh && entry.published.elapsed() <= FRESH_GRACE,
+                        // A queued write is the only second holder worth
+                        // giving up; any other holder is external.
+                        strong == 2 && queued_writes.contains(&Arc::as_ptr(&entry.value)),
+                    )
+                }
+                Slot::Source(key) => {
+                    let entry = &self.sources[key];
+                    (
+                        entry.touched,
+                        entry.bytes,
+                        Arc::strong_count(&entry.value),
+                        false,
+                        false,
+                    )
+                }
+            };
+            if touched != stamp {
+                // Used since it was filed: re-file it under its last use. The
+                // walk reaches it again there, in true LRU order.
+                let slot = self.lru.remove(&stamp).expect("indexed entry");
+                match &slot {
+                    Slot::Preview(key) => self.previews.get_mut(key).unwrap().stamp = touched,
+                    Slot::Source(key) => self.sources.get_mut(key).unwrap().stamp = touched,
+                }
+                self.lru.insert(touched, slot);
+                continue;
+            }
+            if protected {
+                continue;
+            }
+            if strong == 1 {
+                free_now.push(stamp);
+                free_now_bytes += size;
+            } else if persist {
+                queued.push(stamp);
+                queued_bytes += size;
+            } else {
+                held.push(stamp);
+                held_bytes += size;
+            }
+        }
+        if free_now_bytes >= excess {
+            for stamp in free_now {
+                if self.excess(bytes) == 0 {
+                    break;
+                }
+                self.evict_stamp(stamp);
+            }
+            return true;
+        }
+        // Queued writes of previews that already left the cache keep only
+        // retired memory alive. They are the cheapest writes to give up.
+        let mut orphans = Vec::new();
+        let mut orphan_bytes = 0;
+        if use_persist {
+            for item in &self.persist {
+                let cached = self
+                    .previews
+                    .get(&item.task.key)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.value, &item.preview));
+                if !cached && Arc::strong_count(&item.preview) == 1 {
+                    orphans.push(Arc::as_ptr(&item.preview));
+                    orphan_bytes += item.preview.byte_len();
+                }
+            }
+        }
+        let reclaimable = free_now_bytes + orphan_bytes + queued_bytes;
+        if reclaimable >= excess || shortfall == Shortfall::Shed {
+            for stamp in free_now {
+                self.evict_stamp(stamp);
+            }
+            for orphan in orphans {
+                if self.excess(bytes) == 0 {
+                    break;
+                }
+                if let Some(index) = self
+                    .persist
+                    .iter()
+                    .position(|p| std::ptr::eq(Arc::as_ptr(&p.preview), orphan))
+                {
+                    self.drop_persist(index);
+                    self.reap();
+                }
+            }
+            for stamp in queued {
+                if self.excess(bytes) == 0 {
+                    break;
+                }
+                let Some(Slot::Preview(key)) = self.lru.get(&stamp) else {
+                    continue;
+                };
+                let preview = self.previews[key].value.clone();
+                if let Some(index) = self.persisted(&preview) {
+                    self.drop_persist(index);
+                }
+                drop(preview);
+                self.evict_stamp(stamp);
+            }
+            if shortfall == Shortfall::Shed {
+                for stamp in held {
+                    self.evict_stamp(stamp);
+                }
+            }
+            return self.excess(bytes) == 0;
+        }
+        // Fits only once external holders release some entries: retire just
+        // those needed (oldest first) so their release frees memory, and let
+        // the caller wait for it. Everything else stays cached.
+        if reclaimable + held_bytes >= excess {
+            let mut needed = excess - reclaimable;
+            for stamp in held {
+                if needed == 0 {
+                    break;
+                }
+                let size = match &self.lru[&stamp] {
+                    Slot::Preview(key) => self.previews[key].bytes,
+                    Slot::Source(key) => self.sources[key].bytes,
+                };
+                self.evict_stamp(stamp);
+                needed = needed.saturating_sub(size);
+            }
+        }
+        false
     }
     fn reap(&mut self) {
         let mut released = 0;
@@ -345,20 +602,6 @@ impl State {
             }
         });
         self.memory = self.memory.saturating_sub(released);
-    }
-    fn evict_with_persistence(&mut self, bytes: usize) -> bool {
-        if self.evict_for(bytes) {
-            return true;
-        }
-        while let Some(old) = self.persist.pop_front() {
-            self.persist_bytes -= old.preview.byte_len();
-            self.stats.persistence_dropped += 1;
-            drop(old);
-            if self.evict_for(bytes) {
-                return true;
-            }
-        }
-        false
     }
     fn observe_peak(&mut self) {
         self.stats.peak_estimated_bytes = self
@@ -384,33 +627,19 @@ impl State {
         None
     }
 
+    /// Callers settle released display memory first (`settle_display`), so a
+    /// just-dropped display copy cannot make this publication fail.
     fn insert_preview(&mut self, key: Key, preview: Arc<Preview>) -> bool {
         let bytes = preview.byte_len();
-        if let Some(old) = self.previews.remove(&key) {
-            if Arc::strong_count(&old.value) > 1 {
-                self.retired
-                    .push(Retired::Preview(Arc::downgrade(&old.value), old.bytes));
-            } else {
-                self.memory -= old.bytes;
-            }
+        if let Some(old) = self.remove_preview(&key) {
+            self.release_preview(old);
         }
         if !self.evict_for(bytes) {
             return false;
         }
-        let touched = self.tick();
-        self.memory += bytes;
-        self.observe_peak();
         self.errors.remove(&key);
-        self.previews.insert(
-            key,
-            Entry {
-                value: preview,
-                touched,
-                bytes,
-                fresh: false,
-                published: std::time::Instant::now(),
-            },
-        );
+        self.store_preview(key, preview, false);
+        self.observe_peak();
         true
     }
     fn record_error(&mut self, key: Key, mut message: String) {
@@ -521,6 +750,7 @@ impl MediaPipeline {
                 pending: HashMap::new(),
                 previews: HashMap::new(),
                 sources: HashMap::new(),
+                lru: std::collections::BTreeMap::new(),
                 errors: HashMap::new(),
                 error_order: VecDeque::new(),
                 recent_errors: VecDeque::with_capacity(RECENT_ERROR_CAPACITY),
@@ -533,6 +763,7 @@ impl MediaPipeline {
                 display: 0,
                 persist: VecDeque::new(),
                 persist_bytes: 0,
+                persister_done: false,
             }),
             remote: OnceLock::new(),
             wake: Condvar::new(),
@@ -558,9 +789,13 @@ impl MediaPipeline {
                 .spawn(move || worker_loop(worker));
         }
         let persist = shared.clone();
-        let _ = thread::Builder::new()
+        if thread::Builder::new()
             .name("shadowroom-persist".into())
-            .spawn(move || persistence_loop(persist));
+            .spawn(move || persistence_loop(persist))
+            .is_err()
+        {
+            shared.state.lock().unwrap().persister_done = true;
+        }
         Self { shared }
     }
 
@@ -845,7 +1080,7 @@ impl MediaPipeline {
         state
             .errors
             .retain(|_, error| !error.message.to_ascii_lowercase().contains("memory"));
-        state.evict_with_persistence(0);
+        state.evict(0, true, Shortfall::Shed);
         drop(state);
         self.shared.wake.notify_all();
         true
@@ -878,6 +1113,32 @@ impl MediaPipeline {
         if !self.shared.stop.load(Ordering::Relaxed) {
             let _ = self.shared.wake.wait_timeout(state, timeout);
         }
+    }
+
+    /// Quit path: stop decoding and give queued disk-cache writes up to
+    /// `PERSIST_DRAIN` to finish, so recently decoded previews survive a
+    /// restart. Blocks the caller for at most `timeout`; returns false if the
+    /// drain had not finished by then (it continues in the background until
+    /// its own deadline). Requests after this are ignored.
+    pub fn shutdown(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Set under the mutex for the same lost-wakeup reason as in Drop.
+        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared.wake.notify_all();
+        while !state.persister_done {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            state = self
+                .shared
+                .wake
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
     }
 }
 
@@ -1010,6 +1271,15 @@ fn reserve_growth(
     bytes: usize,
     owned: usize,
 ) -> Result<MemoryPermit> {
+    reserve_while(shared, bytes, owned, || current(shared, task))
+}
+
+fn reserve_while(
+    shared: &Arc<Shared>,
+    bytes: usize,
+    owned: usize,
+    live: impl Fn() -> bool,
+) -> Result<MemoryPermit> {
     let release_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
     let mut state = shared.state.lock().unwrap();
     if bytes.saturating_add(owned) > state.budget {
@@ -1023,7 +1293,7 @@ fn reserve_growth(
         if bytes.saturating_add(owned) > state.budget {
             bail!("Requested working memory exceeds the updated memory budget");
         }
-        if !current(shared, task) {
+        if !live() {
             bail!("Preview request superseded");
         }
         if state.evict_with_persistence(bytes) {
@@ -1040,9 +1310,10 @@ fn reserve_growth(
         if state.inflight.saturating_sub(state.display) <= owned
             && ((state.retired.is_empty() && state.display == 0)
                 || std::time::Instant::now() > release_deadline)
-            && !state.previews.values().any(|entry| {
-                entry.fresh && entry.published.elapsed() < std::time::Duration::from_millis(300)
-            })
+            && !state
+                .previews
+                .values()
+                .any(|entry| entry.fresh && entry.published.elapsed() < FRESH_GRACE)
         {
             bail!(
                 "Memory budget is occupied by live image buffers; increase memory budget or release other views"
@@ -1108,6 +1379,7 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
         if let Some(preview) = read_open_disk(shared, &task.key, cache, estimate) {
             let mut state = shared.state.lock().unwrap();
             if current(shared, task) {
+                settle_display(shared, &mut state);
                 permit.transfer(&mut state, preview.byte_len());
                 state.stats.disk_hits += 1;
                 if !state.insert_preview(task.key.clone(), Arc::new(preview)) {
@@ -1160,6 +1432,7 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
         if !current(shared, task) {
             return Ok(());
         }
+        settle_display(shared, &mut state);
         state.stats.decoded += 1;
         for preview in previews {
             let mut source = task.key.source.clone();
@@ -1241,6 +1514,7 @@ fn process_remote_task(
     if !current(shared, task) {
         return Ok(());
     }
+    settle_display(shared, &mut state);
     state.stats.decoded += 1;
     if result.cache_hit {
         state.stats.disk_hits += 1;
@@ -1343,19 +1617,8 @@ fn source_bytes(shared: &Arc<Shared>, key: &SourceKey, task: &Task) -> Result<Ar
     let mut state = shared.state.lock().unwrap();
     state.stats.source_reads += 1;
     permit.transfer(&mut state, bytes.len());
-    let touched = state.tick();
-    state.memory += bytes.len();
+    state.store_source(key.clone(), bytes.clone());
     state.observe_peak();
-    state.sources.insert(
-        key.clone(),
-        Entry {
-            value: bytes.clone(),
-            touched,
-            bytes: bytes.len(),
-            fresh: false,
-            published: std::time::Instant::now(),
-        },
-    );
 
     Ok(bytes)
 }
@@ -1558,14 +1821,32 @@ fn enqueue_persist(state: &mut State, task: &Task, key: Key, preview: Arc<Previe
     });
 }
 
+/// Upper bound on writing queued previews after `stop`, so a quit keeps the
+/// most recent disk-cache work without being delayed indefinitely.
+const PERSIST_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn persistence_loop(shared: Arc<Shared>) {
+    let mut drain_until = None;
     loop {
         let item = {
-            let mut state = shared.state.lock().unwrap();
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 apply_cancellation(&shared, &mut state);
                 if shared.stop.load(Ordering::Relaxed) {
-                    return;
+                    // Workers are gone or finishing; drain without waiting
+                    // for an idle queue, within the deadline.
+                    let until = *drain_until
+                        .get_or_insert_with(|| std::time::Instant::now() + PERSIST_DRAIN);
+                    if state.persist.is_empty() || std::time::Instant::now() >= until {
+                        state.stats.persistence_dropped += state.persist.len() as u64;
+                        state.persist.clear();
+                        state.persist_bytes = 0;
+                        state.persister_done = true;
+                        drop(state);
+                        shared.wake.notify_all();
+                        return;
+                    }
+                    break;
                 }
                 if !state.persist.is_empty() && state.queue.is_empty() && state.stats.active == 0 {
                     break;
@@ -1585,21 +1866,28 @@ fn persistence_loop(shared: Arc<Shared>) {
             state.persist_bytes -= item.preview.byte_len();
             item
         };
-        if !current(&shared, &item.task) || cache_path(&shared, &item.task.key).is_file() {
+        // A stop does not supersede a finished preview; cancellation does.
+        let live = || {
+            !shared.cancel_requested.load(Ordering::Acquire)
+                && item.task.generation == shared.generation.load(Ordering::Relaxed)
+                && drain_until.is_none_or(|until| std::time::Instant::now() < until)
+        };
+        if !live() || cache_path(&shared, &item.task.key).is_file() {
             continue;
         }
         // The PNG encoder buffers compressed output and may keep a fallback copy;
         // reserve for worst-case Vec growth plus rows/filter/zlib workspace.
-        let Ok(_permit) = reserve(
+        let Ok(_permit) = reserve_while(
             &shared,
-            &item.task,
             item.preview.rgba.len().saturating_mul(4)
                 + item.preview.width as usize * 32
                 + 256 * 1024,
+            0,
+            &live,
         ) else {
             continue;
         };
-        if current(&shared, &item.task) {
+        if live() {
             let _ = write_disk(&shared, &item.task.key, &item.preview);
         }
     }
@@ -4443,9 +4731,12 @@ mod tests {
                 false,
             )),
         );
+        // Fits only once `held` is released: retire it (charged until then),
+        // but keep the unshared entry, whose eviction alone cannot help.
         assert!(!state.evict_for(17_000));
-        assert_eq!(state.memory, held.byte_len());
+        assert_eq!(state.memory, 2 * held.byte_len());
         assert_eq!(state.retired.len(), 1);
+        assert_eq!(state.previews.len(), 1);
         drop(held);
         assert!(state.evict_for(17_000));
         assert_eq!(state.memory, 0);
@@ -5069,5 +5360,180 @@ mod tests {
         }
         let state = pipeline.shared.state.lock().unwrap();
         assert_eq!(state.inflight, 0);
+    }
+
+    fn tiny_preview() -> Arc<Preview> {
+        Arc::new(Preview {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 16],
+            source_width: 2,
+            source_height: 2,
+            kind: PreviewKind::Thumbnail,
+            histogram: Histogram::default(),
+            dhash: 0,
+            color_status: ColorStatus::AssumedSrgb,
+            embedded_raw: false,
+            rendered_raw: false,
+            rendering_note: None,
+        })
+    }
+
+    /// `cargo test --lib media::tests::lru_eviction_benchmark -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: run explicitly with --ignored --nocapture"]
+    fn lru_eviction_benchmark() {
+        const ENTRIES: usize = 20_000;
+        let entry = tiny_preview().byte_len();
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), ENTRIES * entry);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        let started = std::time::Instant::now();
+        for index in 0..ENTRIES {
+            let key = make_key(
+                Path::new(&format!("photo-{index}.jpg")),
+                1,
+                0,
+                PreviewKind::Thumbnail,
+            );
+            assert!(state.insert_preview(key, tiny_preview()));
+        }
+        let fill = started.elapsed();
+        // Touch every other entry so LRU order differs from insertion order.
+        for index in (0..ENTRIES).step_by(2) {
+            let key = make_key(
+                Path::new(&format!("photo-{index}.jpg")),
+                1,
+                0,
+                PreviewKind::Thumbnail,
+            );
+            let touched = state.tick();
+            state.previews.get_mut(&key).unwrap().touched = touched;
+        }
+        let started = std::time::Instant::now();
+        assert!(state.evict_for(ENTRIES / 2 * entry));
+        let evict = started.elapsed();
+        assert_eq!(state.previews.len(), ENTRIES / 2);
+        // The touched (even) half survives.
+        assert!(state.previews.keys().all(|key| {
+            let name = key.source.path.to_string_lossy();
+            name.trim_start_matches("photo-")
+                .trim_end_matches(".jpg")
+                .parse::<usize>()
+                .unwrap()
+                % 2
+                == 0
+        }));
+        // An unsatisfiable request (live display copies hold the budget).
+        state.inflight += ENTRIES * entry;
+        let started = std::time::Instant::now();
+        let fits = state.evict_for(entry);
+        let infeasible = started.elapsed();
+        let kept_infeasible = state.previews.len();
+        state.inflight -= ENTRIES * entry;
+        assert!(!fits);
+        eprintln!(
+            "LRU benchmark ({ENTRIES} entries): fill {fill:?}, infeasible request {infeasible:?} \
+             (kept {kept_infeasible}), evict half {evict:?}"
+        );
+        assert_eq!(kept_infeasible, ENTRIES / 2);
+    }
+
+    fn tiny_key(index: usize) -> Key {
+        make_key(
+            Path::new(&format!("tiny-{index}.jpg")),
+            1,
+            0,
+            PreviewKind::Thumbnail,
+        )
+    }
+
+    #[test]
+    fn unsatisfiable_admission_keeps_cache_and_persistence_queue() {
+        let entry = tiny_preview().byte_len();
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 100 * entry);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        // Keep the persister from writing while the queue is inspected.
+        state.stats.active = 1;
+        let task = Task {
+            key: tiny_key(0),
+            generation: 0,
+            sequence: 0,
+        };
+        for index in 0..4 {
+            let preview = tiny_preview();
+            assert!(state.insert_preview(tiny_key(index), preview.clone()));
+            enqueue_persist(&mut state, &task, tiny_key(index), preview);
+        }
+        assert_eq!(state.persist.len(), 4);
+        state.budget = 10 * entry;
+        // Live display copies hold the rest of the budget: no amount of
+        // eviction can admit even one more entry, so nothing is discarded.
+        state.inflight = 10 * entry;
+        assert!(!state.evict_with_persistence(entry));
+        assert!(!state.evict_for(entry));
+        assert_eq!(state.previews.len(), 4);
+        assert_eq!(state.persist.len(), 4);
+        assert_eq!(state.stats.persistence_dropped, 0);
+        // Once the display copies go, the same request evicts one entry,
+        // the least recently used one, and still keeps the queued writes.
+        let touched = state.tick();
+        state.previews.get_mut(&tiny_key(0)).unwrap().touched = touched;
+        state.inflight = 0;
+        for index in 4..10 {
+            assert!(state.insert_preview(tiny_key(index), tiny_preview()));
+        }
+        assert!(state.insert_preview(tiny_key(10), tiny_preview()));
+        assert_eq!(state.previews.len(), 10);
+        assert!(state.previews.contains_key(&tiny_key(0)));
+        assert!(!state.previews.contains_key(&tiny_key(4)));
+        assert_eq!(state.persist.len(), 4);
+        // Persisted-only previews are given up only when nothing else helps,
+        // and then only as many as needed.
+        state.inflight = 6 * entry;
+        assert!(state.evict_with_persistence(entry));
+        assert!(state.memory + state.inflight + entry <= state.budget);
+        assert_eq!(state.persist.len(), 3);
+        assert_eq!(state.stats.persistence_dropped, 1);
+        assert_eq!(state.lru.len(), state.previews.len() + state.sources.len());
+        state.stats.active = 0;
+    }
+
+    #[test]
+    fn shutdown_drains_queued_persistence_within_its_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 64 * 1024 * 1024);
+        let key = make_key(Path::new("drain.png"), 1, 3, PreviewKind::Thumbnail);
+        let preview = Arc::new(make_preview(
+            numbered(),
+            PreviewKind::Thumbnail,
+            3,
+            2,
+            ColorStatus::AssumedSrgb,
+            false,
+        ));
+        {
+            let mut state = pipeline.shared.state.lock().unwrap();
+            // A busy worker defers persistence: it would still be queued at quit.
+            state.stats.active = 1;
+            assert!(state.insert_preview(key.clone(), preview.clone()));
+            let task = Task {
+                key: key.clone(),
+                generation: 0,
+                sequence: 0,
+            };
+            enqueue_persist(&mut state, &task, key.clone(), preview);
+        }
+        let started = std::time::Instant::now();
+        assert!(pipeline.shutdown(std::time::Duration::from_secs(5)));
+        assert!(started.elapsed() <= PERSIST_DRAIN + std::time::Duration::from_millis(500));
+        assert!(cache_path(&pipeline.shared, &key).is_file());
+        assert_eq!(
+            read_disk(&pipeline.shared, &key).unwrap().rgba.len(),
+            3 * 2 * 4
+        );
+        // Idempotent and immediate once drained.
+        assert!(pipeline.shutdown(std::time::Duration::ZERO));
     }
 }

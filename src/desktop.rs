@@ -1150,10 +1150,15 @@ impl Workspace {
                 let journal=shadowroom::recovery::RecoveryJournal::new(decisions,if this.prefs_sync.dirty()||this.recovery_settings.is_some(){Some(this.settings.clone())}else{None});
                 if let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
             }
+            // Stop decoding now; queued preview-cache writes drain (at most 1 s)
+            // while the catalog flushes, and are awaited below.
+            this.media.shutdown(Duration::ZERO);
             let (ack,done)=crossbeam_channel::bounded(1);
             if shutdown.send_timeout(IoCommand::Shutdown(ack),Duration::from_secs(1)).is_ok(){
                 if let Err(e)=done.recv_timeout(Duration::from_secs(6)){eprintln!("Shutdown did not finish; pending decisions remain in the recovery journal: {e}");}
-            }async {}
+            }
+            this.media.shutdown(Duration::from_secs(1));
+            async {}
         });
         let poll_wake = Rc::new(PollWake::default());
         let wake = poll_wake.clone();
