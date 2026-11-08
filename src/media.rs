@@ -614,21 +614,27 @@ impl State {
             .max(self.memory.saturating_add(self.inflight));
     }
     fn satisfying(&self, key: &Key) -> Option<Key> {
-        let kinds: &[PreviewKind] = match key.kind {
+        let mut candidate = key.clone();
+        candidate.kind = self.satisfying_kind(&mut candidate)?;
+        Some(candidate)
+    }
+    /// The cached kind that satisfies `key`, probing with `key` itself (it is
+    /// restored before returning) so per-frame UI lookups clone no path.
+    fn satisfying_kind(&self, key: &mut Key) -> Option<PreviewKind> {
+        let requested = key.kind;
+        let kinds: &[PreviewKind] = match requested {
             PreviewKind::Thumbnail => {
                 &[PreviewKind::Thumbnail, PreviewKind::Fit, PreviewKind::Full]
             }
             PreviewKind::Fit => &[PreviewKind::Fit, PreviewKind::Full],
             PreviewKind::Full => &[PreviewKind::Full],
         };
-        let mut candidate = key.clone();
-        for &kind in kinds {
-            candidate.kind = kind;
-            if self.previews.contains_key(&candidate) {
-                return Some(candidate);
-            }
-        }
-        None
+        let found = kinds.iter().copied().find(|&kind| {
+            key.kind = kind;
+            self.previews.contains_key(key)
+        });
+        key.kind = requested;
+        found
     }
 
     /// Callers settle released display memory first (`settle_display`), so a
@@ -818,13 +824,13 @@ impl MediaPipeline {
     ) {
         self.request_key(make_key(path, modified_at, size_bytes, kind));
     }
-    fn request_key(&self, key: Key) {
+    fn request_key(&self, mut key: Key) {
         let kind = key.kind;
         let Ok(mut state) = self.shared.state.try_lock() else {
             return;
         };
         apply_cancellation(&self.shared, &mut state);
-        if state.satisfying(&key).is_some()
+        if state.satisfying_kind(&mut key).is_some()
             || state.errors.contains_key(&key)
             || state.pending.contains_key(&key)
         {
@@ -872,10 +878,10 @@ impl MediaPipeline {
     ) -> Option<Arc<Preview>> {
         self.get_key(make_key(path, modified_at, size_bytes, kind))
     }
-    fn get_key(&self, requested: Key) -> Option<Arc<Preview>> {
+    fn get_key(&self, mut key: Key) -> Option<Arc<Preview>> {
         let mut state = self.shared.state.try_lock().ok()?;
         let touched = state.tick();
-        let key = state.satisfying(&requested)?;
+        key.kind = state.satisfying_kind(&mut key)?;
         let entry = state.previews.get_mut(&key)?;
         entry.touched = touched;
         // Only the first display of a fresh entry makes it evictable, which is
