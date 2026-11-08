@@ -109,16 +109,19 @@ struct Work {
     request: Request,
     control: Arc<Control>,
 }
-/// Longest a windowed stream waits for the client to return credit. Session
-/// end and cancellation wake it at once; this only bounds a live client that
-/// stopped consuming without cancelling.
-const CREDIT_WAIT: Duration = Duration::from_secs(3600);
+/// Longest a windowed stream waits with no credit at all. Session end and
+/// cancellation wake it at once; this frees the worker (one of four) when a
+/// live client stopped consuming without its Cancel reaching the agent. A
+/// client returns credit each FLOW_WINDOW/2 frames it consumes, so only a
+/// consumer stalled this long on half a window gives up its stream.
+const CREDIT_WAIT: Duration = Duration::from_secs(60);
 /// Per-request cancellation plus the optional credit window of its stream.
 struct Control {
     stop: Arc<AtomicBool>,
     /// None: unwindowed (legacy client or non-metadata request).
     credit: Mutex<Option<u64>>,
     changed: Condvar,
+    credit_wait: Duration,
 }
 impl Control {
     fn new(window: Option<u32>) -> Self {
@@ -126,6 +129,7 @@ impl Control {
             stop: Arc::new(AtomicBool::new(false)),
             credit: Mutex::new(window.map(u64::from)),
             changed: Condvar::new(),
+            credit_wait: CREDIT_WAIT,
         }
     }
     fn cancel(&self) {
@@ -140,9 +144,10 @@ impl Control {
             self.changed.notify_all();
         }
     }
-    /// Take one frame of credit, blocking while the window is exhausted.
+    /// Take one frame of credit, blocking while the window is exhausted, for
+    /// at most `credit_wait` without any grant (each grant ends this wait).
     fn acquire(&self) -> Result<()> {
-        let deadline = Instant::now() + CREDIT_WAIT;
+        let deadline = Instant::now() + self.credit_wait;
         let mut credit = self.credit.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             check(&self.stop)?;
@@ -1590,6 +1595,14 @@ mod tests {
         let error = control.acquire().unwrap_err();
         canceller.join().unwrap();
         assert!(error.to_string().contains("cancelled"));
+        // A lost Cancel: no credit and no cancellation frees the worker after
+        // the bounded credit wait instead of pinning it.
+        let mut abandoned = Control::new(Some(0));
+        abandoned.credit_wait = Duration::from_millis(50);
+        let started = Instant::now();
+        let error = abandoned.acquire().unwrap_err();
+        assert!(error.to_string().contains("credit"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
