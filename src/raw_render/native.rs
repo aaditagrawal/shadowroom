@@ -277,6 +277,8 @@ impl<'a> Context<'a> {
                 }),
             );
         }
+        #[cfg(test)]
+        super::LIBRAW_OPENS.fetch_add(1, Ordering::Relaxed);
         api.check(
             unsafe { (api.open)(context.ptr(), bytes.as_ptr().cast(), bytes.len()) },
             "identify",
@@ -391,18 +393,37 @@ fn decode_inner(
     cancel: Option<&AtomicBool>,
 ) -> Result<DecodedRaw> {
     let info = inspect_inner(bytes, cancel)?;
+    render(bytes, &info, admitted_working_bytes, cancel)
+}
+
+/// Render `bytes` previously identified as `info` by `inspect`, without
+/// identifying them again for admission.
+pub(super) fn render(
+    bytes: &[u8],
+    info: &RawInfo,
+    admitted_working_bytes: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<DecodedRaw> {
     if admitted_working_bytes < info.working_bytes {
         bail!(
             "Sensor RAW rendering needs {} working bytes; only {admitted_working_bytes} admitted",
             info.working_bytes
         );
     }
-    // The inspection context is already closed. NEVER adjust sizes on this
-    // context: unpack/process must start from the original sensor geometry.
+    // Inspection used its own, already closed context: LibRaw rejects unpack
+    // after adjust_sizes_info_only (LIBRAW_OUT_OF_ORDER_CALL), which output
+    // geometry requires. NEVER adjust sizes on this context: unpack/process
+    // must start from the original sensor geometry.
     let context = Context::open(bytes, cancel)?;
     let api = context.api;
     let _threads = NativeThreads::single(api);
     let raw = context.ptr();
+    // Admission was for this exact source; refuse a mismatched `info`.
+    if unsafe { ((api.raw_width)(raw), (api.raw_height)(raw)) }
+        != (info.raw_width as c_int, info.raw_height as c_int)
+    {
+        bail!("RAW source does not match its inspection");
+    }
     let mut multipliers = std::array::from_fn(|i| unsafe { (api.cam_mul)(raw, i as c_int) });
     let camera_wb = sanitize_camera_multipliers(&mut multipliers);
     unsafe {
@@ -434,7 +455,7 @@ fn decode_inner(
     api.check(error, "make RGB image")?;
     let memory = memory.context("LibRaw produced no sensor image")?;
     let header = unsafe { *memory.ptr.as_ptr() };
-    let count = validate_header(&header, &info)?;
+    let count = validate_header(&header, info)?;
     check_cancel(cancel)?;
     // Native result payload is contiguous and owned by `memory` until copied.
     let data = unsafe {
@@ -547,7 +568,7 @@ unsafe fn native_string(ptr: *const c_char) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -650,7 +671,7 @@ mod tests {
     // Original synthetic CFA fixture, dedicated to CC0-1.0. This TIFF contains
     // one uncompressed 16-bit RGGB sensor plane, actual DNG CFA/matrix/WB tags,
     // and NO embedded JPEG, thumbnail, or pre-rendered RGB image.
-    fn sensor_dng(orientation: u16) -> Vec<u8> {
+    pub(crate) fn sensor_dng(orientation: u16) -> Vec<u8> {
         let short = |values: &[u16]| {
             values
                 .iter()

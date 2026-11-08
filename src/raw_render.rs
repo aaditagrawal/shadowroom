@@ -53,8 +53,57 @@ pub struct DecodedRaw {
 
 #[cfg(feature = "native-codecs")]
 mod native;
+/// Synthetic CFA-only DNG (no embedded preview) for tests outside this module.
+#[cfg(all(test, feature = "native-codecs"))]
+pub(crate) use native::tests::sensor_dng;
 #[cfg(feature = "native-codecs")]
 pub use native::{decode, decode_with_cancel, inspect};
+
+/// Test-only count of LibRaw identify (`libraw_open_buffer`) calls.
+#[cfg(test)]
+pub(crate) static LIBRAW_OPENS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// A RAW source identified once by `inspect_source`. Admission reads `info`,
+/// and `render` reuses it instead of identifying the file again, so a sensor
+/// render costs two LibRaw identifies (it used to cost three when callers
+/// inspected and then called `decode`). The two cannot share one context:
+/// output geometry needs `adjust_sizes_info_only`, after which LibRaw refuses
+/// to unpack the sensor.
+pub struct InspectedRaw<'a> {
+    bytes: &'a [u8],
+    pub info: RawInfo,
+}
+
+/// Identify `bytes` for admission; reserve `info.working_bytes` before
+/// `render`. Reserve `inspection_working_bytes` before calling this.
+pub fn inspect_source(bytes: &[u8]) -> Result<InspectedRaw<'_>> {
+    Ok(InspectedRaw {
+        info: inspect(bytes)?,
+        bytes,
+    })
+}
+
+impl InspectedRaw<'_> {
+    /// Same contract as `decode`/`decode_with_cancel`, for the inspected source.
+    pub fn render(
+        &self,
+        admitted_working_bytes: usize,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<DecodedRaw> {
+        #[cfg(feature = "native-codecs")]
+        {
+            native::render(self.bytes, &self.info, admitted_working_bytes, cancel)
+        }
+        #[cfg(not(feature = "native-codecs"))]
+        {
+            match cancel {
+                Some(cancel) => decode_with_cancel(self.bytes, admitted_working_bytes, cancel),
+                None => decode(self.bytes, admitted_working_bytes),
+            }
+        }
+    }
+}
 
 /// Reserve this additional metadata allowance before calling `inspect`.
 /// Identification may copy profiles/maker notes, although it unpacks no pixels.

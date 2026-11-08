@@ -575,8 +575,12 @@ impl State {
         // Fits only once external holders release some entries: retire just
         // those needed (oldest first) so their release frees memory, and let
         // the caller wait for it. Everything else stays cached.
-        if reclaimable + held_bytes >= excess {
-            let mut needed = excess - reclaimable;
+        // Entries retired earlier are already waiting for release; count them
+        // so retries while waiting do not keep retiring more of the cache.
+        let pending: usize = self.retired.iter().map(Retired::bytes).sum();
+        let covered = reclaimable.saturating_add(pending);
+        if covered < excess && covered + held_bytes >= excess {
+            let mut needed = excess - covered;
             for stamp in held {
                 if needed == 0 {
                     break;
@@ -1405,16 +1409,28 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
         metadata_working_bytes(&bytes)
     };
     let header_permit = reserve(shared, task, header_bytes)?;
-    let estimate = decode_working_bytes(&bytes, &task.key.source.path, task.key.kind)?;
+    // Identify a sensor RAW once: the same inspection admits and renders it.
+    let inspected = if sensor {
+        Some(crate::raw_render::inspect_source(&bytes)?)
+    } else {
+        None
+    };
+    let estimate = match &inspected {
+        Some(raw) => raw.info.working_bytes,
+        None => decode_working_bytes(&bytes, &task.key.source.path, task.key.kind)?,
+    };
     drop(header_permit);
     let mut permit = reserve(shared, task, estimate)?;
     let budget = shared.state.lock().unwrap().budget;
-    let preview = decode_preview_bytes_budget(
-        &bytes,
-        &task.key.source.path,
-        task.key.kind,
-        estimate.min(budget),
-    )?;
+    let preview = match &inspected {
+        Some(raw) => sensor_preview(raw.render(estimate.min(budget), None)?, task.key.kind),
+        None => decode_preview_bytes_budget(
+            &bytes,
+            &task.key.source.path,
+            task.key.kind,
+            estimate.min(budget),
+        )?,
+    };
     if !current(shared, task) {
         return Ok(());
     }
@@ -1624,9 +1640,15 @@ fn source_bytes(shared: &Arc<Shared>, key: &SourceKey, task: &Task) -> Result<Ar
 }
 
 fn decode_working_bytes(bytes: &[u8], path: &Path, kind: PreviewKind) -> Result<usize> {
-    if is_raw(path) && extract_raw_jpeg(bytes).is_none() {
-        return Ok(crate::raw_render::inspect(bytes)?.working_bytes);
-    }
+    // Scan a RAW for its embedded preview once, for both the test and the use.
+    let embedded = if is_raw(path) {
+        match extract_raw_jpeg(bytes) {
+            Some(jpeg) => Some(jpeg),
+            None => return Ok(crate::raw_render::inspect(bytes)?.working_bytes),
+        }
+    } else {
+        None
+    };
     if crate::jxl::is_jxl(path) {
         return crate::jxl::working_bytes(bytes, kind.edge().unwrap_or(u32::MAX));
     }
@@ -1636,12 +1658,7 @@ fn decode_working_bytes(bytes: &[u8], path: &Path, kind: PreviewKind) -> Result<
     if crate::heif::is_heif(path) {
         return crate::heif::working_bytes(bytes, kind.edge());
     }
-    let encoded = if is_raw(path) {
-        extract_raw_jpeg(bytes)
-            .context("RAW has no supported embedded JPEG in its first 128 MiB")?
-    } else {
-        bytes
-    };
+    let encoded = embedded.unwrap_or(bytes);
     let mut coefficient_bytes = 0;
     let mut bytes_per_pixel =
         if encoded.starts_with(b"\x89PNG\r\n\x1a\n") && encoded.get(24) == Some(&16) {
@@ -2076,35 +2093,18 @@ fn decode_preview_bytes_budget(
     kind: PreviewKind,
     budget: usize,
 ) -> Result<Preview> {
-    if is_raw(path) && extract_raw_jpeg(bytes).is_none() {
-        let decoded = crate::raw_render::decode(bytes, budget)?;
-        let note = format!(
-            "LibRaw {} · {}",
-            decoded.provenance.libraw_version,
-            match decoded.provenance.white_balance {
-                crate::raw_render::RawWhiteBalance::Camera => "camera white balance",
-                crate::raw_render::RawWhiteBalance::DaylightFallback =>
-                    "daylight white balance fallback",
-            }
-        );
-        let mut image = decoded.image;
-        if let Some(edge) = kind.edge() {
-            if image.width().max(image.height()) > edge {
-                image = resize_triangle_edge(&image, edge);
+    // Scan a RAW for its embedded preview once, for both the test and the use.
+    let embedded = if is_raw(path) {
+        match extract_raw_jpeg(bytes) {
+            Some(jpeg) => Some(jpeg),
+            None => {
+                let raw = crate::raw_render::inspect_source(bytes)?;
+                return Ok(sensor_preview(raw.render(budget, None)?, kind));
             }
         }
-        let mut preview = make_preview(
-            image,
-            kind,
-            decoded.source_width,
-            decoded.source_height,
-            ColorStatus::ConvertedToSrgb,
-            false,
-        );
-        preview.rendered_raw = true;
-        preview.rendering_note = Some(note);
-        return Ok(preview);
-    }
+    } else {
+        None
+    };
     if crate::jxl::is_jxl(path) {
         let info = crate::jxl::inspect(bytes)?;
         let decoded = crate::jxl::decode(bytes, kind.edge().unwrap_or(u32::MAX), budget)?;
@@ -2179,13 +2179,9 @@ fn decode_preview_bytes_budget(
             false,
         ));
     }
-    let embedded_raw = is_raw(path);
+    let embedded_raw = embedded.is_some();
     let source_orientation = exif_orientation(bytes);
-    let encoded = if embedded_raw {
-        extract_raw_jpeg(bytes).context("RAW embedded preview unavailable")?
-    } else {
-        bytes
-    };
+    let encoded = embedded.unwrap_or(bytes);
     let orientation = source_orientation
         .or_else(|| exif_orientation(encoded))
         .unwrap_or(1);
@@ -2211,6 +2207,36 @@ fn decode_preview_bytes_budget(
         color_status,
         embedded_raw,
     ))
+}
+
+/// Display preview of a full LibRaw sensor rendering (already oriented sRGB).
+fn sensor_preview(decoded: crate::raw_render::DecodedRaw, kind: PreviewKind) -> Preview {
+    let note = format!(
+        "LibRaw {} · {}",
+        decoded.provenance.libraw_version,
+        match decoded.provenance.white_balance {
+            crate::raw_render::RawWhiteBalance::Camera => "camera white balance",
+            crate::raw_render::RawWhiteBalance::DaylightFallback =>
+                "daylight white balance fallback",
+        }
+    );
+    let mut image = decoded.image;
+    if let Some(edge) = kind.edge() {
+        if image.width().max(image.height()) > edge {
+            image = resize_triangle_edge(&image, edge);
+        }
+    }
+    let mut preview = make_preview(
+        image,
+        kind,
+        decoded.source_width,
+        decoded.source_height,
+        ColorStatus::ConvertedToSrgb,
+        false,
+    );
+    preview.rendered_raw = true;
+    preview.rendering_note = Some(note);
+    preview
 }
 
 fn decode_pixels(
@@ -5439,6 +5465,67 @@ mod tests {
         assert_eq!(kept_infeasible, ENTRIES / 2);
     }
 
+    /// `cargo test --lib sensor_raw_parse_benchmark -- --ignored --nocapture`,
+    /// optionally with SHADOWROOM_RAW_DIR naming a folder of camera RAWs.
+    #[cfg(feature = "native-codecs")]
+    #[test]
+    #[ignore = "benchmark: requires native LibRaw; SHADOWROOM_RAW_DIR adds camera files"]
+    fn sensor_raw_parse_benchmark() {
+        let opens = || crate::raw_render::LIBRAW_OPENS.load(Ordering::Relaxed);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("sensor.dng");
+        let bytes = crate::raw_render::sensor_dng(6);
+        fs::write(&path, &bytes).unwrap();
+        let pipeline = MediaPipeline::new(temp.path().join("cache"), 256 * 1024 * 1024);
+        let before = opens();
+        let started = std::time::Instant::now();
+        let preview = await_preview_with_timeout(
+            &pipeline,
+            &path,
+            bytes.len() as u64,
+            PreviewKind::Fit,
+            std::time::Duration::from_secs(60),
+        );
+        assert!(preview.rendered_raw);
+        assert_eq!((preview.width, preview.height), (48, 64));
+        eprintln!(
+            "pipeline, synthetic sensor DNG: {} LibRaw opens, {:?}",
+            opens() - before,
+            started.elapsed()
+        );
+        let Some(dir) = std::env::var_os("SHADOWROOM_RAW_DIR") else {
+            return;
+        };
+        let mut paths: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| is_raw(path))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let bytes = fs::read(&path).unwrap();
+            let started = std::time::Instant::now();
+            let embedded = extract_raw_jpeg(&bytes).map(|jpeg| jpeg.len());
+            let scan = started.elapsed();
+            let before = opens();
+            let started = std::time::Instant::now();
+            // Media's admission-then-render sequence.
+            let Ok(raw) = crate::raw_render::inspect_source(&bytes) else {
+                eprintln!("{}: unsupported by LibRaw", path.display());
+                continue;
+            };
+            let decoded = raw.render(raw.info.working_bytes, None).unwrap();
+            eprintln!(
+                "{}: {} LibRaw opens, inspect+render {:?}, {}x{}; embedded scan {scan:?} {embedded:?}",
+                path.file_name().unwrap().to_string_lossy(),
+                opens() - before,
+                started.elapsed(),
+                decoded.image.width(),
+                decoded.image.height(),
+            );
+        }
+    }
+
     fn tiny_key(index: usize) -> Key {
         make_key(
             Path::new(&format!("tiny-{index}.jpg")),
@@ -5498,6 +5585,31 @@ mod tests {
         assert_eq!(state.stats.persistence_dropped, 1);
         assert_eq!(state.lru.len(), state.previews.len() + state.sources.len());
         state.stats.active = 0;
+    }
+
+    #[test]
+    fn waiting_on_external_holders_retires_only_the_shortfall_once() {
+        let entry = tiny_preview().byte_len();
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 10 * entry);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        let held: Vec<_> = (0..6).map(|_| tiny_preview()).collect();
+        for (index, preview) in held.iter().enumerate() {
+            assert!(state.insert_preview(tiny_key(index), preview.clone()));
+        }
+        state.inflight = 6 * entry;
+        // Short by 3 entries, all of them in use elsewhere: retire the three
+        // oldest and wait; retrying while waiting retires nothing more.
+        for _ in 0..3 {
+            assert!(!state.evict_for(entry));
+            assert_eq!(state.previews.len(), 3);
+            assert_eq!(state.retired.len(), 3);
+        }
+        assert!(state.previews.contains_key(&tiny_key(5)));
+        drop(held);
+        assert!(state.evict_for(entry));
+        assert_eq!(state.previews.len(), 3);
+        assert!(state.retired.is_empty());
     }
 
     #[test]
