@@ -824,6 +824,10 @@ fn run_host(
         let _ = events.send(IoEvent::Error(format!("Save remote host state: {e:#}")));
     }
 }
+/// Overall deadline of one metadata sync stream.
+const SYNC_DEADLINE: Duration = Duration::from_secs(3600);
+/// Staging rows older than this belong to no live sync (see SYNC_DEADLINE).
+const STALE_STAGE: Duration = Duration::from_secs(24 * 3600);
 #[allow(clippy::too_many_arguments)]
 fn sync_root(
     catalog: &Catalog,
@@ -862,14 +866,18 @@ fn sync_root_once(
     } else {
         catalog.remote_revision(device, root)?
     };
-    let token = format!("{:032x}", rand::random::<u128>());
+    // A sync killed mid-stream (crash, power loss) cannot discard its own
+    // staging rows; retire such batches once they are far older than any
+    // live sync could be. Failure only defers that cleanup to the next sync.
+    let _ = catalog.prune_remote_stage(STALE_STAGE);
+    let token = Catalog::remote_stage_token();
     let result = (|| -> Result<u64> {
         let mut pending = host.request_with_timeout(
             Request::Photos {
                 root: root.into(),
                 since_revision: since,
             },
-            Duration::from_secs(3600),
+            SYNC_DEADLINE,
         )?;
         let mut records: Vec<PhotoRecord> = Vec::with_capacity(128);
         let mut deleted = Vec::with_capacity(128);

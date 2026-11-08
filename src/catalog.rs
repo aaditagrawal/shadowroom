@@ -520,8 +520,38 @@ impl Catalog {
         conn.execute("DELETE FROM remote_stage WHERE token=?1", [token])?;
         Ok(())
     }
+    /// A fresh staging token. Its fixed-width hexadecimal creation time sorts
+    /// tokens by age, so [`Catalog::prune_remote_stage`] can retire batches
+    /// that a crashed or killed sync left behind.
+    pub fn remote_stage_token() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{now:016x}{:032x}", rand::random::<u128>())
+    }
+    /// Delete staging batches whose token is older than `max_age`. Must exceed
+    /// the longest sync, so no live sync (in this or another process) loses
+    /// rows. Tokens of the older random-only format are left untouched.
+    pub fn prune_remote_stage(&self, max_age: std::time::Duration) -> Result<usize> {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(max_age.as_secs());
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
+        Ok(conn.execute(
+            "DELETE FROM remote_stage WHERE length(token)=48 AND token<?1",
+            [format!("{cutoff:016x}")],
+        )?)
+    }
     /// Metadata, tombstones and cursor publish atomically. SQL decision columns
-    /// are deliberately absent from the conflict update.
+    /// are deliberately absent from the conflict update. A perceptual hash
+    /// computed locally for an unchanged remote file survives a resync from an
+    /// agent that has none for it, so it is never decoded and hashed again.
     pub fn finish_remote_sync(
         &self,
         token: &str,
@@ -542,7 +572,15 @@ impl Catalog {
         tx.execute("INSERT INTO photos(path,modified_at,size_bytes,data,source_device,source_root,source_volume,source_relative)
             SELECT 'remote:'||hex(?2)||':'||hex(?3)||':'||hex(json_extract(data,'$.source.volume_id'))||':'||hex(path),json_extract(data,'$.modified_at'),json_extract(data,'$.size_bytes'),data,?2,?3,json_extract(data,'$.source.volume_id'),path
             FROM remote_stage WHERE token=?1 AND data IS NOT NULL
-            ON CONFLICT(path) DO UPDATE SET modified_at=excluded.modified_at,size_bytes=excluded.size_bytes,data=excluded.data", params![token,device,root])?;
+            ON CONFLICT(path) DO UPDATE SET modified_at=excluded.modified_at,size_bytes=excluded.size_bytes,data=CASE
+              WHEN json_extract(excluded.data,'$.dhash') IS NULL
+                AND json_extract(photos.data,'$.dhash') IS NOT NULL
+                AND photos.modified_at=excluded.modified_at AND photos.size_bytes=excluded.size_bytes
+                AND (photos.data->'$.companion_path') IS (excluded.data->'$.companion_path')
+                AND (photos.data->'$.companion_size_bytes') IS (excluded.data->'$.companion_size_bytes')
+                AND (photos.data->'$.companion_modified_at') IS (excluded.data->'$.companion_modified_at')
+              THEN json_set(excluded.data,'$.dhash',json(photos.data->'$.dhash'))
+              ELSE excluded.data END", params![token,device,root])?;
         tx.execute("INSERT INTO remote_cursors(device,root,revision) VALUES(?1,?2,?3) ON CONFLICT(device,root) DO UPDATE SET revision=excluded.revision", params![device,root,revision])?;
         tx.execute("DELETE FROM remote_stage WHERE token=?1", [token])?;
         tx.commit()?;
@@ -2328,5 +2366,119 @@ mod tests {
         c.export_xmp(&[id], &out).unwrap();
         let xml = fs::read_to_string(out.join("a.xmp")).unwrap();
         assert!(xml.contains("shadowroom:Flag=\"pick\""));
+    }
+
+    fn remote_record(
+        path: &str,
+        modified_at: i64,
+        dhash: Option<u64>,
+    ) -> crate::remote::protocol::PhotoRecord {
+        crate::remote::protocol::PhotoRecord {
+            key: crate::remote::protocol::PhotoKey {
+                root_id: "root".into(),
+                volume_id: "volume".into(),
+                relative_path: path.into(),
+                size_bytes: 10,
+                modified_at,
+                companion_path: None,
+                companion_size_bytes: 0,
+                companion_modified_at: 0,
+            },
+            metadata: Photo {
+                dhash,
+                ..Photo::default()
+            },
+            revision: 1,
+        }
+    }
+    fn sync(
+        c: &Catalog,
+        records: &[crate::remote::protocol::PhotoRecord],
+        revision: u64,
+        full: bool,
+    ) {
+        let token = Catalog::remote_stage_token();
+        c.stage_remote(&token, "device", "root", records, &[])
+            .unwrap();
+        c.finish_remote_sync(&token, "device", "root", revision, full)
+            .unwrap();
+    }
+    fn dhash_of(c: &Catalog, path: &str) -> Option<u64> {
+        c.photos()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.path == Path::new(path))
+            .unwrap()
+            .dhash
+    }
+
+    #[test]
+    fn remote_resync_keeps_local_hashes_of_unchanged_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(&dir.path().join("c.db")).unwrap();
+        sync(
+            &c,
+            &[
+                remote_record("same.jpg", 1, None),
+                remote_record("changed.jpg", 1, None),
+                remote_record("agent.jpg", 1, None),
+            ],
+            1,
+            true,
+        );
+        // Hashes computed locally from fetched previews; full u64 range.
+        let local = u64::MAX - 5;
+        let ids: Vec<_> = c.photos().unwrap().iter().map(|p| p.id).collect();
+        c.set_dhashes(&ids.iter().map(|&id| (id, local)).collect::<Vec<_>>())
+            .unwrap();
+        // A full resync from an agent with no hashes resends every record.
+        sync(
+            &c,
+            &[
+                remote_record("same.jpg", 1, None),
+                remote_record("changed.jpg", 2, None),
+                remote_record("agent.jpg", 1, Some(7)),
+            ],
+            2,
+            true,
+        );
+        assert_eq!(dhash_of(&c, "same.jpg"), Some(local));
+        assert_eq!(dhash_of(&c, "changed.jpg"), None);
+        assert_eq!(dhash_of(&c, "agent.jpg"), Some(7));
+        assert!(c.photos().unwrap().iter().all(|p| match &p.source {
+            PhotoSource::Remote(source) => source.available,
+            PhotoSource::Local => false,
+        }));
+    }
+
+    #[test]
+    fn abandoned_remote_staging_is_pruned_without_touching_live_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(&dir.path().join("c.db")).unwrap();
+        let record = [remote_record("a.jpg", 1, None)];
+        let abandoned = format!("{:016x}{:032x}", 1u64, 5u128);
+        let legacy = format!("{:032x}", 6u128);
+        let live = Catalog::remote_stage_token();
+        for token in [&abandoned, &legacy, &live] {
+            c.stage_remote(token, "device", "root", &record, &[])
+                .unwrap();
+        }
+        assert_eq!(
+            c.prune_remote_stage(std::time::Duration::from_secs(24 * 3600))
+                .unwrap(),
+            1
+        );
+        let conn = c.connection.lock().unwrap();
+        let mut remaining: Vec<String> = conn
+            .prepare("SELECT token FROM remote_stage ORDER BY token")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        remaining.sort();
+        let mut expected = vec![legacy, live];
+        expected.sort();
+        assert_eq!(remaining, expected);
     }
 }
