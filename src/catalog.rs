@@ -22,6 +22,37 @@ fn validate_remote_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Staging tokens of syncs in progress in this process, never pruned.
+fn live_stage_tokens() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    static LIVE: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+/// A live remote staging token; see [`Catalog::remote_stage_token`].
+#[derive(Debug)]
+pub struct StageToken(String);
+impl std::ops::Deref for StageToken {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+impl Drop for StageToken {
+    fn drop(&mut self) {
+        live_stage_tokens().remove(&self.0);
+    }
+}
+/// How [`Catalog::publish_remote_sync`] publishes a staged batch.
+#[derive(Clone, Copy, Debug)]
+pub struct RemotePublish {
+    pub revision: u64,
+    /// Since revision zero: records not restaged become unavailable.
+    pub full: bool,
+    /// Rows the caller staged (sum of `stage_remote` results), verified.
+    pub staged_rows: Option<usize>,
+}
+
 /// Minimal read-set for an incremental scan; avoids deserializing every Photo.
 pub(crate) struct IndexedFile {
     pub modified_at: i64,
@@ -446,14 +477,29 @@ impl Catalog {
         root: &str,
         records: &[crate::remote::protocol::PhotoRecord],
         deleted: &[PathBuf],
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let mut conn = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let tx = conn.transaction()?;
+        // Rows this batch added (a path restaged in the same sync replaces
+        // its row). Summed by the caller and verified at publish.
+        let mut added = 0;
         {
-            let mut insert = tx.prepare_cached("INSERT INTO remote_stage(token,path,data) VALUES(?1,?2,?3) ON CONFLICT(token,path) DO UPDATE SET data=excluded.data")?;
+            let mut insert_new = tx.prepare_cached(
+                "INSERT OR IGNORE INTO remote_stage(token,path,data) VALUES(?1,?2,?3)",
+            )?;
+            let mut replace =
+                tx.prepare_cached("UPDATE remote_stage SET data=?3 WHERE token=?1 AND path=?2")?;
+            let mut insert = |path: std::borrow::Cow<'_, str>, data: Option<String>| {
+                let inserted = insert_new.execute(params![token, path, data])?;
+                if inserted == 0 {
+                    replace.execute(params![token, path, data])?;
+                }
+                added += inserted;
+                anyhow::Ok(())
+            };
             for record in records {
                 anyhow::ensure!(
                     record.key.root_id == root,
@@ -494,23 +540,18 @@ impl Catalog {
                     companion_modified_at: k.companion_modified_at,
                     available: true,
                 });
-                insert.execute(params![
-                    token,
+                insert(
                     k.relative_path.to_string_lossy(),
-                    serde_json::to_string(&photo)?
-                ])?;
+                    Some(serde_json::to_string(&photo)?),
+                )?;
             }
             for path in deleted {
                 validate_remote_path(path)?;
-                insert.execute(params![
-                    token,
-                    path.to_string_lossy(),
-                    Option::<String>::None
-                ])?;
+                insert(path.to_string_lossy(), None)?;
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(added)
     }
     pub fn discard_remote_stage(&self, token: &str) -> Result<()> {
         let conn = self
@@ -520,38 +561,49 @@ impl Catalog {
         conn.execute("DELETE FROM remote_stage WHERE token=?1", [token])?;
         Ok(())
     }
-    /// A fresh staging token. Its fixed-width hexadecimal creation time sorts
-    /// tokens by age, so [`Catalog::prune_remote_stage`] can retire batches
-    /// that a crashed or killed sync left behind.
-    pub fn remote_stage_token() -> String {
+    /// A fresh staging token, registered as live in this process until
+    /// dropped. Its fixed-width hexadecimal creation time sorts tokens by age,
+    /// so [`Catalog::prune_remote_stage`] can retire batches that a crashed or
+    /// killed sync left behind.
+    pub fn remote_stage_token() -> StageToken {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        format!("{now:016x}{:032x}", rand::random::<u128>())
+        let token = format!("{now:016x}{:032x}", rand::random::<u128>());
+        live_stage_tokens().insert(token.clone());
+        StageToken(token)
     }
-    /// Delete staging batches whose token is older than `max_age`. Must exceed
-    /// the longest sync, so no live sync (in this or another process) loses
-    /// rows. Tokens of the older random-only format are left untouched.
+    /// Delete staging batches whose token is older than `max_age` and not live
+    /// in this process. The age must exceed the longest sync so that another
+    /// process's live sync keeps its rows; a wall-clock jump can still defeat
+    /// that, which [`Catalog::publish_remote_sync`]'s row count detects. Tokens
+    /// of the older random-only format are left untouched.
     pub fn prune_remote_stage(&self, max_age: std::time::Duration) -> Result<usize> {
         let cutoff = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
             .saturating_sub(max_age.as_secs());
-        let conn = self
+        let mut conn = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
-        Ok(conn.execute(
-            "DELETE FROM remote_stage WHERE length(token)=48 AND token<?1",
-            [format!("{cutoff:016x}")],
-        )?)
+        let tx = conn.transaction()?;
+        let stale: Vec<String> = tx
+            .prepare("SELECT DISTINCT token FROM remote_stage WHERE length(token)=48 AND token<?1")?
+            .query_map([format!("{cutoff:016x}")], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let live = live_stage_tokens();
+        let mut pruned = 0;
+        for token in stale.iter().filter(|token| !live.contains(*token)) {
+            pruned += tx.execute("DELETE FROM remote_stage WHERE token=?1", [token])?;
+        }
+        drop(live);
+        tx.commit()?;
+        Ok(pruned)
     }
-    /// Metadata, tombstones and cursor publish atomically. SQL decision columns
-    /// are deliberately absent from the conflict update. A perceptual hash
-    /// computed locally for an unchanged remote file survives a resync from an
-    /// agent that has none for it, so it is never decoded and hashed again.
+    /// [`Catalog::publish_remote_sync`] without the staged-row check.
     pub fn finish_remote_sync(
         &self,
         token: &str,
@@ -560,11 +612,51 @@ impl Catalog {
         revision: u64,
         full: bool,
     ) -> Result<()> {
+        self.publish_remote_sync(
+            token,
+            device,
+            root,
+            &RemotePublish {
+                revision,
+                full,
+                staged_rows: None,
+            },
+        )
+    }
+    /// Metadata, tombstones and cursor publish atomically. SQL decision columns
+    /// are deliberately absent from the conflict update. A perceptual hash
+    /// computed locally for an unchanged remote file survives a resync from an
+    /// agent that has none for it, so it is never decoded and hashed again.
+    /// With `staged_rows`, a batch that lost rows (pruned by another process
+    /// after a clock jump) fails instead of publishing a partial sync.
+    pub fn publish_remote_sync(
+        &self,
+        token: &str,
+        device: &str,
+        root: &str,
+        publish: &RemotePublish,
+    ) -> Result<()> {
+        let RemotePublish {
+            revision,
+            full,
+            staged_rows,
+        } = *publish;
         let mut conn = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let tx = conn.transaction()?;
+        if let Some(expected) = staged_rows {
+            let staged: i64 = tx.query_row(
+                "SELECT count(*) FROM remote_stage WHERE token=?1",
+                [token],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                staged as usize == expected,
+                "Remote sync staging lost rows ({staged} of {expected}); sync again"
+            );
+        }
         if full {
             tx.execute("UPDATE photos SET data=json_set(data,'$.source.available',json('false')) WHERE source_device=?1 AND source_root=?2", params![device,root])?;
         }
@@ -2533,7 +2625,7 @@ mod tests {
         let abandoned = format!("{:016x}{:032x}", 1u64, 5u128);
         let legacy = format!("{:032x}", 6u128);
         let live = Catalog::remote_stage_token();
-        for token in [&abandoned, &legacy, &live] {
+        for token in [abandoned.as_str(), &legacy, &live] {
             c.stage_remote(token, "device", "root", &record, &[])
                 .unwrap();
         }
@@ -2551,8 +2643,68 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         remaining.sort();
-        let mut expected = vec![legacy, live];
+        let mut expected = vec![legacy, live.to_string()];
         expected.sort();
         assert_eq!(remaining, expected);
+    }
+
+    #[test]
+    fn live_staging_survives_a_clock_jump_and_lost_rows_fail_the_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(&dir.path().join("c.db")).unwrap();
+        // A sync in progress whose token looks ancient (wall clock jumped).
+        let old = format!("{:016x}{:032x}", 2u64, 9u128);
+        live_stage_tokens().insert(old.clone());
+        let live = StageToken(old);
+        let rows = c
+            .stage_remote(
+                &live,
+                "device",
+                "root",
+                &[
+                    remote_record("a.jpg", 1, None),
+                    remote_record("b.jpg", 1, None),
+                ],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+        // Restaging a path replaces its row rather than adding one.
+        let rows = rows
+            + c.stage_remote(&live, "device", "root", &[], &["a.jpg".into()])
+                .unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(
+            c.prune_remote_stage(std::time::Duration::from_secs(60))
+                .unwrap(),
+            0
+        );
+        // Another process pruning it anyway is detected before publishing.
+        c.connection
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM remote_stage WHERE token=?1 AND path='b.jpg'",
+                [&*live],
+            )
+            .unwrap();
+        let publish = RemotePublish {
+            revision: 5,
+            full: true,
+            staged_rows: Some(rows),
+        };
+        let error = c
+            .publish_remote_sync(&live, "device", "root", &publish)
+            .unwrap_err();
+        assert!(error.to_string().contains("lost rows"), "{error:#}");
+        assert_eq!(c.remote_revision("device", "root").unwrap(), 0);
+        assert!(c.photos().unwrap().is_empty());
+        // Once the token is dropped it is prunable like any abandoned batch.
+        drop(live);
+        assert_eq!(
+            c.prune_remote_stage(std::time::Duration::from_secs(60))
+                .unwrap(),
+            1
+        );
     }
 }

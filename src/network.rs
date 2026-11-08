@@ -1,6 +1,6 @@
 //! Persisted host configuration and one lifecycle owner per remote connection.
 use crate::{
-    catalog::Catalog,
+    catalog::{Catalog, RemotePublish},
     media::RemotePreviewProvider,
     remote::{
         ConnectionSpec, RemoteHost,
@@ -885,6 +885,7 @@ fn sync_root_once(
         )?;
         let mut records: Vec<PhotoRecord> = Vec::with_capacity(STAGE_BATCH);
         let mut deleted = Vec::with_capacity(STAGE_BATCH);
+        let mut staged = 0;
         loop {
             match pending
                 .recv_cancellable(|| {
@@ -896,14 +897,23 @@ fn sync_root_once(
                 Response::Photo(p) => records.push(p),
                 Response::Deleted { relative_path } => deleted.push(relative_path),
                 Response::Synced { revision } => {
-                    catalog.stage_remote(&token, device, root, &records, &deleted)?;
-                    catalog.finish_remote_sync(&token, device, root, revision, since == 0)?;
+                    staged += catalog.stage_remote(&token, device, root, &records, &deleted)?;
+                    catalog.publish_remote_sync(
+                        &token,
+                        device,
+                        root,
+                        &RemotePublish {
+                            revision,
+                            full: since == 0,
+                            staged_rows: Some(staged),
+                        },
+                    )?;
                     return Ok(revision);
                 }
                 _ => bail!("Unexpected metadata sync response"),
             }
             if records.len() + deleted.len() >= STAGE_BATCH {
-                catalog.stage_remote(&token, device, root, &records, &deleted)?;
+                staged += catalog.stage_remote(&token, device, root, &records, &deleted)?;
                 records.clear();
                 deleted.clear();
             }
