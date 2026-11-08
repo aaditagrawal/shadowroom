@@ -98,6 +98,70 @@ impl ImportLayout {
     }
 }
 
+/// Everything a grid tile shows that is derived from its group. Text is shared,
+/// so a visible tile costs reference-count bumps per frame instead of cloning
+/// an `IngestGroup` and a `Photo` and formatting its size, date and tooltip.
+#[derive(Clone)]
+struct IngestCell {
+    id: usize,
+    name: SharedString,
+    detail: SharedString,
+    tip: SharedString,
+    badge: Option<&'static str>,
+    /// Stills always have a preview; videos only when a THM substitute exists.
+    has_preview: bool,
+    seen: bool,
+}
+
+impl IngestCell {
+    fn new(group: &IngestGroup, preview: &Photo) -> Self {
+        // Badge only what differs from a plain still.
+        let badge = if group.kind == "video" {
+            Some("VIDEO")
+        } else if group.companion.is_some() {
+            Some("RAW+JPEG")
+        } else {
+            None
+        };
+        let tip = group.seen.as_ref().map_or_else(
+            || {
+                group
+                    .warning
+                    .clone()
+                    .unwrap_or_else(|| group.primary.path.display().to_string())
+            },
+            |s| {
+                format!(
+                    "Imported {} → {}",
+                    chrono::DateTime::from_timestamp_millis(s.imported_at)
+                        .map_or_else(|| "previously".into(), |t| t.format("%Y-%m-%d").to_string()),
+                    s.destination
+                        .as_ref()
+                        .map_or_else(|| "marked by user".into(), |p| p.display().to_string())
+                )
+            },
+        );
+        Self {
+            id: group.id,
+            name: group.photo.filename.clone().into(),
+            detail: format!(
+                "{:.1} MB{}",
+                group.bytes() as f64 / 1_000_000.,
+                if group.seen.is_some() {
+                    " · Imported"
+                } else {
+                    ""
+                }
+            )
+            .into(),
+            tip: tip.into(),
+            badge,
+            has_preview: group.kind == "photo" || preview.path != group.primary.path,
+            seen: group.seen.is_some(),
+        }
+    }
+}
+
 pub(super) struct ImportUi {
     pub open: bool,
     scan_state: ScanState,
@@ -109,6 +173,9 @@ pub(super) struct ImportUi {
     pub lookup: HashMap<usize, usize>,
     pub photo_lookup: HashMap<i64, usize>,
     pub previews: Vec<Photo>,
+    /// Per-item render model, parallel to `items`. Rebuilt only when an item's
+    /// seen state changes, so the grid never clones a group or formats per frame.
+    cells: Vec<IngestCell>,
     pub visible: Vec<usize>,
     pub timeline: Vec<ingest::TimeGroup>,
     pub timeline_lookup: HashMap<usize, usize>,
@@ -173,6 +240,7 @@ impl ImportUi {
             lookup: HashMap::new(),
             photo_lookup: HashMap::new(),
             previews: Vec::new(),
+            cells: Vec::new(),
             visible: Vec::new(),
             timeline: Vec::new(),
             timeline_lookup: HashMap::new(),
@@ -215,10 +283,6 @@ impl ImportUi {
         if group.seen.is_none() {
             self.new_count += 1;
         }
-        if group.selected {
-            self.select_count(&group, true);
-            self.selected.insert(group.id);
-        }
         let mut photo = group.photo.clone();
         photo.id = self.next_preview_id;
         self.next_preview_id -= 1;
@@ -234,12 +298,18 @@ impl ImportUi {
             }
         }
         self.photo_lookup.insert(photo.id, index);
+        self.cells.push(IngestCell::new(&group, &photo));
         self.previews.push(photo);
         self.lookup.insert(group.id, index);
         if !self.new_only || group.seen.is_none() {
             self.visible.push(index);
         }
+        let selected = group.selected.then_some(group.id);
         self.items.push(group);
+        if let Some(id) = selected {
+            self.select_count(index, true);
+            self.selected.insert(id);
+        }
     }
     fn clear_items(&mut self) {
         self.items.clear();
@@ -249,6 +319,7 @@ impl ImportUi {
         self.lookup.clear();
         self.photo_lookup.clear();
         self.previews.clear();
+        self.cells.clear();
         self.visible.clear();
         self.timeline.clear();
         self.timeline_lookup.clear();
@@ -297,33 +368,31 @@ impl ImportUi {
         self.active_field = None;
         self.changed();
     }
-    fn select_count(&mut self, group: &IngestGroup, add: bool) {
-        if add {
-            if group.kind == "video" {
-                self.videos += 1;
-            } else {
-                self.photos += 1;
-            }
-            self.bytes += group.bytes();
+    fn select_count(&mut self, index: usize, add: bool) {
+        let group = &self.items[index];
+        let counter = if group.kind == "video" {
+            &mut self.videos
         } else {
-            if group.kind == "video" {
-                self.videos -= 1;
-            } else {
-                self.photos -= 1;
-            }
-            self.bytes -= group.bytes();
+            &mut self.photos
+        };
+        let bytes = group.bytes();
+        if add {
+            *counter += 1;
+            self.bytes += bytes;
+        } else {
+            *counter -= 1;
+            self.bytes -= bytes;
         }
     }
     fn toggle(&mut self, id: usize) {
         if let Some(&index) = self.lookup.get(&id) {
-            let group = self.items[index].clone();
             let add = if self.selected.remove(&id) {
                 false
             } else {
                 self.selected.insert(id);
                 true
             };
-            self.select_count(&group, add);
+            self.select_count(index, add);
             if let Some(&index) = self.timeline_lookup.get(&id) {
                 let day = self
                     .day_counts
@@ -647,10 +716,13 @@ impl Workspace {
                             self.import_ui.new_count = self.import_ui.new_count.saturating_sub(1);
                         }
                         if self.import_ui.selected.remove(&id) {
-                            let group = self.import_ui.items[index].clone();
-                            self.import_ui.select_count(&group, false);
+                            self.import_ui.select_count(index, false);
                         }
                         self.import_ui.items[index].seen = Some(seen);
+                        self.import_ui.cells[index] = IngestCell::new(
+                            &self.import_ui.items[index],
+                            &self.import_ui.previews[index],
+                        );
                     }
                 }
                 self.import_ui.timeline_counts();
@@ -1181,6 +1253,22 @@ impl Workspace {
         }
         true
     }
+    /// `tip` for text that is already shared, without copying it per frame.
+    fn shared_tip(
+        &self,
+        label: SharedString,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+        let tip = Tip {
+            label,
+            keys: SharedString::default(),
+            font: self.settings.interface_font.clone().into(),
+            fg: self.text(),
+            muted: self.muted(),
+            bg: self.c("elevated_surface.background", "#1b1b1b"),
+            border: self.c("border.variant", "#333333"),
+        };
+        move |_, cx| cx.new(|_| tip.clone()).into()
+    }
     fn ingest_layout(&self) -> ImportLayout {
         ImportLayout::new(
             self.center_size.0,
@@ -1202,7 +1290,10 @@ impl Workspace {
                     this.import_ui.range = Some((range.start, range.end));
                     this.media.cancel_pending();
                 }
-                range
+                // Lend the previews out, like the catalog grid: texture_photo needs
+                // `&mut self` but never reads them synchronously.
+                let previews = std::mem::take(&mut this.import_ui.previews);
+                let rows = range
                     .map(|row| {
                         let mut line = div()
                             .h(px(184.))
@@ -1213,14 +1304,13 @@ impl Workspace {
                             .pt(px(space::SM));
                         for col in 0..columns {
                             if let Some(&index) = this.import_ui.visible.get(row * columns + col) {
-                                let group = this.import_ui.items[index].clone();
-                                let photo = this.import_ui.previews[index].clone();
-                                let selected = this.import_ui.selected.contains(&group.id);
-                                let has_preview =
-                                    group.kind == "photo" || photo.path != group.primary.path;
-                                let texture = if has_preview {
-                                    this.request_preview(&photo, PreviewKind::Thumbnail);
-                                    this.texture_photo(&photo, PreviewKind::Thumbnail, cx)
+                                // Shared text only: no group/photo clone or formatting.
+                                let cell = this.import_ui.cells[index].clone();
+                                let selected = this.import_ui.selected.contains(&cell.id);
+                                let texture = if cell.has_preview {
+                                    let photo = &previews[index];
+                                    this.request_preview(photo, PreviewKind::Thumbnail);
+                                    this.texture_photo(photo, PreviewKind::Thumbnail, cx)
                                 } else {
                                     None
                                 };
@@ -1244,15 +1334,7 @@ impl Workspace {
                                 } else {
                                     image = image.child(icon("camera", this.icon_muted()));
                                 }
-                                // Badge only what differs from a plain still.
-                                let badge = if group.kind == "video" {
-                                    Some("VIDEO")
-                                } else if group.companion.is_some() {
-                                    Some("RAW+JPEG")
-                                } else {
-                                    None
-                                };
-                                if let Some(badge) = badge {
+                                if let Some(badge) = cell.badge {
                                     image = image.child(
                                         div()
                                             .absolute()
@@ -1264,29 +1346,7 @@ impl Workspace {
                                             .child(badge),
                                     );
                                 }
-                                let id = group.id;
-                                let tip = group
-                                    .seen
-                                    .as_ref()
-                                    .map(|s| {
-                                        format!(
-                                            "Imported {} → {}",
-                                            chrono::DateTime::from_timestamp_millis(s.imported_at)
-                                                .map_or_else(
-                                                    || "previously".into(),
-                                                    |t| t.format("%Y-%m-%d").to_string()
-                                                ),
-                                            s.destination.as_ref().map_or_else(
-                                                || "marked by user".into(),
-                                                |p| p.display().to_string()
-                                            )
-                                        )
-                                    })
-                                    .unwrap_or_else(|| {
-                                        group.warning.clone().unwrap_or_else(|| {
-                                            group.primary.path.display().to_string()
-                                        })
-                                    });
+                                let id = cell.id;
                                 line = line.child(
                                     div()
                                         .id(("ingest-item", index))
@@ -1299,9 +1359,9 @@ impl Workspace {
                                         } else {
                                             this.border()
                                         })
-                                        .when(group.seen.is_some(), |s| s.opacity(0.5))
+                                        .when(cell.seen, |s| s.opacity(0.5))
                                         .cursor_pointer()
-                                        .tooltip(this.tip(&tip, ""))
+                                        .tooltip(this.shared_tip(cell.tip))
                                         .child(image)
                                         .child(
                                             div()
@@ -1336,7 +1396,7 @@ impl Workspace {
                                                         .whitespace_normal()
                                                         .line_clamp(1)
                                                         .overflow_hidden()
-                                                        .child(group.photo.filename.clone()),
+                                                        .child(cell.name),
                                                 ),
                                         )
                                         .child(
@@ -1344,15 +1404,7 @@ impl Workspace {
                                                 .px(px(space::SM))
                                                 .text_size(px(10.))
                                                 .text_color(this.muted())
-                                                .child(format!(
-                                                    "{:.1} MB{}",
-                                                    group.bytes() as f64 / 1_000_000.,
-                                                    if group.seen.is_some() {
-                                                        " · Imported"
-                                                    } else {
-                                                        ""
-                                                    }
-                                                )),
+                                                .child(cell.detail),
                                         )
                                         .on_click(cx.listener(
                                             move |this, event: &ClickEvent, _, cx| {
@@ -1373,7 +1425,9 @@ impl Workspace {
                         }
                         line
                     })
-                    .collect()
+                    .collect();
+                this.import_ui.previews = previews;
+                rows
             }),
         )
         .track_scroll(self.import_ui.scroll.clone())
@@ -2965,6 +3019,62 @@ mod responsive_tests {
         );
         state.visible.clear();
         assert_eq!(state.navigate("end", 3, true), None);
+    }
+
+    /// Data-side cost of one Import grid frame (36 visible tiles) over a 5k plan:
+    /// the former per-tile `IngestGroup`/`Photo` clone plus text formatting
+    /// against the cached cell model. Run with
+    /// `cargo test --release --bins grid_cell_frame_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn grid_cell_frame_cost() {
+        use std::{hint::black_box, time::Instant};
+        let base = import_fixture();
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        for n in 0..5000 {
+            let mut group = base.items[n % base.items.len()].clone();
+            group.id = n;
+            group.primary.path = format!("/card/DCIM/100CANON/IMG_{n:05}.CR3").into();
+            group.photo.filename = format!("IMG_{n:05}.CR3");
+            state.append(group);
+        }
+        let frames = 2000;
+        let visible: Vec<usize> = (2400..2436).collect();
+        let started = Instant::now();
+        for _ in 0..frames {
+            for &index in &visible {
+                // The removed per-frame work, verbatim in substance.
+                let group = state.items[index].clone();
+                let photo = state.previews[index].clone();
+                let tip = group.seen.as_ref().map_or_else(
+                    || {
+                        group
+                            .warning
+                            .clone()
+                            .unwrap_or_else(|| group.primary.path.display().to_string())
+                    },
+                    |s| s.job_id.clone(),
+                );
+                let detail = format!("{:.1} MB", group.bytes() as f64 / 1_000_000.);
+                let name: gpui::SharedString = group.photo.filename.clone().into();
+                let tip: gpui::SharedString = tip.as_str().to_owned().into();
+                black_box((&group, &photo, tip, detail, name));
+            }
+        }
+        let before = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..frames {
+            for &index in &visible {
+                let cell = state.cells[index].clone();
+                black_box((&state.previews[index], cell));
+            }
+        }
+        let after = started.elapsed();
+        println!(
+            "grid cell data per frame (36 tiles, 5k plan): before {:?}, after {:?}",
+            before / frames,
+            after / frames
+        );
     }
 
     #[test]
