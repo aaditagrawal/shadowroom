@@ -290,7 +290,11 @@ impl Cache {
         // A rebuildable scan may fail/retry rather than make decision writes wait
         // behind a long cache transaction. No transaction spans any source I/O.
         connection.busy_timeout(Duration::from_millis(25))?;
-        connection.execute_batch("PRAGMA synchronous=FULL;")?;
+        // The cache is rebuildable: skip the per-batch WAL fsync so this writer
+        // releases the shared SQLite write lock sooner for decision commits.
+        // WAL+NORMAL stays crash-consistent; the catalog's FULL commits and
+        // checkpoints sync these frames too.
+        connection.execute_batch("PRAGMA synchronous=NORMAL;")?;
         Ok(Self {
             connection,
             pending: HashMap::new(),
@@ -679,6 +683,33 @@ mod tests {
         )
         .unwrap();
         state
+    }
+    #[test]
+    #[ignore]
+    fn bench_cache_flush_write_lock() {
+        let directory = tempfile::tempdir_in(
+            std::env::var_os("SHADOWROOM_INDEX_BENCH_DIR").unwrap_or_else(|| "/tmp".into()),
+        )
+        .unwrap();
+        let database = directory.path().join("catalog.sqlite3");
+        drop(Catalog::open(&database).unwrap());
+        let mut cache = Cache::open(&database).unwrap();
+        let started = Instant::now();
+        for i in 0..3200 {
+            cache
+                .put(Record {
+                    path: format!("/photos/{i:05}.jpg").into(),
+                    fingerprint: format!("fingerprint-{i}"),
+                    sample: "0".repeat(64),
+                    full: None,
+                })
+                .unwrap();
+        }
+        cache.flush().unwrap();
+        eprintln!(
+            "BENCH duplicate cache: 100 flushes of 32 records: {:?}",
+            started.elapsed()
+        );
     }
     #[test]
     fn overlapping_samples_preserve_v1_digest_and_read_small_files_once() {
