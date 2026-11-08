@@ -824,7 +824,30 @@ fn run_host(
         let _ = events.send(IoEvent::Error(format!("Save remote host state: {e:#}")));
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn sync_root(
+    catalog: &Catalog,
+    host: &RemoteHost,
+    device: &str,
+    root: &str,
+    full: bool,
+    epoch: u64,
+    cancel: &AtomicU64,
+    stop: &AtomicBool,
+) -> Result<u64> {
+    match sync_root_once(catalog, host, device, root, full, epoch, cancel, stop) {
+        // The agent lost its manifest (state restored or reset) while keeping
+        // its device id: our cursor is from its previous history. An
+        // incremental sync can never succeed again, so resynchronize fully;
+        // the full publish also retires records the agent no longer reports.
+        Err(error) if !full && format!("{error:#}").contains("Revision ahead of agent") => {
+            sync_root_once(catalog, host, device, root, true, epoch, cancel, stop)
+        }
+        result => result,
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn sync_root_once(
     catalog: &Catalog,
     host: &RemoteHost,
     device: &str,
@@ -1078,5 +1101,111 @@ mod tests {
         host.disconnect();
         let _ = socket.shutdown(std::net::Shutdown::Both);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn cursor_ahead_of_a_reset_agent_falls_back_to_a_full_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&dir.path().join("db")).unwrap();
+        let record = |path: &str, revision| PhotoRecord {
+            key: PhotoKey {
+                root_id: "root".into(),
+                volume_id: "volume".into(),
+                relative_path: path.into(),
+                size_bytes: 1,
+                modified_at: 1,
+                companion_path: None,
+                companion_size_bytes: 0,
+                companion_modified_at: 0,
+            },
+            metadata: crate::model::Photo::default(),
+            revision,
+        };
+        catalog
+            .stage_remote("old", "device", "root", &[record("gone.jpg", 40)], &[])
+            .unwrap();
+        catalog
+            .finish_remote_sync("old", "device", "root", 40, true)
+            .unwrap();
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let socket = client.try_clone().unwrap();
+        let worker = thread::spawn(move || {
+            let mut sinces = Vec::new();
+            while let Some(frame) = read_frame::<Request>(&mut server).unwrap() {
+                let id = frame.header.id;
+                let response = match frame.header.message {
+                    Request::Hello { .. } => Response::Hello(Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        app_version: "test".into(),
+                        device_id: "device".into(),
+                        hostname: "test".into(),
+                        os: "test".into(),
+                        arch: "test".into(),
+                        capabilities: vec![],
+                    }),
+                    // The reset agent's history now ends at revision 2.
+                    Request::Photos { since_revision, .. } if since_revision > 2 => {
+                        sinces.push(since_revision);
+                        Response::Error {
+                            code: "request_failed".into(),
+                            message: "Revision ahead of agent; reset since_revision to zero".into(),
+                        }
+                    }
+                    Request::Photos { since_revision, .. } => {
+                        sinces.push(since_revision);
+                        write_frame(
+                            &mut server,
+                            &Frame::new(id, false, Response::Photo(record("kept.jpg", 2)), vec![]),
+                        )
+                        .unwrap();
+                        Response::Synced { revision: 2 }
+                    }
+                    Request::Cancel { .. } => continue,
+                    other => panic!("unexpected {other:?}"),
+                };
+                write_frame(&mut server, &Frame::new(id, true, response, vec![])).unwrap();
+            }
+            sinces
+        });
+        let host = RemoteHost::from_io(
+            client.try_clone().unwrap(),
+            client,
+            dir.path().join("wire"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let revision = sync_root(
+            &catalog,
+            &host,
+            "device",
+            "root",
+            false,
+            0,
+            &AtomicU64::new(0),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(catalog.remote_revision("device", "root").unwrap(), 2);
+        let available: Vec<_> = catalog
+            .photos()
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.path.to_string_lossy().into_owned(), p.source))
+            .collect();
+        assert_eq!(available.len(), 2);
+        for (path, source) in available {
+            let crate::model::PhotoSource::Remote(source) = source else {
+                panic!("remote photo expected");
+            };
+            assert_eq!(
+                source.available,
+                source.relative_path == PathBuf::from("kept.jpg"),
+                "{path}"
+            );
+        }
+        host.disconnect();
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+        assert_eq!(worker.join().unwrap(), [40, 0]);
     }
 }
