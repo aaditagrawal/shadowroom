@@ -4,13 +4,13 @@ use anyhow::{Context, Result, bail, ensure};
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
@@ -97,7 +97,103 @@ impl<R: Read> Read for CountingReader<R> {
     }
 }
 type Delivery = std::result::Result<Frame<Response>, String>;
-type Pending = Arc<Mutex<HashMap<u64, Sender<Delivery>>>>;
+type Pending = Arc<Mutex<HashMap<u64, Arc<Mailbox>>>>;
+/// Bytes one request may have parked between the shared reader and its
+/// consumer before the reader applies transport backpressure. Credit-windowed
+/// metadata streams stay far below this (FLOW_WINDOW small frames); it bounds
+/// memory for legacy agents that stream without flow control. A single frame
+/// is always admitted to an empty mailbox, so a maximal preview still fits.
+const SPILL_BYTES: usize = 32 * 1024 * 1024;
+/// Per-request delivery queue between the session reader and one consumer.
+/// A slow consumer (for example a catalog write during photo sync) never fails
+/// its request and never blocks other requests while its parked frames fit in
+/// [`SPILL_BYTES`]; beyond that the reader waits for it until the request's own
+/// deadline rather than a short fixed timeout.
+struct Mailbox {
+    state: Mutex<MailboxState>,
+    changed: Condvar,
+    deadline: Instant,
+}
+#[derive(Default)]
+struct MailboxState {
+    queue: VecDeque<(Delivery, usize)>,
+    bytes: usize,
+    /// The consumer is gone; later frames are discarded.
+    closed: bool,
+    peak_bytes: usize,
+}
+impl Mailbox {
+    fn new(deadline: Instant) -> Self {
+        Self {
+            state: Mutex::new(MailboxState::default()),
+            changed: Condvar::new(),
+            deadline,
+        }
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, MailboxState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Reader side. False when the consumer is gone or stayed full past the
+    /// request deadline; the frame is then dropped.
+    fn push(&self, frame: Frame<Response>, bytes: usize) -> bool {
+        let mut state = self.lock();
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.bytes == 0 || state.bytes.saturating_add(bytes) <= SPILL_BYTES {
+                state.bytes += bytes;
+                state.peak_bytes = state.peak_bytes.max(state.bytes);
+                state.queue.push_back((Ok(frame), bytes));
+                self.changed.notify_all();
+                return true;
+            }
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+    /// Terminal failure; bypasses the byte bound so it is never lost.
+    fn fail(&self, error: String) {
+        let mut state = self.lock();
+        if !state.closed {
+            state.queue.push_back((Err(error), 0));
+            self.changed.notify_all();
+        }
+    }
+    fn close(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        state.queue.clear();
+        state.bytes = 0;
+        self.changed.notify_all();
+    }
+    fn recv_until(&self, until: Instant) -> Option<Delivery> {
+        let mut state = self.lock();
+        loop {
+            if let Some((delivery, bytes)) = state.queue.pop_front() {
+                state.bytes -= bytes;
+                self.changed.notify_all();
+                return Some(delivery);
+            }
+            let remaining = until.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
 /// Session liveness: a flag for cheap checks plus a channel that disconnects
 /// once the session closes, so owners can block on closure instead of polling.
 struct Closed {
@@ -129,6 +225,8 @@ struct Session {
     closed: Arc<Closed>,
     next_id: AtomicU64,
     child: Mutex<Option<Child>>,
+    /// Set once negotiation enabled credit-windowed metadata streams.
+    flow: AtomicBool,
 }
 impl Session {
     fn start<R: Read + Send + 'static, W: Write + Send + 'static>(
@@ -151,6 +249,7 @@ impl Session {
             closed: closed.clone(),
             next_id: AtomicU64::new(1),
             child: Mutex::new(child),
+            flow: AtomicBool::new(false),
         });
         let writer_closed = closed.clone();
         let writer_pending = pending.clone();
@@ -170,8 +269,8 @@ impl Session {
                         }
                         Err(error) => {
                             writer_closed.mark();
-                            for (_, tx) in writer_pending.lock().unwrap().drain() {
-                                let _ = tx.try_send(Err(format!("Remote write failed: {error:#}")));
+                            for (_, mailbox) in writer_pending.lock().unwrap().drain() {
+                                mailbox.fail(format!("Remote write failed: {error:#}"));
                             }
                             break;
                         }
@@ -183,14 +282,18 @@ impl Session {
             .name("shadowroom-remote-reader".into())
             .spawn(move || {
                 let error = loop {
+                    let before = counters.received.load(Ordering::Relaxed);
                     match read_frame::<Response>(&mut reader) {
                         Ok(Some(frame)) => {
                             counters
                                 .payload
                                 .fetch_add(frame.payload.len() as u64, Ordering::Relaxed);
+                            // Only this thread reads, so the counter delta is
+                            // exactly this frame's wire size.
+                            let bytes = counters.received.load(Ordering::Relaxed) - before;
                             let id = frame.header.id;
                             let done = frame.header.done;
-                            let tx = {
+                            let mailbox = {
                                 let mut requests = pending.lock().unwrap();
                                 if done {
                                     requests.remove(&id)
@@ -198,11 +301,14 @@ impl Session {
                                     requests.get(&id).cloned()
                                 }
                             };
-                            if let Some(tx) = tx {
-                                // Slow consumers have a bounded eight-frame mailbox. Allow
-                                // short backpressure, then fail a stalled request explicitly.
-                                if tx.send_timeout(Ok(frame), Duration::from_secs(1)).is_err() {
+                            if let Some(mailbox) = mailbox {
+                                // Parks frames for a slow consumer without
+                                // stalling other requests (see Mailbox).
+                                if !mailbox.push(frame, bytes as usize) {
                                     pending.lock().unwrap().remove(&id);
+                                    mailbox.fail(
+                                        "Remote request consumer stalled past its deadline".into(),
+                                    );
                                 }
                             }
                         }
@@ -211,8 +317,8 @@ impl Session {
                     }
                 };
                 closed.mark();
-                for (_, tx) in pending.lock().unwrap().drain() {
-                    let _ = tx.try_send(Err(error.clone()));
+                for (_, mailbox) in pending.lock().unwrap().drain() {
+                    mailbox.fail(error.clone());
                 }
             })
             .expect("Start remote reader");
@@ -229,14 +335,18 @@ impl Session {
         );
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         ensure!(id != 0, "Request id overflow");
-        let (tx, rx) = crossbeam_channel::bounded(8);
+        let deadline = Instant::now() + timeout;
+        let mailbox = Arc::new(Mailbox::new(deadline));
+        // The agent windows exactly the Photos streams of a session that opted in.
+        let windowed =
+            matches!(message, Request::Photos { .. }) && self.flow.load(Ordering::Acquire);
         {
             let mut pending = self.pending.lock().unwrap();
             ensure!(
                 pending.len() < MAX_IN_FLIGHT,
                 "Client request limit reached"
             );
-            pending.insert(id, tx);
+            pending.insert(id, mailbox.clone());
         }
         if let Err(error) = self.write(id, message) {
             self.pending.lock().unwrap().remove(&id);
@@ -244,11 +354,27 @@ impl Session {
         }
         Ok(PendingRequest {
             id,
-            rx,
+            mailbox,
             session: self.clone(),
-            deadline: Instant::now() + timeout,
+            deadline,
             finished: false,
+            windowed,
+            consumed: 0,
         })
+    }
+    /// Control frames that must not be dropped (credits): wait for queue space.
+    fn write_blocking(&self, message: Request) -> Result<()> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let writer = self
+            .writer
+            .lock()
+            .unwrap()
+            .clone()
+            .context("Remote is disconnected")?;
+        writer
+            .send((id, message))
+            .context("Remote writer disconnected")?;
+        Ok(())
     }
     fn write(&self, id: u64, message: Request) -> Result<()> {
         let mut writer = self.writer.lock().unwrap();
@@ -282,8 +408,8 @@ impl Session {
             }
             let _ = child.wait();
         }
-        for (_, tx) in self.pending.lock().unwrap().drain() {
-            let _ = tx.try_send(Err("Remote disconnected".into()));
+        for (_, mailbox) in self.pending.lock().unwrap().drain() {
+            mailbox.fail("Remote disconnected".into());
         }
     }
 }
@@ -299,10 +425,13 @@ const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// `recv` has an overall deadline (progress does not extend it).
 pub struct PendingRequest {
     pub id: u64,
-    rx: Receiver<Delivery>,
+    mailbox: Arc<Mailbox>,
     session: Arc<Session>,
     deadline: Instant,
     finished: bool,
+    /// The agent sends this stream under a credit window.
+    windowed: bool,
+    consumed: u32,
 }
 impl PendingRequest {
     pub fn cancel(&self) {
@@ -322,19 +451,31 @@ impl PendingRequest {
     ) -> Result<Frame<Response>> {
         let frame = loop {
             ensure!(!cancelled(), "Remote request cancelled");
-            let remaining = self.deadline.saturating_duration_since(Instant::now());
-            ensure!(!remaining.is_zero(), "Remote request timed out");
-            match self
-                .rx
-                .recv_timeout(poll.map_or(remaining, |poll| remaining.min(poll)))
-            {
-                Ok(frame) => break frame.map_err(anyhow::Error::msg)?,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => (),
-                Err(_) => bail!("Remote request disconnected"),
+            let now = Instant::now();
+            ensure!(now < self.deadline, "Remote request timed out");
+            let until = poll.map_or(self.deadline, |poll| self.deadline.min(now + poll));
+            if let Some(frame) = self.mailbox.recv_until(until) {
+                break frame.map_err(anyhow::Error::msg)?;
             }
         };
         if frame.header.done {
             self.finished = true;
+        } else if self.windowed
+            && matches!(
+                frame.header.message,
+                Response::Photo(_) | Response::Deleted { .. }
+            )
+        {
+            // Return credit once half the window is consumed, so the agent
+            // keeps streaming while this consumer works through the rest.
+            self.consumed += 1;
+            if self.consumed >= FLOW_WINDOW / 2 {
+                self.session.write_blocking(Request::Credit {
+                    request_id: self.id,
+                    frames: self.consumed,
+                })?;
+                self.consumed = 0;
+            }
         }
         if let Response::Error { code, message } = &frame.header.message {
             if frame.header.done {
@@ -346,6 +487,7 @@ impl PendingRequest {
 }
 impl Drop for PendingRequest {
     fn drop(&mut self) {
+        self.mailbox.close();
         if !self.finished {
             self.session.pending.lock().unwrap().remove(&self.id);
             self.session.cancel(self.id);
@@ -793,6 +935,21 @@ impl RemoteHost {
         self.inner
             .cache
             .set_renderer(&hello.device_id, hello.rendering_namespace())?;
+        if hello
+            .capabilities
+            .iter()
+            .any(|c| c == FLOW_CONTROL_CAPABILITY)
+        {
+            // Flag first: a Photos request racing this negotiation reaches the
+            // agent before FlowControl and is sent unwindowed, so its credits
+            // are ignored. The reverse order could window a stream whose
+            // consumer never returns credit. The writer queue is ordered, so
+            // every Photos request issued afterwards is windowed.
+            session.flow.store(true, Ordering::Release);
+            session.write_blocking(Request::FlowControl {
+                window: FLOW_WINDOW,
+            })?;
+        }
         session
             .hello
             .set(hello.clone())
@@ -1082,6 +1239,42 @@ impl RemoteHost {
         max_bytes: usize,
     ) -> Result<Option<PreviewResult>> {
         PreviewCache::new(cache_dir)?.get(device_id, key, kind, max_bytes)
+    }
+}
+
+#[cfg(test)]
+mod mailbox_tests {
+    use super::*;
+
+    fn frame() -> Frame<Response> {
+        Frame::new(1, false, Response::Pong, vec![])
+    }
+
+    #[test]
+    fn spill_is_bounded_backpressures_until_drained_and_fails_only_at_deadline() {
+        let mailbox = Arc::new(Mailbox::new(Instant::now() + Duration::from_secs(30)));
+        // A single oversized frame is always admitted to an empty mailbox.
+        assert!(mailbox.push(frame(), SPILL_BYTES + 1));
+        let reader = {
+            let mailbox = mailbox.clone();
+            thread::spawn(move || mailbox.push(frame(), 10))
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(!reader.is_finished(), "reader must wait for space");
+        assert!(mailbox.recv_until(Instant::now()).unwrap().is_ok());
+        assert!(reader.join().unwrap());
+        assert!(mailbox.lock().peak_bytes <= SPILL_BYTES + 1);
+        // A consumer that stays full past the request deadline fails it.
+        let expired = Mailbox::new(Instant::now() + Duration::from_millis(20));
+        assert!(expired.push(frame(), SPILL_BYTES));
+        assert!(!expired.push(frame(), 1));
+        // Terminal errors bypass the bound; a closed mailbox drops frames.
+        expired.fail("gone".into());
+        assert!(expired.recv_until(Instant::now()).unwrap().is_ok());
+        assert!(expired.recv_until(Instant::now()).unwrap().is_err());
+        expired.close();
+        assert!(!expired.push(frame(), 1));
+        assert!(expired.recv_until(Instant::now()).is_none());
     }
 }
 

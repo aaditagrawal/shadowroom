@@ -1292,3 +1292,260 @@ fn legacy_agent_full_is_marked_unverified_and_bad_dimensions_or_provenance_fail(
         );
     }
 }
+
+/// Latency of one ping issued while another request's consumer is stalled.
+fn ping_latency(host: &RemoteHost) -> Duration {
+    let started = std::time::Instant::now();
+    host.ping().unwrap();
+    started.elapsed()
+}
+
+#[test]
+fn slow_photo_sync_consumer_is_windowed_without_failing_or_blocking_others() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("photos");
+    fs::create_dir(&root).unwrap();
+    let seed = temp.path().join("seed.jpg");
+    image::RgbImage::new(8, 8).save(&seed).unwrap();
+    const PHOTOS: usize = 1000;
+    for i in 0..PHOTOS {
+        fs::hard_link(&seed, root.join(format!("photo-{i:04}.jpg"))).unwrap();
+    }
+    let running = start(
+        &temp.path().join("state"),
+        &root,
+        &temp.path().join("cache"),
+    );
+    let host = &running.host;
+    assert!(
+        host.hello()
+            .capabilities
+            .iter()
+            .any(|c| c == FLOW_CONTROL_CAPABILITY)
+    );
+    let id = host.list_roots().unwrap().remove(0).id;
+    host.index(&id, |_| {}).unwrap();
+    // Reference: the whole unthrottled stream's wire size.
+    let before = host.stats().received_bytes;
+    assert_eq!(host.photos(&id, 0).unwrap().records.len(), PHOTOS);
+    let full_stream = host.stats().received_bytes - before;
+
+    let (stalled_tx, stalled_rx) = crossbeam_channel::bounded::<()>(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded::<()>(1);
+    thread::scope(|scope| {
+        let sync = scope.spawn(|| {
+            let mut seen = 0;
+            let revision = host
+                .photos_stream(
+                    &id,
+                    0,
+                    |_| {
+                        seen += 1;
+                        // A catalog write far slower than the old 1 s mailbox
+                        // timeout, plus a second slow batch mid-stream.
+                        if seen == 1 {
+                            stalled_tx.send(()).unwrap();
+                            resume_rx.recv().unwrap();
+                        } else if seen == 600 {
+                            thread::sleep(Duration::from_millis(300));
+                        }
+                    },
+                    |_| (),
+                )
+                .unwrap();
+            (seen, revision)
+        });
+        stalled_rx.recv().unwrap();
+        // Let the agent run into its window before sampling.
+        thread::sleep(Duration::from_millis(200));
+        let stalled_at = host.stats().received_bytes;
+        let mut worst = Duration::ZERO;
+        let stall = std::time::Instant::now();
+        while stall.elapsed() < Duration::from_millis(1500) {
+            worst = worst.max(ping_latency(host));
+            thread::sleep(Duration::from_millis(50));
+        }
+        // Pings kept flowing while the stream was parked.
+        assert!(worst < Duration::from_millis(500), "ping took {worst:?}");
+        // The agent stopped at its credit window instead of pushing the whole
+        // listing into client memory; only the small pongs arrived meanwhile.
+        let parked = host.stats().received_bytes - stalled_at;
+        assert!(
+            parked < full_stream / 20,
+            "{parked} bytes arrived of a {full_stream}-byte stream while stalled"
+        );
+        resume_tx.send(()).unwrap();
+        let (seen, revision) = sync.join().unwrap();
+        assert_eq!(seen, PHOTOS);
+        assert!(revision > 0);
+    });
+    host.ping().unwrap();
+}
+
+#[test]
+fn legacy_agent_stream_spills_for_a_slow_consumer_without_blocking_others() {
+    let temp = TempDir::new().unwrap();
+    let (client, mut peer) = UnixStream::pair().unwrap();
+    let control = client.try_clone().unwrap();
+    const PHOTOS: usize = 3000;
+    let (written_tx, written_rx) = crossbeam_channel::bounded::<()>(1);
+    let worker = thread::spawn(move || {
+        // A legacy agent: no flow-control capability and no windowing. It must
+        // never receive the new control requests either.
+        let mut out = peer.try_clone().unwrap();
+        while let Some(frame) = read_frame::<Request>(&mut peer).unwrap() {
+            let id = frame.header.id;
+            match frame.header.message {
+                Request::Hello { .. } => {
+                    write_frame(
+                        &mut out,
+                        &Frame::new(
+                            id,
+                            true,
+                            Response::Hello(Hello {
+                                protocol_version: PROTOCOL_VERSION,
+                                app_version: "0.1.5".into(),
+                                device_id: "legacy".into(),
+                                hostname: "legacy".into(),
+                                os: "test".into(),
+                                arch: "test".into(),
+                                capabilities: vec!["revision_sync".into(), "cancel".into()],
+                            }),
+                            vec![],
+                        ),
+                    )
+                    .unwrap();
+                }
+                Request::Photos { root, .. } => {
+                    for i in 0..PHOTOS {
+                        let record = PhotoRecord {
+                            key: PhotoKey {
+                                root_id: root.clone(),
+                                volume_id: "volume".into(),
+                                relative_path: format!("photo-{i}.jpg").into(),
+                                size_bytes: 1,
+                                modified_at: 1,
+                                companion_path: None,
+                                companion_size_bytes: 0,
+                                companion_modified_at: 0,
+                            },
+                            metadata: Default::default(),
+                            revision: 1,
+                        };
+                        write_frame(
+                            &mut out,
+                            &Frame::new(id, false, Response::Photo(record), vec![]),
+                        )
+                        .unwrap();
+                    }
+                    write_frame(
+                        &mut out,
+                        &Frame::new(id, true, Response::Synced { revision: 1 }, vec![]),
+                    )
+                    .unwrap();
+                    written_tx.send(()).unwrap();
+                }
+                Request::Ping => {
+                    write_frame(&mut out, &Frame::new(id, true, Response::Pong, vec![])).unwrap();
+                }
+                Request::Cancel { .. } => (),
+                other => panic!("legacy agent received {other:?}"),
+            }
+        }
+    });
+    let host = RemoteHost::from_io(
+        client.try_clone().unwrap(),
+        client,
+        temp.path().join("cache"),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let (stalled_tx, stalled_rx) = crossbeam_channel::bounded::<()>(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded::<()>(1);
+    thread::scope(|scope| {
+        let host = &host;
+        let sync = scope.spawn(move || {
+            let mut seen = 0;
+            host.photos_stream(
+                "root",
+                0,
+                |_| {
+                    seen += 1;
+                    if seen == 1 {
+                        stalled_tx.send(()).unwrap();
+                        resume_rx.recv().unwrap();
+                    }
+                },
+                |_| (),
+            )
+            .unwrap();
+            seen
+        });
+        stalled_rx.recv().unwrap();
+        // The whole unwindowed stream is now parked for the stalled consumer.
+        written_rx.recv().unwrap();
+        let stall = std::time::Instant::now();
+        let mut worst = Duration::ZERO;
+        // Longer than the old reader's 1 s mailbox timeout.
+        while stall.elapsed() < Duration::from_millis(1200) {
+            worst = worst.max(ping_latency(host));
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(worst < Duration::from_millis(500), "ping took {worst:?}");
+        resume_tx.send(()).unwrap();
+        assert_eq!(sync.join().unwrap(), PHOTOS);
+    });
+    host.disconnect();
+    control.shutdown(std::net::Shutdown::Both).unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn overlapping_index_requests_wait_on_the_root_lock_and_cancel_promptly() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("photos");
+    fs::create_dir(&root).unwrap();
+    let seed = temp.path().join("seed.jpg");
+    image::RgbImage::new(8, 8).save(&seed).unwrap();
+    for i in 0..200 {
+        fs::hard_link(&seed, root.join(format!("photo-{i}.jpg"))).unwrap();
+    }
+    let running = start(
+        &temp.path().join("state"),
+        &root,
+        &temp.path().join("cache"),
+    );
+    let host = &running.host;
+    let id = host.list_roots().unwrap().remove(0).id;
+    // Hold the catalog writer so the first index stays inside the root lock.
+    let writer =
+        rusqlite::Connection::open(temp.path().join("state").join(format!("{id}.sqlite"))).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let mut first = host.request(Request::Index { root: id.clone() }).unwrap();
+    assert!(matches!(
+        first.recv().unwrap().header.message,
+        Response::Progress(_)
+    ));
+    // The second request blocks on the root lock; cancelling it must wake it
+    // at once rather than when the holder releases the lock.
+    let mut second = host.request(Request::Index { root: id.clone() }).unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let cancelled = std::time::Instant::now();
+    second.cancel();
+    let error = second.recv().unwrap_err().to_string();
+    assert!(error.contains("cancelled"), "{error}");
+    assert!(cancelled.elapsed() < Duration::from_secs(2));
+    writer.execute_batch("ROLLBACK").unwrap();
+    // The holder finishes (or reports a busy catalog); the next index then
+    // acquires the released lock and completes.
+    loop {
+        match first.recv() {
+            Ok(frame) if frame.header.done => break,
+            Ok(_) => (),
+            Err(_) => break,
+        }
+    }
+    let summary = host.index(&id, |_| {}).unwrap();
+    assert!(!summary.cancelled);
+    assert_eq!(host.photos(&id, 0).unwrap().records.len(), 200);
+}

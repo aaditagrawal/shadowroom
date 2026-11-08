@@ -17,6 +17,13 @@ pub const MAX_HEADER: usize = 256 * 1024;
 pub const MAX_PAYLOAD: usize = MAX_FRAME - MAX_HEADER - 4;
 pub const MAX_RANGE: u32 = 1024 * 1024;
 pub const MAX_IN_FLIGHT: usize = 32;
+/// Optional Hello capability: the agent honours [`Request::FlowControl`] and
+/// [`Request::Credit`]. Clients send neither to agents that do not advertise it,
+/// and agents never window a session whose client did not opt in, so both
+/// older agents and older clients keep the original unwindowed framing.
+pub const FLOW_CONTROL_CAPABILITY: &str = "flow_control_v1";
+/// Photo/Deleted frames an agent may send ahead of the client's consumption.
+pub const FLOW_WINDOW: u32 = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
@@ -128,6 +135,18 @@ pub enum Request {
         request_id: u64,
     },
     Ping,
+    /// Opt this session into credit-windowed metadata streams: each later
+    /// `Photos` request may have at most `window` Photo/Deleted frames
+    /// outstanding until the client returns them with [`Request::Credit`].
+    /// Sent only to agents advertising [`FLOW_CONTROL_CAPABILITY`]; no reply.
+    FlowControl {
+        window: u32,
+    },
+    /// Return `frames` consumed stream frames of `request_id`. No reply.
+    Credit {
+        request_id: u64,
+        frames: u32,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

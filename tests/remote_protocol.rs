@@ -58,3 +58,64 @@ fn oversized_truncated_and_inconsistent_frames_rejected() {
         .is_err()
     );
 }
+#[test]
+fn existing_request_spellings_are_unchanged_and_flow_control_is_additive() {
+    // Older agents decode exactly these spellings; flow control adds new
+    // variants (sent only after the agent advertises the capability) rather
+    // than new fields on existing requests.
+    let photos = Request::Photos {
+        root: "r".into(),
+        since_revision: 3,
+    };
+    assert_eq!(
+        serde_json::to_string(&photos).unwrap(),
+        r#"{"type":"photos","root":"r","since_revision":3}"#
+    );
+    let hello = Request::Hello {
+        protocol_version: PROTOCOL_VERSION,
+        app_version: "x".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&hello).unwrap(),
+        r#"{"type":"hello","protocol_version":1,"app_version":"x"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&Request::FlowControl {
+            window: FLOW_WINDOW
+        })
+        .unwrap(),
+        r#"{"type":"flow_control","window":256}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&Request::Credit {
+            request_id: 9,
+            frames: 128
+        })
+        .unwrap(),
+        r#"{"type":"credit","request_id":9,"frames":128}"#
+    );
+    let mut wire = Vec::new();
+    write_frame(
+        &mut wire,
+        &Frame::new(
+            5,
+            true,
+            Request::Credit {
+                request_id: 4,
+                frames: 1,
+            },
+            vec![],
+        ),
+    )
+    .unwrap();
+    let frame = read_frame::<Request>(&mut Cursor::new(wire))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        frame.header.message,
+        Request::Credit {
+            request_id: 4,
+            frames: 1
+        }
+    ));
+}

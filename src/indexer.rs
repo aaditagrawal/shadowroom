@@ -89,9 +89,44 @@ impl Drop for IndexJob {
         self.cancel();
     }
 }
+/// Cancellation sampled at natural work boundaries (each directory entry,
+/// file and batch), never by a timer: the job's own flag plus an optional
+/// caller-owned flag, such as a remote request's stop flag.
+#[derive(Clone, Copy)]
+struct Cancel<'a> {
+    own: &'a AtomicBool,
+    external: Option<&'a AtomicBool>,
+}
+impl Cancel<'_> {
+    fn is_set(&self) -> bool {
+        self.own.load(Ordering::Relaxed)
+            || self
+                .external
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+}
 pub struct Indexer;
 impl Indexer {
     pub fn start(catalog: Catalog, root: PathBuf, options: IndexOptions) -> IndexJob {
+        Self::spawn(catalog, root, options, None)
+    }
+    /// Like [`Indexer::start`], but also stops (emitting `Cancelled`) once
+    /// `external` is set, so the owner can block on `events` instead of
+    /// polling to forward its own cancellation into [`IndexJob::cancel`].
+    pub fn start_cancellable(
+        catalog: Catalog,
+        root: PathBuf,
+        options: IndexOptions,
+        external: Arc<AtomicBool>,
+    ) -> IndexJob {
+        Self::spawn(catalog, root, options, Some(external))
+    }
+    fn spawn(
+        catalog: Catalog,
+        root: PathBuf,
+        options: IndexOptions,
+        external: Option<Arc<AtomicBool>>,
+    ) -> IndexJob {
         let (sender, events) = crossbeam_channel::unbounded();
         let cancelled = Arc::new(AtomicBool::new(false));
         let finished = Arc::new(AtomicBool::new(false));
@@ -101,7 +136,11 @@ impl Indexer {
             .name("shadowroom-index".into())
             .spawn(move || {
                 let _ = sender.send(IndexEvent::Started(root.clone()));
-                if let Err(error) = scan(&catalog, &root, &options, &stop, &sender) {
+                let cancel = Cancel {
+                    own: &stop,
+                    external: external.as_deref(),
+                };
+                if let Err(error) = scan(&catalog, &root, &options, cancel, &sender) {
                     let _ = sender.send(IndexEvent::Error {
                         path: root,
                         message: format!("{error:#}"),
@@ -122,7 +161,7 @@ fn scan(
     catalog: &Catalog,
     root: &Path,
     options: &IndexOptions,
-    stop: &AtomicBool,
+    stop: Cancel<'_>,
     sender: &Sender<IndexEvent>,
 ) -> Result<()> {
     let root = root
@@ -145,7 +184,7 @@ fn scan(
     };
     let mut directories = vec![root.clone()];
     while let Some(directory) = directories.pop() {
-        if stop.load(Ordering::Relaxed) {
+        if stop.is_set() {
             break;
         }
         let mut paths = Vec::new();
@@ -153,7 +192,7 @@ fn scan(
         match fs::read_dir(&directory) {
             Ok(entries) => {
                 for file in entries {
-                    if stop.load(Ordering::Relaxed) {
+                    if stop.is_set() {
                         break;
                     }
                     match file {
@@ -215,7 +254,7 @@ fn scan(
         progress.indexed += catalog.upsert_photos(&batch.photos)? as u64;
     }
     progress.elapsed_ms = start.elapsed().as_millis() as u64;
-    let event = if stop.load(Ordering::Relaxed) {
+    let event = if stop.is_set() {
         IndexEvent::Cancelled(progress)
     } else {
         IndexEvent::Finished(progress)
@@ -255,7 +294,7 @@ fn process_folder(
     entries: Vec<fs::DirEntry>,
     options: &IndexOptions,
     existing: &HashMap<PathBuf, IndexedFile>,
-    stop: &AtomicBool,
+    stop: Cancel<'_>,
     sender: &Sender<IndexEvent>,
     progress: &mut IndexProgress,
     batch: &mut IndexBatch,
@@ -264,7 +303,7 @@ fn process_folder(
 ) -> Result<()> {
     let mut paths: Vec<_> = entries
         .into_iter()
-        .take_while(|_| !stop.load(Ordering::Relaxed))
+        .take_while(|_| !stop.is_set())
         .map(|entry| {
             let path = entry.path();
             let format = extension(&path);
@@ -338,7 +377,7 @@ fn process_folder(
     }
     let companions: HashSet<_> = pairs.values().copied().collect();
     for (index, entry) in paths.iter().enumerate() {
-        if stop.load(Ordering::Relaxed) {
+        if stop.is_set() {
             break;
         }
         let path = &entry.path;
@@ -1806,7 +1845,17 @@ mod tests {
         let c = Catalog::open(&dir.path().join("db")).unwrap();
         let (sender, receiver) = crossbeam_channel::unbounded();
         let cancelled = AtomicBool::new(true);
-        scan(&c, &root, &IndexOptions::default(), &cancelled, &sender).unwrap();
+        scan(
+            &c,
+            &root,
+            &IndexOptions::default(),
+            Cancel {
+                own: &cancelled,
+                external: None,
+            },
+            &sender,
+        )
+        .unwrap();
         assert!(matches!(
             receiver.try_recv().unwrap(),
             IndexEvent::Cancelled(_)

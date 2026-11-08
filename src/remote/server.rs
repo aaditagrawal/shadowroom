@@ -12,7 +12,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -57,7 +57,40 @@ struct Root {
     catalog: Catalog,
     manifest_path: PathBuf,
     manifest: Mutex<Manifest>,
-    indexing: Mutex<()>,
+    indexing: IndexLock,
+}
+/// Serializes index/analyze per root. Waiters block on a condition variable;
+/// cancellation and session end wake them (see [`State::wake_waiters`]).
+#[derive(Default)]
+struct IndexLock {
+    busy: Mutex<bool>,
+    changed: Condvar,
+}
+struct IndexGuard<'a>(&'a IndexLock);
+impl Drop for IndexGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.0.changed.notify_all();
+    }
+}
+impl IndexLock {
+    fn acquire(&self, stop: &AtomicBool) -> Result<IndexGuard<'_>> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            // Checked under the mutex that `wake` takes, so a cancellation
+            // between this check and the wait cannot be missed.
+            check(stop)?;
+            if !*busy {
+                *busy = true;
+                return Ok(IndexGuard(self));
+            }
+            busy = self.changed.wait(busy).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    fn wake(&self) {
+        let _busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        self.changed.notify_all();
+    }
 }
 struct State {
     _state_lock: File,
@@ -70,12 +103,73 @@ pub struct Agent {
     state: Arc<State>,
     workers: usize,
 }
-type Stops = Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>;
+type Stops = Arc<Mutex<HashMap<u64, Arc<Control>>>>;
 struct Work {
     id: u64,
     request: Request,
-    stop: Arc<AtomicBool>,
+    control: Arc<Control>,
 }
+/// Longest a windowed stream waits for the client to return credit. Session
+/// end and cancellation wake it at once; this only bounds a live client that
+/// stopped consuming without cancelling.
+const CREDIT_WAIT: Duration = Duration::from_secs(3600);
+/// Per-request cancellation plus the optional credit window of its stream.
+struct Control {
+    stop: Arc<AtomicBool>,
+    /// None: unwindowed (legacy client or non-metadata request).
+    credit: Mutex<Option<u64>>,
+    changed: Condvar,
+}
+impl Control {
+    fn new(window: Option<u32>) -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            credit: Mutex::new(window.map(u64::from)),
+            changed: Condvar::new(),
+        }
+    }
+    fn cancel(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _credit = self.credit.lock().unwrap_or_else(|e| e.into_inner());
+        self.changed.notify_all();
+    }
+    fn grant(&self, frames: u32) {
+        let mut credit = self.credit.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(credit) = credit.as_mut() {
+            *credit = credit.saturating_add(u64::from(frames));
+            self.changed.notify_all();
+        }
+    }
+    /// Take one frame of credit, blocking while the window is exhausted.
+    fn acquire(&self) -> Result<()> {
+        let deadline = Instant::now() + CREDIT_WAIT;
+        let mut credit = self.credit.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            check(&self.stop)?;
+            match credit.as_mut() {
+                None => return Ok(()),
+                Some(available) if *available > 0 => {
+                    *available -= 1;
+                    return Ok(());
+                }
+                Some(_) => (),
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            ensure!(
+                !remaining.is_zero(),
+                "Client stopped returning stream credit"
+            );
+            credit = self
+                .changed
+                .wait_timeout(credit, remaining)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+/// Records copied out of the manifest per lock hold while streaming Photos, so
+/// a huge listing is never cloned whole and refreshes are not blocked by writes.
+const PHOTOS_CHUNK: usize = 256;
 
 // Keep the existing single-frame JPEG transport bounded while encoding, too.
 // Checking only after encoding allowed an oversized representation to grow
@@ -191,7 +285,7 @@ impl Agent {
                 catalog: Catalog::open(&state_dir.join(format!("{id}.sqlite")))?,
                 manifest_path,
                 manifest: Mutex::new(manifest),
-                indexing: Mutex::new(()),
+                indexing: IndexLock::default(),
             });
         }
         let jpeg_cache = super::client::PreviewCache::new(
@@ -228,6 +322,7 @@ impl Agent {
                 "read_range".into(),
                 "cancel".into(),
                 "read_only".into(),
+                FLOW_CONTROL_CAPABILITY.into(),
             ],
         };
         Ok(Self {
@@ -258,7 +353,7 @@ impl Agent {
                     while let Ok(work) = rx.recv() {
                         let result = state.handle(&work, writer);
                         if let Err(error) = result {
-                            let code = if work.stop.load(Ordering::Relaxed) {
+                            let code = if work.control.stop.load(Ordering::Relaxed) {
                                 "cancelled"
                             } else {
                                 "request_failed"
@@ -279,6 +374,8 @@ impl Agent {
                 }));
             }
             let mut negotiated = false;
+            // Set by a client that opted into credit-windowed metadata streams.
+            let mut window: Option<u32> = None;
             let result = (|| -> Result<()> {
                 while let Some(frame) = read_frame::<Request>(&mut reader)? {
                     let id = frame.header.id;
@@ -327,10 +424,26 @@ impl Agent {
                         )?;
                         continue;
                     }
-                    if let Request::Cancel { request_id } = frame.header.message {
-                        if let Some(stop) = stops.lock().unwrap().get(&request_id) {
-                            stop.store(true, Ordering::Relaxed);
+                    match frame.header.message {
+                        Request::FlowControl { window: frames } => {
+                            ensure!(frames > 0, "Flow-control window must be positive");
+                            window = Some(frames);
+                            continue;
                         }
+                        Request::Credit { request_id, frames } => {
+                            // Credit for a finished request is harmless and ignored.
+                            if let Some(control) = stops.lock().unwrap().get(&request_id) {
+                                control.grant(frames);
+                            }
+                            continue;
+                        }
+                        _ => (),
+                    }
+                    if let Request::Cancel { request_id } = frame.header.message {
+                        if let Some(control) = stops.lock().unwrap().get(&request_id) {
+                            control.cancel();
+                        }
+                        self.state.wake_waiters();
                         send(
                             &writer,
                             id,
@@ -340,7 +453,10 @@ impl Agent {
                         )?;
                         continue;
                     }
-                    let stop = Arc::new(AtomicBool::new(false));
+                    let control =
+                        Arc::new(Control::new(window.filter(|_| {
+                            matches!(frame.header.message, Request::Photos { .. })
+                        })));
                     {
                         let mut active = stops.lock().unwrap();
                         ensure!(!active.contains_key(&id), "Duplicate active request id");
@@ -357,13 +473,13 @@ impl Agent {
                             )?;
                             continue;
                         }
-                        active.insert(id, stop.clone());
+                        active.insert(id, control.clone());
                     }
                     if tx
                         .try_send(Work {
                             id,
                             request: frame.header.message,
-                            stop,
+                            control,
                         })
                         .is_err()
                     {
@@ -382,9 +498,10 @@ impl Agent {
                 }
                 Ok(())
             })();
-            for stop in stops.lock().unwrap().values() {
-                stop.store(true, Ordering::Relaxed);
+            for control in stops.lock().unwrap().values() {
+                control.cancel();
             }
+            self.state.wake_waiters();
             drop(tx);
             for handle in handles {
                 handle
@@ -464,6 +581,13 @@ fn check(stop: &AtomicBool) -> Result<()> {
     Ok(())
 }
 impl State {
+    /// Wake every request blocked on a per-root index lock so it re-checks
+    /// its cancellation flag.
+    fn wake_waiters(&self) {
+        for root in &self.roots {
+            root.indexing.wake();
+        }
+    }
     fn root(&self, id: &str) -> Result<&Root> {
         self.roots
             .iter()
@@ -472,7 +596,7 @@ impl State {
     }
     fn handle(&self, work: &Work, writer: &Mutex<impl Write>) -> Result<()> {
         let id = work.id;
-        let stop = &*work.stop;
+        let stop = &*work.control.stop;
         check(stop)?;
         let response = match &work.request {
             Request::ListRoots => Response::Roots {
@@ -508,32 +632,56 @@ impl State {
                 since_revision,
             } => {
                 let root = self.root(root)?;
-                // Snapshot under lock, release before network writes.
-                let manifest = root.manifest.lock().unwrap();
-                ensure!(
-                    *since_revision <= manifest.revision,
-                    "Revision ahead of agent; reset since_revision to zero"
-                );
-                let records: Vec<_> = manifest
-                    .records
-                    .values()
-                    .filter(|r| r.revision > *since_revision)
-                    .cloned()
-                    .collect();
-                let deleted: Vec<_> = manifest
+                let revision = {
+                    let manifest = root.manifest.lock().unwrap();
+                    ensure!(
+                        *since_revision <= manifest.revision,
+                        "Revision ahead of agent; reset since_revision to zero"
+                    );
+                    manifest.revision
+                };
+                // Stream in bounded chunks, releasing the lock between them.
+                // A refresh between chunks is safe: each path is sent in some
+                // real state, and every change after `revision` (the cursor the
+                // client stores) has a higher revision, so the next incremental
+                // sync delivers it again.
+                let mut after: Option<PathBuf> = None;
+                loop {
+                    let chunk: Vec<_> = {
+                        let manifest = root.manifest.lock().unwrap();
+                        let range = match &after {
+                            Some(last) => manifest.records.range::<PathBuf, _>((
+                                std::ops::Bound::Excluded(last),
+                                std::ops::Bound::Unbounded,
+                            )),
+                            None => manifest.records.range::<PathBuf, _>(..),
+                        };
+                        range
+                            .filter(|(_, r)| r.revision > *since_revision)
+                            .take(PHOTOS_CHUNK)
+                            .map(|(path, record)| (path.clone(), record.clone()))
+                            .collect()
+                    };
+                    let Some((last, _)) = chunk.last() else {
+                        break;
+                    };
+                    after = Some(last.clone());
+                    for (_, photo) in chunk {
+                        work.control.acquire()?;
+                        send(writer, id, false, Response::Photo(photo), vec![])?;
+                    }
+                }
+                let deleted: Vec<_> = root
+                    .manifest
+                    .lock()
+                    .unwrap()
                     .deleted
                     .iter()
                     .filter(|(_, r)| **r > *since_revision)
                     .map(|(p, _)| p.clone())
                     .collect();
-                let revision = manifest.revision;
-                drop(manifest);
-                for photo in records {
-                    check(stop)?;
-                    send(writer, id, false, Response::Photo(photo), vec![])?;
-                }
                 for relative_path in deleted {
-                    check(stop)?;
+                    work.control.acquire()?;
                     send(
                         writer,
                         id,
@@ -546,25 +694,19 @@ impl State {
             }
             Request::Index { root } => {
                 let root = self.root(root)?;
-                let _guard = loop {
-                    check(stop)?;
-                    if let Ok(guard) = root.indexing.try_lock() {
-                        break guard;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                };
+                let _guard = root.indexing.acquire(stop)?;
                 confined(&root.info.path, Path::new(""))?;
-                let job = JoinedIndex(Some(Indexer::start(
+                // The indexer observes this request's stop flag itself at file
+                // and folder boundaries, so this loop blocks on events alone.
+                let job = JoinedIndex(Some(Indexer::start_cancellable(
                     root.catalog.clone(),
                     root.info.path.clone(),
                     IndexOptions::default(),
+                    work.control.stop.clone(),
                 )));
                 let mut summary = IndexSummary::default();
                 loop {
-                    if stop.load(Ordering::Relaxed) {
-                        job.cancel();
-                    }
-                    match job.recv_timeout(Duration::from_millis(20)) {
+                    match job.events.recv() {
                         Ok(event) => {
                             let (p, phase, done, cancelled) = match event {
                                 IndexEvent::Started(_) => {
@@ -617,7 +759,6 @@ impl State {
                                 break;
                             }
                         }
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => (),
                         Err(_) => bail!("Indexer ended without completion"),
                     }
                 }
@@ -632,13 +773,7 @@ impl State {
             }
             Request::Analyze { root } => {
                 let root = self.root(root)?;
-                let _guard = loop {
-                    check(stop)?;
-                    if let Ok(guard) = root.indexing.try_lock() {
-                        break guard;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                };
+                let _guard = root.indexing.acquire(stop)?;
                 // Thumbnails decoded here also warm the agent's preview cache, so
                 // later client thumbnail requests are served without decoding.
                 let missing: Vec<_> = root
@@ -1231,14 +1366,14 @@ mod tests {
             Some(crate::media::rendering_namespace().as_str())
         );
         let root = agent.state.roots[0].info.id.clone();
-        let stop = Arc::new(AtomicBool::new(false));
+        let control = Arc::new(Control::new(None));
         agent
             .state
             .handle(
                 &Work {
                     id: 1,
                     request: Request::Index { root },
-                    stop: stop.clone(),
+                    control: control.clone(),
                 },
                 &Mutex::new(Vec::new()),
             )
@@ -1284,7 +1419,7 @@ mod tests {
                 kind: PreviewKind::Fit,
                 max_bytes: MAX_PAYLOAD,
             },
-            stop,
+            control,
         };
         let output = Mutex::new(Vec::new());
         agent.state.handle(&request, &output).unwrap();
