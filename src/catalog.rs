@@ -705,12 +705,30 @@ impl ExportPlan {
             );
             match write_unique(&path, xml.as_bytes()) {
                 Ok(written) => {
-                    manifest.push(serde_json::json!({"photo_id":p.id,"source":p.path,"sidecar":written.file_name().map(|n|n.to_string_lossy().into_owned()),"status":"written","bytes":xml.len(),"blake3":blake3::hash(xml.as_bytes()).to_hex().as_str()}));
+                    manifest.push(XmpEntry {
+                        photo_id: p.id,
+                        source: p.path.clone(),
+                        sidecar: written
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned()),
+                        status: XmpStatus::Written,
+                        bytes: Some(xml.len()),
+                        blake3: Some(blake3::hash(xml.as_bytes()).to_hex().to_string()),
+                        error: None,
+                    });
                     count += 1;
                 }
                 Err(error) => {
                     failures += 1;
-                    manifest.push(serde_json::json!({"photo_id":p.id,"source":p.path,"sidecar":null,"status":"failed","error":format!("{error:#}")}));
+                    manifest.push(XmpEntry {
+                        photo_id: p.id,
+                        source: p.path.clone(),
+                        sidecar: None,
+                        status: XmpStatus::Failed,
+                        bytes: None,
+                        blake3: None,
+                        error: Some(format!("{error:#}")),
+                    });
                 }
             }
         }
@@ -736,7 +754,7 @@ impl ExportPlan {
             reserve_manifest(destination, "shadowroom-picks-manifest.json", "picks")?;
         let mut report = PicksReport {
             schema_version: 1,
-            state: "completed".into(),
+            state: ManifestState::Completed,
             completed_files: 0,
             completed_groups: 0,
             failed_groups: 0,
@@ -745,7 +763,7 @@ impl ExportPlan {
         let mut sidecars = SidecarCache::default();
         for p in &self.photos {
             let group = copy_group(p, destination, &mut sidecars);
-            if group.status == "verified" {
+            if group.status == GroupStatus::Verified {
                 report.completed_groups += 1;
                 report.completed_files += group.files.len();
             } else {
@@ -754,7 +772,7 @@ impl ExportPlan {
             report.groups.push(group);
         }
         if report.failed_groups > 0 {
-            report.state = "partial_failure".into();
+            report.state = ManifestState::PartialFailure;
         }
         persist_manifest(&manifest_path, &report).with_context(|| ExportFailure {
             completed: report.completed_files,
@@ -779,30 +797,96 @@ impl ExportPlan {
     }
 }
 
-#[derive(Serialize)]
+/// Export manifest `state`. These strings are a file format read by users and
+/// scripts; serde keeps them byte-identical to earlier releases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ManifestState {
+    Running,
+    Completed,
+    PartialFailure,
+}
+/// Picks manifest group `status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GroupStatus {
+    Verified,
+    Failed,
+}
+/// Picks manifest file `status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileStatus {
+    NotAttempted,
+    Verified,
+    Failed,
+    RolledBack,
+    CleanupFailed,
+}
+/// Picks manifest file `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileKind {
+    /// A primary or companion listed when sidecar discovery failed.
+    Media,
+    Original,
+    Companion,
+    Sidecar,
+}
+/// XMP manifest entry `status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum XmpStatus {
+    Written,
+    Failed,
+}
+/// One XMP manifest entry; failed entries keep `"sidecar": null` and omit
+/// `bytes`/`blake3`, written entries omit `error`, as earlier releases did.
+#[derive(Serialize, serde::Deserialize)]
+struct XmpEntry {
+    photo_id: i64,
+    source: PathBuf,
+    sidecar: Option<String>,
+    status: XmpStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blake3: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+#[derive(Serialize, serde::Deserialize)]
+struct RunningManifest {
+    schema_version: u32,
+    state: ManifestState,
+    mode: String,
+    note: String,
+}
+
+#[derive(Serialize, serde::Deserialize)]
 struct PicksReport {
     schema_version: u32,
-    state: String,
+    state: ManifestState,
     completed_files: usize,
     completed_groups: usize,
     failed_groups: usize,
     groups: Vec<GroupReport>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 struct GroupReport {
     photo_id: i64,
     original: PathBuf,
     basename: Option<String>,
-    status: String,
+    status: GroupStatus,
     error: Option<String>,
     files: Vec<FileReport>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 struct FileReport {
     source: PathBuf,
     destination: Option<PathBuf>,
-    kind: String,
-    status: String,
+    kind: FileKind,
+    status: FileStatus,
     bytes: u64,
     blake3: Option<String>,
     output_retained: bool,
@@ -811,7 +895,7 @@ struct FileReport {
 struct GroupMember {
     source: PathBuf,
     suffix: OsString,
-    kind: &'static str,
+    kind: FileKind,
 }
 struct ReservedOutput {
     path: PathBuf,
@@ -899,7 +983,11 @@ fn group_members(photo: &Photo, cache: &mut SidecarCache) -> Result<Vec<GroupMem
             members.push(GroupMember {
                 source: media.clone(),
                 suffix,
-                kind: if index == 0 { "original" } else { "companion" },
+                kind: if index == 0 {
+                    FileKind::Original
+                } else {
+                    FileKind::Companion
+                },
             });
         }
     }
@@ -909,7 +997,7 @@ fn group_members(photo: &Photo, cache: &mut SidecarCache) -> Result<Vec<GroupMem
                 members.push(GroupMember {
                     source,
                     suffix,
-                    kind: "sidecar",
+                    kind: FileKind::Sidecar,
                 });
             }
         }
@@ -937,7 +1025,7 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
         photo_id: photo.id,
         original: photo.path.clone(),
         basename: None,
-        status: "failed".into(),
+        status: GroupStatus::Failed,
         error: None,
         files: Vec::new(),
     };
@@ -950,8 +1038,8 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
                 .map(|source| FileReport {
                     source: source.clone(),
                     destination: None,
-                    kind: "media".into(),
-                    status: "not_attempted".into(),
+                    kind: FileKind::Media,
+                    status: FileStatus::NotAttempted,
                     bytes: 0,
                     blake3: None,
                     output_retained: false,
@@ -966,8 +1054,8 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
         .map(|m| FileReport {
             source: m.source.clone(),
             destination: None,
-            kind: m.kind.into(),
-            status: "not_attempted".into(),
+            kind: m.kind,
+            status: FileStatus::NotAttempted,
             bytes: 0,
             blake3: None,
             output_retained: false,
@@ -994,14 +1082,14 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
         match copy_verified(&member.source, &output.path, output.file.as_mut().unwrap()) {
             Ok((bytes, hash)) => {
                 let file = &mut report.files[index];
-                file.status = "verified".into();
+                file.status = FileStatus::Verified;
                 file.bytes = bytes;
                 file.blake3 = Some(hash);
                 file.output_retained = true;
             }
             Err(error) => {
                 let message = format!("{}: {error:#}", member.source.display());
-                report.files[index].status = "failed".into();
+                report.files[index].status = FileStatus::Failed;
                 report.files[index].error = Some(message.clone());
                 failure = Some(message);
                 break;
@@ -1012,8 +1100,8 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
         let cleanup = rollback_outputs(&mut outputs);
         for file in &mut report.files {
             file.output_retained = false;
-            if file.status == "verified" {
-                file.status = "rolled_back".into();
+            if file.status == FileStatus::Verified {
+                file.status = FileStatus::RolledBack;
             }
             if let Some(path) = &file.destination {
                 if let Some(message) = cleanup
@@ -1021,7 +1109,7 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
                     .find(|(failed, _)| failed == path)
                     .map(|(_, message)| message)
                 {
-                    file.status = "cleanup_failed".into();
+                    file.status = FileStatus::CleanupFailed;
                     file.output_retained = true;
                     file.error = Some(message.clone());
                 }
@@ -1036,7 +1124,7 @@ fn copy_group(photo: &Photo, destination: &Path, cache: &mut SidecarCache) -> Gr
             )
         });
     } else {
-        report.status = "verified".into();
+        report.status = GroupStatus::Verified;
     }
     report
 }
@@ -1222,9 +1310,13 @@ pub(crate) fn verify_file(
 
 fn reserve_manifest(destination: &Path, name: &str, mode: &str) -> Result<PathBuf> {
     let (path, mut file) = unique_file(&destination.join(name))?;
-    let initial = serde_json::to_vec_pretty(
-        &serde_json::json!({"schema_version":1,"state":"running","mode":mode,"note":"Export in progress; final per-file results replace this record on completion."}),
-    )?;
+    let initial = serde_json::to_vec_pretty(&RunningManifest {
+        schema_version: 1,
+        state: ManifestState::Running,
+        mode: mode.into(),
+        note: "Export in progress; final per-file results replace this record on completion."
+            .into(),
+    })?;
     if let Err(error) = file.write_all(&initial).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&path);
@@ -1681,6 +1773,95 @@ mod tests {
         assert!(verify_file(&output, 4, &hash).is_err());
         fs::write(&output, b"good plus extra").unwrap();
         assert!(verify_file(&output, 4, &hash).is_err());
+    }
+    #[test]
+    fn export_manifest_enums_keep_their_file_format_strings_and_round_trip() {
+        use serde_json::{Value, json};
+        let cases = [
+            (json!(ManifestState::Running), "running"),
+            (json!(ManifestState::Completed), "completed"),
+            (json!(ManifestState::PartialFailure), "partial_failure"),
+            (json!(GroupStatus::Verified), "verified"),
+            (json!(GroupStatus::Failed), "failed"),
+            (json!(FileStatus::NotAttempted), "not_attempted"),
+            (json!(FileStatus::Verified), "verified"),
+            (json!(FileStatus::Failed), "failed"),
+            (json!(FileStatus::RolledBack), "rolled_back"),
+            (json!(FileStatus::CleanupFailed), "cleanup_failed"),
+            (json!(FileKind::Media), "media"),
+            (json!(FileKind::Original), "original"),
+            (json!(FileKind::Companion), "companion"),
+            (json!(FileKind::Sidecar), "sidecar"),
+            (json!(XmpStatus::Written), "written"),
+            (json!(XmpStatus::Failed), "failed"),
+        ];
+        for (value, text) in cases {
+            assert_eq!(value, Value::from(text));
+        }
+        let report = PicksReport {
+            schema_version: 1,
+            state: ManifestState::PartialFailure,
+            completed_files: 1,
+            completed_groups: 0,
+            failed_groups: 1,
+            groups: vec![GroupReport {
+                photo_id: 7,
+                original: "/src/a.nef".into(),
+                basename: Some("a".into()),
+                status: GroupStatus::Failed,
+                error: Some("boom".into()),
+                files: vec![FileReport {
+                    source: "/src/a.nef".into(),
+                    destination: Some("/out/a.nef".into()),
+                    kind: FileKind::Original,
+                    status: FileStatus::RolledBack,
+                    bytes: 3,
+                    blake3: None,
+                    output_retained: false,
+                    error: None,
+                }],
+            }],
+        };
+        let text = serde_json::to_string(&report).unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["state"], "partial_failure");
+        assert_eq!(value["groups"][0]["status"], "failed");
+        assert_eq!(value["groups"][0]["files"][0]["status"], "rolled_back");
+        assert_eq!(value["groups"][0]["files"][0]["kind"], "original");
+        let back: PicksReport = serde_json::from_str(&text).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        // Legacy manifests written with plain strings parse into the enums.
+        let legacy: RunningManifest = serde_json::from_value(
+            json!({"schema_version":1,"state":"running","mode":"picks","note":"n"}),
+        )
+        .unwrap();
+        assert_eq!(legacy.state, ManifestState::Running);
+        let written = json!(XmpEntry {
+            photo_id: 1,
+            source: "/a.jpg".into(),
+            sidecar: Some("a.xmp".into()),
+            status: XmpStatus::Written,
+            bytes: Some(4),
+            blake3: Some("h".into()),
+            error: None,
+        });
+        assert_eq!(
+            written,
+            json!({"photo_id":1,"source":"/a.jpg","sidecar":"a.xmp","status":"written","bytes":4,"blake3":"h"})
+        );
+        let failed = json!(XmpEntry {
+            photo_id: 1,
+            source: "/a.jpg".into(),
+            sidecar: None,
+            status: XmpStatus::Failed,
+            bytes: None,
+            blake3: None,
+            error: Some("e".into()),
+        });
+        assert_eq!(
+            failed,
+            json!({"photo_id":1,"source":"/a.jpg","sidecar":null,"status":"failed","error":"e"})
+        );
     }
     #[test]
     fn export_copy_stops_at_its_source_snapshot_when_the_source_keeps_growing() {

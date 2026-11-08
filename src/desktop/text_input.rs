@@ -23,6 +23,10 @@ impl Edit {
         self.anchor = self.cursor;
         self.reset();
     }
+    #[cfg(test)]
+    pub fn caret(&self) -> usize {
+        self.cursor
+    }
     fn reset(&mut self) {
         self.epoch = Instant::now();
         self.visible = true;
@@ -132,7 +136,21 @@ fn next(text: &str, index: usize) -> usize {
 }
 
 impl Workspace {
+    /// A field edited through the shared `text_edit` state (import form).
     pub(super) fn input_text(&self, text: &str, placeholder: &str, active: bool) -> AnyElement {
+        self.input_field(&self.text_edit, text, placeholder, active, active)
+    }
+    /// Paints `text` with `edit`'s caret and selection. `active` marks the
+    /// field's own current input (selection and scroll); `focused` is false
+    /// while another overlay owns the keyboard, which hides the caret.
+    pub(super) fn input_field(
+        &self,
+        edit: &Edit,
+        text: &str,
+        placeholder: &str,
+        active: bool,
+        focused: bool,
+    ) -> AnyElement {
         let color = if text.is_empty() {
             self.muted()
         } else {
@@ -141,10 +159,10 @@ impl Workspace {
         let shown: SharedString = if text.is_empty() { placeholder } else { text }
             .to_string()
             .into();
-        let cursor = boundary(text, self.text_edit.cursor);
-        let range = boundary(text, self.text_edit.anchor).min(cursor)
-            ..boundary(text, self.text_edit.anchor).max(cursor);
-        let caret = active && self.text_edit.visible;
+        let cursor = boundary(text, edit.cursor);
+        let range =
+            boundary(text, edit.anchor).min(cursor)..boundary(text, edit.anchor).max(cursor);
+        let caret = active && focused && edit.visible;
         let accent = self.accent();
         canvas(
             move |bounds, window, _| {

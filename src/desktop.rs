@@ -17,12 +17,15 @@ use layout::{
     space,
 };
 use serde_json::{Value, json};
+use shadowroom::network::HostState;
 use shadowroom::{
     automation::{AutomationRequest, AutomationServer},
+    duplicates::{ScanPhase, ScanStage},
     indexer::Drive,
+    ingest::Phase,
     media::{ColorStatus, MediaPipeline, PreviewKind},
     model::{ColorLabel, Flag, Photo, PhotoDecision},
-    service::{GroupSlot, IoCommand, IoEvent, PhotoSlot, start_io},
+    service::{GroupSlot, IoCommand, IoEvent, JobState, PhotoSlot, start_io},
     settings::{INTERFACE_FONTS, Settings},
     theme::Theme,
     theme_watch::{ThemeUpdate, ThemeWatcher, ZedSelection, start_theme_watch},
@@ -30,12 +33,13 @@ use shadowroom::{
 };
 use std::{
     borrow::Cow,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, Mutex},
     task::{Poll, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 actions!(shadowroom, [QuitApp]);
 
@@ -172,6 +176,8 @@ enum Cmd {
     Appearance,
     PreferencesSection(PreferencesSection),
     Close,
+    /// Clear the error toast only; unlike Close it never closes a view.
+    DismissError,
     GettingStarted,
     StartupGuide(bool),
     Next,
@@ -586,6 +592,256 @@ struct Texture {
     color_status: ColorStatus,
     _reservation: shadowroom::media::DisplayReservation,
 }
+/// Desktop-side view of one tracked export, reported through automation.
+#[derive(Clone, Debug, serde::Serialize)]
+struct ExportJob {
+    id: u64,
+    state: JobState,
+    completed: usize,
+    error: Option<String>,
+}
+/// What raised the error toast, so a later success clears only its own notice
+/// instead of matching message text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum NoticeKind {
+    #[default]
+    General,
+    /// Decision writes failed or a close was refused over unsaved decisions;
+    /// cleared once every decision is acknowledged.
+    UnsavedDecisions,
+    /// A preferences write failed; cleared by the matching durable ACK.
+    UnsavedPreferences,
+}
+/// The error toast: user-visible text plus the source that may retire it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Notice {
+    kind: NoticeKind,
+    text: String,
+}
+impl Notice {
+    fn new(kind: NoticeKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+        }
+    }
+}
+impl From<String> for Notice {
+    fn from(text: String) -> Self {
+        Self::new(NoticeKind::General, text)
+    }
+}
+impl From<&str> for Notice {
+    fn from(text: &str) -> Self {
+        Self::new(NoticeKind::General, text)
+    }
+}
+impl serde::Serialize for Notice {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+/// Clears `slot` only when it holds a notice of `kind`.
+fn clear_notice(slot: &mut Option<Notice>, kind: NoticeKind) {
+    if slot.as_ref().is_some_and(|notice| notice.kind == kind) {
+        *slot = None;
+    }
+}
+const ACTIVE_POLL: Duration = Duration::from_millis(50);
+/// Idle windows still notice drives, remote hosts and theme files, and keep a
+/// focused caret blinking, at a fifth of the wakeups.
+const IDLE_POLL: Duration = Duration::from_millis(250);
+/// Input keeps the fast poll for a while: its decodes and saves follow shortly.
+const INPUT_GRACE: Duration = Duration::from_secs(2);
+
+/// Poll cadence: `Active` (50 ms) while any background state machine has work
+/// or input was recent, `Idle` (250 ms) otherwise. An idle sleep is cut short
+/// by input, so going idle never delays the response to a keystroke.
+#[derive(Default)]
+struct PollWake {
+    idle: Cell<bool>,
+    kicked: Cell<bool>,
+    waker: RefCell<Option<Waker>>,
+    active_until: Cell<Option<Instant>>,
+}
+impl PollWake {
+    fn kick(&self) {
+        self.active_until.set(Some(Instant::now() + INPUT_GRACE));
+        if self.idle.get() {
+            self.kicked.set(true);
+            if let Some(waker) = self.waker.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+    }
+    fn recently_active(&self) -> bool {
+        self.active_until
+            .get()
+            .is_some_and(|until| Instant::now() < until)
+    }
+    async fn sleep(&self, idle: bool) {
+        self.idle.set(idle);
+        self.kicked.set(false);
+        let mut timer = std::pin::pin!(Timer::after(if idle { IDLE_POLL } else { ACTIVE_POLL }));
+        std::future::poll_fn(|cx| {
+            if self.kicked.get() || timer.as_mut().poll(cx).is_ready() {
+                Poll::Ready(())
+            } else {
+                *self.waker.borrow_mut() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await;
+        self.idle.set(false);
+        self.waker.borrow_mut().take();
+    }
+}
+
+/// A surface that owns input above the workspace; see `Workspace::overlays`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overlay {
+    FolderPicker,
+    Deletion,
+    ImageContext,
+    GettingStarted,
+    RatingFilter,
+    Preferences,
+    Palette,
+    AddHost,
+}
+/// Durability of review decisions, derived from the optimistic `unsaved` map
+/// and the count of unacknowledged writer batches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveState {
+    Durable,
+    /// Batches are queued or in flight; they may still clear `unsaved`.
+    Pending,
+    /// Decisions remain unsaved with nothing in flight: only a retry helps.
+    Failed,
+}
+impl SaveState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Durable => "durable",
+            Self::Pending => "pending",
+            Self::Failed => "failed",
+        }
+    }
+}
+/// Preference persistence, from the latest in-memory edit to a durable ACK.
+///
+/// `Durable ─edit─▶ Queued ─sent─▶ Writing ─matching ACK─▶ Durable`. A recovered
+/// snapshot that cannot be written (malformed settings file) is `Held` until a
+/// repair makes it `Queued`. Write failures stay in `Writing`: the writer keeps
+/// and retries the payload, and `settings_failure` carries the last error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PrefsSync {
+    #[default]
+    Durable,
+    Queued,
+    Writing,
+    Held,
+}
+impl PrefsSync {
+    fn dirty(self) -> bool {
+        self != Self::Durable
+    }
+}
+/// Window close lifecycle.
+///
+/// `Open ─request─▶ Draining ─writes drained─▶ Flushing ─ack─▶ (exit)`; a refused
+/// barrier (unsaved decisions, unrepaired preferences) or a failed flush returns
+/// to `Open`. Each poll re-enters the barrier while `Draining`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum QuitState {
+    #[default]
+    Open,
+    /// Waiting for exports, imports and decision/preference writes to finish.
+    Draining,
+    /// The final catalog flush is in flight; nothing may re-request it.
+    Flushing,
+}
+impl QuitState {
+    fn closing(self) -> bool {
+        self != Self::Open
+    }
+}
+/// Pointer panning of a zoomed photo pane.
+///
+/// `Idle ─press in pane─▶ Pressed ─move─▶ Dragging`; any left-button release
+/// (inside or outside the window) returns to `Idle`, as does a move that
+/// arrives without the button held (a release the window never saw). Only the
+/// pane that took the press pans, so a drag that starts on the filmstrip,
+/// a scrollbar or the other compare pane never moves the image.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum PanDrag {
+    #[default]
+    Idle,
+    /// The left button went down in a zoomed pane; nothing has moved yet.
+    Pressed { reference: bool, at: Point<Pixels> },
+    /// The button is held and the pointer has moved: the pan follows it.
+    Dragging { reference: bool, at: Point<Pixels> },
+}
+impl PanDrag {
+    fn press(reference: bool, at: Point<Pixels>) -> Self {
+        Self::Pressed { reference, at }
+    }
+    fn holds(self, pane: bool) -> bool {
+        matches!(self, Self::Pressed { reference, .. } | Self::Dragging { reference, .. } if reference == pane)
+    }
+    /// Advances on a pointer move over `pane` and returns the pan delta.
+    fn motion(
+        &mut self,
+        pane: bool,
+        position: Point<Pixels>,
+        button_held: bool,
+    ) -> Option<Point<Pixels>> {
+        match *self {
+            Self::Idle => None,
+            _ if !button_held => {
+                *self = Self::Idle;
+                None
+            }
+            Self::Pressed { reference, at } | Self::Dragging { reference, at }
+                if reference == pane =>
+            {
+                *self = Self::Dragging {
+                    reference,
+                    at: position,
+                };
+                Some(position - at)
+            }
+            _ => None,
+        }
+    }
+    /// Returns whether a press was released.
+    fn release(&mut self) -> bool {
+        std::mem::take(self) != Self::Idle
+    }
+}
+/// The "Add network host" form. It owns its caret and selection: the palette
+/// can open above it and must not disturb where the user was typing.
+struct AddHostForm {
+    fields: [String; 2],
+    active: usize,
+    edit: text_input::Edit,
+}
+impl AddHostForm {
+    fn new() -> Self {
+        let mut edit = text_input::Edit::default();
+        edit.focus("");
+        Self {
+            fields: [String::new(), "shadowroom-remote serve --stdio".into()],
+            active: 0,
+            edit,
+        }
+    }
+    /// Moves keyboard focus to `field`, caret at its end.
+    fn focus(&mut self, field: usize) {
+        self.active = field;
+        self.edit.focus(&self.fields[field]);
+    }
+}
 #[derive(Clone, Copy)]
 struct DockDrag {
     side: DockSide,
@@ -608,6 +864,10 @@ pub struct Workspace {
     theme: Theme,
     fallback_theme: Theme,
     theme_colors: RefCell<HashMap<(&'static str, &'static str), Hsla>>,
+    /// Settings or theme files changed since `apply_theme_mode` last resolved.
+    theme_stale: bool,
+    /// The window appearance `apply_theme_mode` last resolved against.
+    theme_appearance: Option<WindowAppearance>,
     photos: Vec<Photo>,
     photo_index: HashMap<i64, usize>,
     counts: CollectionCounts,
@@ -640,7 +900,7 @@ pub struct Workspace {
     reference_focus: bool,
     compare_sync: bool,
     pans: [[f32; 2]; 2],
-    drag_origin: Option<Point<Pixels>>,
+    pan_drag: PanDrag,
     zoom: bool,
     zoom_factor: f32,
     fit_scales: std::rc::Rc<std::cell::Cell<[f32; 2]>>,
@@ -668,6 +928,7 @@ pub struct Workspace {
     title_drag: bool,
     palette: bool,
     palette_query: String,
+    palette_edit: text_input::Edit,
     palette_index: usize,
     palette_cache: RefCell<Option<PaletteCache>>,
     palette_revision: u64,
@@ -692,22 +953,22 @@ pub struct Workspace {
     retired: Vec<Texture>,
     visible_textures: HashSet<TextureKey>,
     settings_writable: bool,
-    settings_dirty: bool,
-    settings_to_send: bool,
+    prefs_sync: PrefsSync,
     settings_failure: Option<String>,
     unsaved: HashMap<i64, Decision>,
     outbox: VecDeque<Vec<PhotoDecision>>,
-    awaiting: VecDeque<Vec<PhotoDecision>>,
+    /// Decision batches queued or sent but not yet acknowledged; the writer
+    /// answers each with exactly one Saved/SaveFailed.
+    awaiting: usize,
     save_revisions: SaveRevisions,
     recovery_path: PathBuf,
     recovery_pending: bool,
     recovery_broken: bool,
     recovery_settings: Option<Settings>,
-    quitting: bool,
-    quit_inflight: bool,
+    quit: QuitState,
     import_ui: ingest_ui::ImportUi,
     pending_ingest_scope: Option<PathBuf>,
-    export_jobs: Vec<Value>,
+    export_jobs: Vec<ExportJob>,
     next_job_id: u64,
     duplicate_scan: Option<shadowroom::duplicates::DuplicateScanState>,
     duplicate_ids: HashSet<i64>,
@@ -720,17 +981,19 @@ pub struct Workspace {
     theme_diagnostics: Vec<String>,
     history: History,
     status: String,
-    error: Option<String>,
+    error: Option<Notice>,
     busy: bool,
-    pending_saves: usize,
     drives: Vec<Drive>,
     remote_hosts: std::collections::BTreeMap<String, shadowroom::network::HostSnapshot>,
-    add_host: Option<([String; 2], usize)>,
+    add_host: Option<AddHostForm>,
     grid_scroll: UniformListScrollHandle,
     grid_range: Option<(usize, usize)>,
     last_media: u64,
     automation: Option<AutomationServer>,
     _poll: Task<()>,
+    poll_wake: Rc<PollWake>,
+    /// The pending repaint was requested by poll, not by input.
+    poll_render: bool,
     _automation_wake: Option<Task<()>>,
     _shutdown: Subscription,
 }
@@ -822,9 +1085,9 @@ impl Workspace {
             // applicationWillTerminate cannot veto exit. Preserve the exact latest
             // optimistic/failed values, including batches still in the UI outbox,
             // before asking the actor to flush. Startup replays this synced journal.
-            if !this.unsaved.is_empty()||this.settings_dirty||this.recovery_pending {
+            if !this.unsaved.is_empty()||this.prefs_sync.dirty()||this.recovery_pending {
                 let decisions=this.unsaved.values().map(|d|PhotoDecision{id:d.id,rating:d.rating,flag:d.flag,label:d.label,trashed:d.trashed}).collect();
-                let journal=shadowroom::recovery::RecoveryJournal::new(decisions,if this.settings_dirty||this.recovery_settings.is_some(){Some(this.settings.clone())}else{None});
+                let journal=shadowroom::recovery::RecoveryJournal::new(decisions,if this.prefs_sync.dirty()||this.recovery_settings.is_some(){Some(this.settings.clone())}else{None});
                 if let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
             }
             let (ack,done)=crossbeam_channel::bounded(1);
@@ -832,11 +1095,18 @@ impl Workspace {
                 if let Err(e)=done.recv_timeout(Duration::from_secs(6)){eprintln!("Shutdown did not finish; pending decisions remain in the recovery journal: {e}");}
             }async {}
         });
+        let poll_wake = Rc::new(PollWake::default());
+        let wake = poll_wake.clone();
         let poll = cx.spawn(async move |this, cx| {
+            let mut idle = false;
             loop {
-                Timer::after(Duration::from_millis(50)).await;
-                if this.update(cx, |this, cx| this.poll(cx)).is_err() {
-                    break;
+                wake.sleep(idle).await;
+                match this.update(cx, |this, cx| {
+                    this.poll(cx);
+                    this.background_idle()
+                }) {
+                    Ok(background_idle) => idle = background_idle && !wake.recently_active(),
+                    Err(_) => break,
                 }
             }
         });
@@ -858,6 +1128,8 @@ impl Workspace {
             theme,
             fallback_theme,
             theme_colors: RefCell::default(),
+            theme_stale: true,
+            theme_appearance: None,
             photos: Vec::new(),
             photo_index: HashMap::new(),
             counts: CollectionCounts::default(),
@@ -890,7 +1162,7 @@ impl Workspace {
             reference_focus: false,
             compare_sync: true,
             pans: [[0.5, 0.5]; 2],
-            drag_origin: None,
+            pan_drag: PanDrag::Idle,
             zoom: false,
             zoom_factor: 1.,
             fit_scales: std::rc::Rc::new(std::cell::Cell::new([1.; 2])),
@@ -915,6 +1187,7 @@ impl Workspace {
             title_drag: false,
             palette: false,
             palette_query: String::new(),
+            palette_edit: text_input::Edit::default(),
             palette_index: 0,
             palette_cache: RefCell::default(),
             palette_revision: 0,
@@ -939,22 +1212,20 @@ impl Workspace {
             retired: Vec::new(),
             visible_textures: HashSet::new(),
             settings_writable,
-            settings_dirty: false,
-            settings_to_send: false,
+            prefs_sync: PrefsSync::Durable,
             settings_failure: None,
             history: History::default(),
             status: "Opening local catalog…".into(),
-            error: settings_error,
+            error: settings_error.map(Notice::from),
             unsaved: HashMap::new(),
             outbox: VecDeque::new(),
-            awaiting: VecDeque::new(),
+            awaiting: 0,
             save_revisions: SaveRevisions::default(),
             recovery_path,
             recovery_pending,
             recovery_broken,
             recovery_settings,
-            quitting: false,
-            quit_inflight: false,
+            quit: QuitState::Open,
             import_ui,
             pending_ingest_scope: None,
             export_jobs: Vec::new(),
@@ -969,7 +1240,6 @@ impl Workspace {
             zed_theme: None,
             theme_diagnostics: Vec::new(),
             busy: false,
-            pending_saves: 0,
             drives: Vec::new(),
             remote_hosts: Default::default(),
             add_host: None,
@@ -978,6 +1248,8 @@ impl Workspace {
             last_media: 0,
             automation,
             _poll: poll,
+            poll_wake,
+            poll_render: false,
             _automation_wake: None,
             _shutdown: shutdown_subscription,
         };
@@ -1023,14 +1295,17 @@ impl Workspace {
                         )
                     })
                     .collect();
-                workspace.awaiting.push_back(recovery.decisions.clone());
+                workspace.awaiting += 1;
                 workspace.outbox.push_back(recovery.decisions);
             }
             if recovery.settings.is_some() {
                 // Keep this obligation even when malformed normal settings block
                 // writes. Only an explicit preferences ACK releases the payload.
-                workspace.settings_dirty = true;
-                workspace.settings_to_send = workspace.settings_writable;
+                workspace.prefs_sync = if workspace.settings_writable {
+                    PrefsSync::Queued
+                } else {
+                    PrefsSync::Held
+                };
                 if !workspace.settings_writable {
                     workspace.settings_failure=Some("Repair the settings file, then use Retry unsaved decisions to recover preferences.".into());
                 }
@@ -1113,24 +1388,43 @@ impl Workspace {
     fn selected_id(&self) -> Option<i64> {
         self.selected_photo().map(|p| p.id)
     }
+    fn save_state(&self) -> SaveState {
+        if self.unsaved.is_empty() {
+            SaveState::Durable
+        } else if self.awaiting == 0 {
+            SaveState::Failed
+        } else {
+            SaveState::Pending
+        }
+    }
     fn save_settings(&mut self) {
+        // Every persisted settings change passes here, including theme mode
+        // and system theme slots.
+        self.theme_stale = true;
         if self.settings_writable {
-            self.settings_dirty = true;
-            self.settings_to_send = true;
+            self.prefs_sync = PrefsSync::Queued;
         }
     }
     fn drain_settings(&mut self) {
-        if self.settings_to_send && self.settings_writable {
+        if self.prefs_sync == PrefsSync::Queued && self.settings_writable {
             match self.io.try_send(IoCommand::Settings(self.settings.clone())) {
-                Ok(()) => self.settings_to_send = false,
+                Ok(()) => self.prefs_sync = PrefsSync::Writing,
                 Err(crossbeam_channel::TrySendError::Full(_)) => {}
                 Err(_) => self.settings_failure = Some("Preferences writer is disconnected".into()),
             }
         }
     }
+    /// Resolves the active theme from the theme mode. Render calls this every
+    /// frame; it only does work after a settings save, a theme-file update or
+    /// a system appearance change.
     fn apply_theme_mode(&mut self, window: &Window) {
+        let appearance = window.appearance();
+        if !std::mem::take(&mut self.theme_stale) && self.theme_appearance == Some(appearance) {
+            return;
+        }
+        self.theme_appearance = Some(appearance);
         let dark = matches!(
-            window.appearance(),
+            appearance,
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         );
         let mode = self
@@ -1174,7 +1468,7 @@ impl Workspace {
         match self.io.try_send(command) {
             Ok(()) => true,
             Err(e) => {
-                self.error = Some(format!("Catalog is unavailable or busy: {e}"));
+                self.error = Some(format!("Catalog is unavailable or busy: {e}").into());
                 false
             }
         }
@@ -1185,7 +1479,7 @@ impl Workspace {
         picks: bool,
         ids: Vec<i64>,
     ) -> std::result::Result<u64, String> {
-        if self.quitting {
+        if self.quit.closing() {
             return Err("The app is closing; new exports are not accepted.".into());
         }
         if !self.unsaved.is_empty() {
@@ -1216,8 +1510,12 @@ impl Workspace {
         }) {
             return Err("Export was not queued".into());
         }
-        self.export_jobs
-            .push(json!({"id":id,"state":"queued","completed":0,"error":null}));
+        self.export_jobs.push(ExportJob {
+            id,
+            state: JobState::Queued,
+            completed: 0,
+            error: None,
+        });
         Ok(id)
     }
 
@@ -1234,7 +1532,7 @@ impl Workspace {
                 }
                 Err(crossbeam_channel::TrySendError::Disconnected(IoCommand::Decisions(_))) => {
                     self.outbox.clear();
-                    self.awaiting.clear();
+                    self.awaiting = 0;
                     self.save_revisions.disconnect();
                     self.error=Some("Decision writer is disconnected. Your changes remain unsaved in this window.".into());
                     break;
@@ -1242,11 +1540,14 @@ impl Workspace {
                 _ => unreachable!(),
             }
         }
-        self.pending_saves = self.awaiting.len();
     }
     fn request_quit(&mut self, cx: &mut gpui::Context<Self>) {
         if self.deletion.executing() {
-            self.status = "Wait for confirmed file deletion to finish before closing".into();
+            // Keep the request: the drain loop re-enters once the report arrives.
+            if self.quit == QuitState::Open {
+                self.quit = QuitState::Draining;
+            }
+            self.status = "Finishing confirmed file deletion before closing…".into();
             cx.notify();
             return;
         }
@@ -1260,81 +1561,76 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if self.quit_inflight {
+        if self.quit == QuitState::Flushing {
             return;
         }
-        self.quitting = true;
+        self.quit = QuitState::Draining;
         self.status = "Finishing decision writes…".into();
-        if self
-            .export_jobs
-            .iter()
-            .any(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
-        {
+        if self.export_jobs.iter().any(|job| job.state.is_active()) {
             self.status = "Finishing exports before closing…".into();
             cx.notify();
             return;
         }
         // Imports publish verified groups atomically; let the active one finish (or
         // cancel a paused one, which rolls back only the in-flight group) before closing.
-        match self.import_ui.progress.phase.as_str() {
-            "queued" | "copying" | "verifying" | "indexing" => {
-                self.status = "Finishing import before closing…".into();
-                cx.notify();
-                return;
-            }
-            "paused" => {
+        match self.import_ui.progress.phase {
+            Phase::Paused => {
                 self.enqueue(IoCommand::IngestCancel);
                 self.status = "Cancelling paused import before closing…".into();
                 cx.notify();
                 return;
             }
+            phase if phase.is_active() => {
+                self.status = "Finishing import before closing…".into();
+                cx.notify();
+                return;
+            }
             _ => {}
         }
-        if !self.unsaved.is_empty() && self.awaiting.is_empty() {
-            self.quitting = false;
-            self.error = Some(format!(
-                "{} photographs have unsaved decisions. Use Retry unsaved decisions before closing.",
-                self.unsaved.len()
+        if self.save_state() == SaveState::Failed {
+            self.quit = QuitState::Open;
+            self.error = Some(Notice::new(
+                NoticeKind::UnsavedDecisions,
+                format!(
+                    "{} photographs have unsaved decisions. Use Retry unsaved decisions before closing.",
+                    self.unsaved.len()
+                ),
             ));
             cx.notify();
             return;
         }
         if self.recovery_settings.is_some() && !self.settings_writable {
-            self.quitting = false;
+            self.quit = QuitState::Open;
             self.error=Some("Recovered preferences are waiting for repair of the settings file. Repair it and use Retry unsaved decisions before closing.".into());
             cx.notify();
             return;
         }
         self.drain_settings();
-        if !self.awaiting.is_empty() || !self.outbox.is_empty() || self.settings_to_send {
+        if self.awaiting > 0 || !self.outbox.is_empty() || self.prefs_sync == PrefsSync::Queued {
             cx.notify();
             return;
         }
-        self.quit_inflight = true;
+        self.quit = QuitState::Flushing;
         let (ack, done) = crossbeam_channel::bounded(1);
         if !self.enqueue(IoCommand::Flush(ack)) {
-            self.quit_inflight = false;
-            self.quitting = false;
+            self.quit = QuitState::Open;
             return;
         }
         let task = cx
             .background_executor()
             .spawn(async move { done.recv_timeout(Duration::from_secs(5)) });
         cx.spawn(async move|this,cx|{let result=task.await;let _=this.update(cx,|this,cx|{
-            if result.is_ok(){this.settings_dirty=false;cx.quit();}else{this.quitting=false;this.quit_inflight=false;this.error=Some("Could not confirm catalog flush. The window stays open; your decisions have not been discarded.".into());cx.notify();}
+            if result.is_ok(){this.prefs_sync=PrefsSync::Durable;cx.quit();}else{this.quit=QuitState::Open;this.error=Some("Could not confirm catalog flush. The window stays open; your decisions have not been discarded.".into());cx.notify();}
         });}).detach();
     }
 
     fn poll(&mut self, cx: &mut gpui::Context<Self>) {
         let mut dirty = std::mem::take(&mut self.texture_retry);
-        if self.palette
-            || self.add_host.is_some()
-            || self.import_ui.active_field.is_some()
-            || self.folder_picker.is_some()
-        {
-            dirty |= self.text_edit.blink();
+        if let Some(edit) = self.focused_edit() {
+            dirty |= edit.blink();
         }
         while let Ok(update) = self.theme_updates.try_recv() {
+            self.theme_stale = true;
             self.themes = update.themes;
             self.palette_revision = self.palette_revision.wrapping_add(1);
             self.zed_theme = update.zed_theme;
@@ -1373,32 +1669,36 @@ impl Workspace {
                 IoEvent::IngestDetected(path) => {
                     if self.settings.ingest_on_insert == "auto" {
                         self.import_ui.open = true;
+                    }
+                    // The worker rejects a second job and reports it; never replace a
+                    // running job's progress with a placeholder.
+                    if self.settings.ingest_on_insert == "auto" && !self.import_ui.active() {
                         self.import_ui.progress = shadowroom::ingest::Progress {
-                            phase: "queued".into(),
+                            phase: Phase::Queued,
                             ..Default::default()
                         };
                         self.import_ui.source = path;
-                    } else {
+                    } else if self.settings.ingest_on_insert != "auto" {
                         self.open_ingest(path);
                     }
                 }
                 IoEvent::RemoteProvider(provider) => self.media.set_remote_provider(provider),
                 IoEvent::Remote(snapshot) => {
                     self.palette_revision = self.palette_revision.wrapping_add(1);
-                    if snapshot.state == "connected" {
+                    if snapshot.state() == HostState::Connected {
                         self.media.retry_remote_errors();
                         if self
                             .remote_hosts
                             .get(&snapshot.config.id)
-                            .is_some_and(|old| old.state == "indexing")
+                            .is_some_and(|old| old.state() == HostState::Indexing)
                         {
                             self.status =
                                 format!("{} · metadata synced", snapshot.config.display_name);
                         }
                     }
-                    if let Some(error) = &snapshot.error {
-                        self.error = Some(format!("{}: {error}", snapshot.config.display_name));
-                    }
+                    // Host failures arrive once as IoEvent::Error on each transition
+                    // into failure; snapshots only carry the current state, so a
+                    // dismissed error is not re-raised by every progress update.
                     self.remote_hosts
                         .insert(snapshot.config.id.clone(), snapshot);
                 }
@@ -1408,46 +1708,44 @@ impl Workspace {
                 }
                 IoEvent::Drives(d) => self.drives = d,
                 IoEvent::Status(s) => self.status = s,
-                IoEvent::Error(s) => self.error = Some(s),
+                IoEvent::Error(s) => self.error = Some(s.into()),
                 IoEvent::FilesDeleted(report) => self.deletion_finished(report),
                 IoEvent::Busy(b) => self.busy = b,
                 IoEvent::Saved => {
-                    self.awaiting.pop_front();
+                    self.awaiting = self.awaiting.saturating_sub(1);
                     for id in self.save_revisions.acknowledge(true) {
                         self.unsaved.remove(&id);
                     }
-                    if self.unsaved.is_empty()
-                        && self.error.as_ref().is_some_and(|e| {
-                            e.starts_with("Decisions remain unsaved:")
-                                || e.contains("photographs have unsaved decisions")
-                        })
-                    {
-                        self.error = None;
+                    if self.unsaved.is_empty() {
+                        clear_notice(&mut self.error, NoticeKind::UnsavedDecisions);
                     }
                 }
                 IoEvent::SaveFailed(e) => {
-                    self.awaiting.pop_front();
+                    self.awaiting = self.awaiting.saturating_sub(1);
                     self.save_revisions.acknowledge(false);
-                    self.error = Some(format!("Decisions remain unsaved: {e}"));
+                    self.error = Some(Notice::new(
+                        NoticeKind::UnsavedDecisions,
+                        format!("Decisions remain unsaved: {e}"),
+                    ));
                 }
                 IoEvent::PreferencesSaved(settings) => {
                     if settings == self.settings {
-                        self.settings_dirty = false;
+                        self.prefs_sync = PrefsSync::Durable;
                         self.settings_failure = None;
                         self.recovery_settings = None;
-                        if self
-                            .error
-                            .as_ref()
-                            .is_some_and(|e| e.starts_with("Preferences remain unsaved:"))
-                        {
-                            self.error = None;
-                        }
+                        clear_notice(&mut self.error, NoticeKind::UnsavedPreferences);
                     }
                 }
                 IoEvent::PreferencesFailed(error) => {
-                    self.settings_dirty = true;
+                    // The writer keeps the payload and retries it.
+                    if self.prefs_sync == PrefsSync::Durable {
+                        self.prefs_sync = PrefsSync::Writing;
+                    }
                     self.settings_failure = Some(error.clone());
-                    self.error = Some(format!("Preferences remain unsaved: {error}"));
+                    self.error = Some(Notice::new(
+                        NoticeKind::UnsavedPreferences,
+                        format!("Preferences remain unsaved: {error}"),
+                    ));
                 }
                 IoEvent::DuplicateScan(mut scan) => {
                     if self
@@ -1455,15 +1753,16 @@ impl Workspace {
                         .as_ref()
                         .is_none_or(|old| old.id <= scan.id)
                     {
-                        if scan.phase == "completed" && !self.duplicate_results_valid(&scan.groups)
+                        if scan.phase == ScanPhase::Completed
+                            && !self.duplicate_results_valid(&scan.groups)
                         {
-                            scan.phase = "stale".into();
+                            scan.phase = ScanPhase::Stale;
                             scan.groups.clear();
                             self.duplicate_ids.clear();
                             self.duplicate_lookup.clear();
                             self.duplicate_slots.clear();
                         }
-                        if scan.phase == "completed" {
+                        if scan.phase == ScanPhase::Completed {
                             self.duplicate_ids = scan.groups.iter().flatten().copied().collect();
                             self.duplicate_slots = scan
                                 .groups
@@ -1496,15 +1795,15 @@ impl Workspace {
                             if scan.truncated {
                                 self.status.push_str(" · results capped");
                             }
-                        } else if scan.phase == "running" {
+                        } else if scan.phase == ScanPhase::Running {
                             self.status = format!(
                                 "Checking duplicates · {} of {} candidates",
                                 scan.processed, scan.candidates
                             );
                         } else {
                             self.status = format!("Duplicate scan {}", scan.phase);
-                            if scan.phase == "failed" {
-                                self.error = scan.errors.first().cloned();
+                            if scan.phase == ScanPhase::Failed {
+                                self.error = scan.errors.first().cloned().map(Notice::from);
                             }
                         }
                         self.duplicate_scan = Some(scan);
@@ -1517,22 +1816,25 @@ impl Workspace {
                     completed,
                     error,
                 } => {
-                    let value = json!({"id":id,"state":state,"completed":completed,"error":error});
-                    if let Some(job) = self
-                        .export_jobs
-                        .iter_mut()
-                        .find(|job| job["id"].as_u64() == Some(id))
-                    {
-                        *job = value;
+                    let job = ExportJob {
+                        id,
+                        state,
+                        completed,
+                        error,
+                    };
+                    if let Some(slot) = self.export_jobs.iter_mut().find(|job| job.id == id) {
+                        *slot = job;
                     } else {
-                        self.export_jobs.push(value);
+                        self.export_jobs.push(job);
                     }
                     while self.export_jobs.len() > 100 {
                         // Preserve every nonterminal job for the close barrier;
                         // only completed history may be retired under a flood.
-                        if let Some(index) = self.export_jobs.iter().position(|job| {
-                            matches!(job["state"].as_str(), Some("completed" | "failed"))
-                        }) {
+                        if let Some(index) = self
+                            .export_jobs
+                            .iter()
+                            .position(|job| !job.state.is_active())
+                        {
                             self.export_jobs.remove(index);
                         } else {
                             break;
@@ -1546,7 +1848,7 @@ impl Workspace {
         self.ingest_tick();
         if self.recovery_pending
             && self.unsaved.is_empty()
-            && !self.settings_dirty
+            && self.prefs_sync == PrefsSync::Durable
             && self.recovery_settings.is_none()
         {
             match shadowroom::recovery::RecoveryJournal::clear(&self.recovery_path) {
@@ -1554,10 +1856,12 @@ impl Workspace {
                     self.recovery_pending = false;
                     self.status = "Recovered pending decisions".into();
                 }
-                Err(error) => self.error = Some(format!("Could not finalize recovery: {error:#}")),
+                Err(error) => {
+                    self.error = Some(format!("Could not finalize recovery: {error:#}").into())
+                }
             }
         }
-        if self.quitting && !self.quit_inflight {
+        if self.quit == QuitState::Draining {
             self.request_quit(cx);
         }
         if self.unsaved.is_empty() {
@@ -1709,8 +2013,39 @@ impl Workspace {
             dirty = true;
         }
         if dirty {
+            self.poll_render = true;
             cx.notify();
         }
+    }
+
+    /// No background state machine needs the fast poll: every write is
+    /// acknowledged, no job or decode is in flight, and analysis has finished.
+    /// External events (drives, remotes, themes) still arrive on the idle poll.
+    fn background_idle(&self) -> bool {
+        let analysis_running = matches!(self.settings.grouping_mode.as_str(), "visual" | "burst")
+            && !self.zoom
+            && (!self.analysis_pending.is_empty() || self.analysis_cursor < self.photos.len());
+        let media = self.media.stats();
+        self.quit == QuitState::Open
+            && self.save_state() != SaveState::Pending
+            && self.outbox.is_empty()
+            && self.prefs_sync != PrefsSync::Queued
+            && !self.recovery_pending
+            && !self.busy
+            && !self.texture_retry
+            && self.texture_inflight.is_empty()
+            && !self.import_ui.open
+            && !self.import_ui.scanning()
+            && !self.import_ui.active()
+            && self
+                .duplicate_scan
+                .as_ref()
+                .is_none_or(|scan| !scan.phase.is_active())
+            && !self.export_jobs.iter().any(|job| job.state.is_active())
+            && !analysis_running
+            && media.queued + media.active == 0
+            // Without the wake bridge, automation requests are only seen by poll.
+            && (self._automation_wake.is_some() || self.automation.is_none())
     }
 
     fn refresh_folders(&mut self) {
@@ -1842,10 +2177,10 @@ impl Workspace {
 
     fn invalidate_duplicate_results(&mut self) {
         if self.duplicate_scan.as_ref().is_some_and(|scan| {
-            scan.phase == "completed" && !self.duplicate_results_valid(&scan.groups)
+            scan.phase == ScanPhase::Completed && !self.duplicate_results_valid(&scan.groups)
         }) {
             if let Some(scan) = &mut self.duplicate_scan {
-                scan.phase = "stale".into();
+                scan.phase = ScanPhase::Stale;
                 scan.groups.clear();
             }
             self.duplicate_ids.clear();
@@ -2010,7 +2345,7 @@ impl Workspace {
             );
             return false;
         }
-        if self.quitting {
+        if self.quit.closing() {
             self.error =
                 Some("The catalog is closing. Wait for the write barrier to finish.".into());
             return false;
@@ -2086,7 +2421,7 @@ impl Workspace {
                 trashed: d.trashed,
             })
             .collect();
-        self.awaiting.push_back(updates.clone());
+        self.awaiting += 1;
         self.outbox.push_back(updates);
         self.drain_decisions();
         if self.import_ui.scan.is_some() && !self.import_ui.active() {
@@ -2153,10 +2488,10 @@ impl Workspace {
             return Ok(());
         }
         if !self.apply_decisions(after.clone()) {
-            return Err(self
-                .error
-                .clone()
-                .unwrap_or_else(|| "Trash change was not admitted".into()));
+            return Err(self.error.as_ref().map_or_else(
+                || "Trash change was not admitted".into(),
+                |notice| notice.text.clone(),
+            ));
         }
         self.history.push(before, after);
         self.rebuild_after_decisions(self.selected_id());
@@ -2167,7 +2502,7 @@ impl Workspace {
         if self
             .duplicate_scan
             .as_ref()
-            .is_some_and(|s| matches!(s.phase.as_str(), "queued" | "running"))
+            .is_some_and(|s| s.phase.is_active())
         {
             return Err("A duplicate scan is already running".into());
         }
@@ -2186,10 +2521,10 @@ impl Workspace {
         let id = self.next_job_id + 1;
         let requested: HashSet<_> = ids.iter().copied().collect();
         if !self.enqueue(IoCommand::ScanDuplicates { id, ids }) {
-            return Err(self
-                .error
-                .clone()
-                .unwrap_or_else(|| "Duplicate scan was not admitted".into()));
+            return Err(self.error.as_ref().map_or_else(
+                || "Duplicate scan was not admitted".into(),
+                |notice| notice.text.clone(),
+            ));
         }
         self.next_job_id = id;
         self.duplicate_sources = self
@@ -2204,8 +2539,8 @@ impl Workspace {
         self.rebuild(self.selected_id());
         self.duplicate_scan = Some(shadowroom::duplicates::DuplicateScanState {
             id,
-            phase: "queued".into(),
-            stage: "sizing".into(),
+            phase: ScanPhase::Queued,
+            stage: ScanStage::Sizing,
             total: 0,
             candidates: 0,
             processed: 0,
@@ -2261,7 +2596,7 @@ impl Workspace {
                         if let Some(picks) = export {
                             this.status = "Exporting in background…".into();
                             if let Err(e) = this.queue_export(path, picks, ids) {
-                                this.error = Some(e);
+                                this.error = Some(e.into());
                             }
                         } else {
                             this.status = format!("Opening {}", path.display());
@@ -2273,7 +2608,7 @@ impl Workspace {
             }
             Ok(Err(e)) => {
                 let _ = this.update(cx, |this, cx| {
-                    this.error = Some(format!("File picker: {e:#}"));
+                    this.error = Some(format!("File picker: {e:#}").into());
                     cx.notify();
                 });
             }
@@ -2283,13 +2618,15 @@ impl Workspace {
     }
 
     fn execute(&mut self, cmd: Cmd, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        if self.folder_picker.is_some() && !matches!(cmd, Cmd::Close | Cmd::Quit) {
+        if self.folder_picker.is_some()
+            && !matches!(cmd, Cmd::Close | Cmd::DismissError | Cmd::Quit)
+        {
             return;
         }
         if self.deletion.open()
             && !matches!(
                 cmd,
-                Cmd::ConfirmDelete | Cmd::CancelDelete | Cmd::Close | Cmd::Quit
+                Cmd::ConfirmDelete | Cmd::CancelDelete | Cmd::Close | Cmd::DismissError | Cmd::Quit
             )
         {
             return;
@@ -2300,13 +2637,16 @@ impl Workspace {
             _ => None,
         };
         self.reconcile_rating_filter();
-        if self.quitting && !matches!(cmd, Cmd::Quit) {
+        if self.quit.closing() && !matches!(cmd, Cmd::Quit | Cmd::DismissError) {
             self.error = Some("The app is finishing writes and exports before closing.".into());
             cx.notify();
             return;
         }
         if self.recovery_pending
-            && !matches!(cmd, Cmd::Quit | Cmd::RetrySaves | Cmd::Palette | Cmd::Close)
+            && !matches!(
+                cmd,
+                Cmd::Quit | Cmd::RetrySaves | Cmd::Palette | Cmd::Close | Cmd::DismissError
+            )
         {
             self.error = Some(
                 "Recovery is pending. Wait for writes or use Retry unsaved decisions after repair."
@@ -2351,7 +2691,7 @@ impl Workspace {
                     self.multi.iter().copied().collect()
                 };
                 if let Err(error) = self.trash_photos(&ids, trashed) {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                 }
             }
             Cmd::PermanentDelete => self.request_deletion(true, cx),
@@ -2372,7 +2712,7 @@ impl Workspace {
                     return;
                 }
                 if let Err(error) = self.start_duplicate_scan(ids) {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                 } else {
                     self.duplicate_ids.clear();
                     self.duplicate_lookup.clear();
@@ -2407,12 +2747,10 @@ impl Workspace {
             Cmd::AddRemoteHost => {
                 self.close_preferences();
                 self.palette = false;
-                self.add_host =
-                    Some(([String::new(), "shadowroom-remote serve --stdio".into()], 0));
-                self.text_edit.focus("");
+                self.add_host = Some(AddHostForm::new());
             }
             Cmd::SaveRemoteHost => {
-                if let Some((fields, _)) = &self.add_host {
+                if let Some(AddHostForm { fields, .. }) = &self.add_host {
                     let alias = fields[0].trim().to_string();
                     let config = shadowroom::network::HostConfig {
                         id: alias.clone(),
@@ -2474,7 +2812,7 @@ impl Workspace {
                 self.import_ui.active_field = None;
                 self.palette = !self.palette;
                 self.palette_query.clear();
-                self.text_edit.focus("");
+                self.palette_edit.focus("");
                 self.palette_cache.borrow_mut().take();
                 self.palette_index = 0;
                 self.close_preferences();
@@ -2548,6 +2886,7 @@ impl Workspace {
                     self.error = None;
                 }
             }
+            Cmd::DismissError => self.error = None,
             Cmd::Next => self.navigate(1, cx),
             Cmd::Previous => self.navigate(-1, cx),
             Cmd::Rating(r) => self.decide(Some(r), None, None, true, cx),
@@ -2611,8 +2950,12 @@ impl Workspace {
                 let current = if self.zoom {
                     self.zoom_factor
                 } else {
-                    self.fit_scales.get()
-                        [usize::from(!(self.mode == ViewMode::Compare && self.reference_focus))]
+                    let reference_pane = self.mode == ViewMode::Compare
+                        && self.reference_focus
+                        && self
+                            .reference
+                            .is_some_and(|id| self.photo_index.contains_key(&id));
+                    self.fit_scales.get()[usize::from(!reference_pane)]
                 };
                 self.zoom_factor =
                     (current * if direction > 0 { 1.25 } else { 0.8 }).clamp(0.125, 8.);
@@ -2891,7 +3234,7 @@ impl Workspace {
             Cmd::Reveal => {
                 if let Some(p) = self.selected_photo() {
                     if let Err(error) = p.require_local("Reveal in Files") {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error.to_string().into());
                     } else {
                         cx.reveal_path(&p.path);
                     }
@@ -2939,11 +3282,12 @@ impl Workspace {
                             self.save_settings();
                         }
                         Err(error) => {
-                            self.error = Some(format!("Preferences still need repair: {error:#}"))
+                            self.error =
+                                Some(format!("Preferences still need repair: {error:#}").into())
                         }
                     }
                 }
-                if self.awaiting.is_empty() && !self.unsaved.is_empty() {
+                if self.save_state() == SaveState::Failed {
                     let decisions = self.unsaved.values().copied().collect();
                     let recovering = std::mem::replace(&mut self.recovery_pending, false);
                     self.apply_decisions(decisions);
@@ -3428,7 +3772,7 @@ impl Workspace {
             ] {
                 items.push(item(
                     &format!("{label}: {}", host.config.display_name),
-                    &format!("Network · {}", host.state),
+                    &format!("Network · {}", host.state()),
                     "",
                     "drive",
                     Cmd::RemoteAction(id.clone(), action.into(), None),
@@ -3455,10 +3799,10 @@ impl Workspace {
         let scanning = self
             .duplicate_scan
             .as_ref()
-            .is_some_and(|s| matches!(s.phase.as_str(), "queued" | "running"));
+            .is_some_and(|s| s.phase.is_active());
         let save_failed = self.recovery_broken
             || self.settings_failure.is_some()
-            || (!self.unsaved.is_empty() && self.pending_saves == 0);
+            || self.save_state() == SaveState::Failed;
         let in_trash = self.filter == Filter::Trash;
         let grouped = self.duplicates_only || !self.groups.is_empty();
         items.retain(|i| match &i.command {
@@ -3501,10 +3845,10 @@ impl Workspace {
             preview_failed,
             self.duplicate_scan
                 .as_ref()
-                .is_some_and(|s| matches!(s.phase.as_str(), "queued" | "running")),
+                .is_some_and(|s| s.phase.is_active()),
             self.recovery_broken
                 || self.settings_failure.is_some()
-                || (!self.unsaved.is_empty() && self.pending_saves == 0),
+                || self.save_state() == SaveState::Failed,
             self.filter == Filter::Trash,
             self.duplicates_only || !self.groups.is_empty(),
             self.recovery_pending,
@@ -3604,12 +3948,11 @@ impl Workspace {
                 self.execute(Cmd::SaveRemoteHost, window, cx);
                 return;
             }
-            if let Some((fields, field)) = &mut self.add_host {
+            if let Some(form) = &mut self.add_host {
                 if key == "tab" {
-                    *field = 1 - *field;
-                    self.text_edit.focus(&fields[*field]);
+                    form.focus(1 - form.active);
                 } else {
-                    self.text_edit.key(&mut fields[*field], event, cx);
+                    form.edit.key(&mut form.fields[form.active], event, cx);
                 }
             }
             cx.notify();
@@ -3617,7 +3960,10 @@ impl Workspace {
         }
         if self.palette {
             match key {
-                "up" => self.palette_index = self.palette_index.saturating_sub(1),
+                "up" => {
+                    let last = self.matches().matches.len().saturating_sub(1);
+                    self.palette_index = self.palette_index.min(last).saturating_sub(1);
+                }
                 "down" => {
                     let last = self.matches().matches.len().saturating_sub(1);
                     self.palette_index = (self.palette_index + 1).min(last);
@@ -3625,7 +3971,8 @@ impl Workspace {
                 "enter" => {
                     let selected = {
                         let cache = self.matches();
-                        cache.matches.get(self.palette_index).map(|&i| {
+                        let last = cache.matches.len().saturating_sub(1);
+                        cache.matches.get(self.palette_index.min(last)).map(|&i| {
                             (cache.items[i].command.clone(), cache.items[i].title.clone())
                         })
                     };
@@ -3636,7 +3983,7 @@ impl Workspace {
                     }
                 }
                 _ => {
-                    self.text_edit.key(&mut self.palette_query, event, cx);
+                    self.palette_edit.key(&mut self.palette_query, event, cx);
                     self.palette_index = 0;
                 }
             }
@@ -4007,7 +4354,7 @@ impl Workspace {
             .tooltip(self.tip("Drag to resize · drag inward to collapse · double-click to reset · arrows resize when focused", ""))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                if this.palette || this.preferences || this.add_host.is_some() || this.quitting { return; }
+                if this.top_overlay().is_some() || this.quit.closing() { return; }
                 this.rating_filter_open = false;
                 this.title_drag = false;
                 this.dock_priority = side;
@@ -4028,7 +4375,8 @@ impl Workspace {
                 }
             }))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if this.palette || this.preferences || this.add_host.is_some() || this.rating_filter_open { return; }
+                // Any overlay owns the keyboard, even if focus stayed on this grip.
+                if this.top_overlay().is_some() { return; }
                 let key = event.keystroke.key.as_str();
                 if (event.keystroke.modifiers.platform || event.keystroke.modifiers.control) && key == "k" { return; }
                 cx.stop_propagation();
@@ -4912,11 +5260,11 @@ impl Workspace {
             ),
         );
         for (host_index, (id, host)) in self.remote_hosts.iter().enumerate() {
-            let color = match host.state.as_str() {
-                "connected" => self.c("success", "#7fbf7f"),
-                "connecting" | "indexing" => self.c("warning", "#e0b341"),
-                "error" => self.c("error", "#d46a6a"),
-                _ => self.muted(),
+            let color = match host.state() {
+                HostState::Connected => self.c("success", "#7fbf7f"),
+                HostState::Connecting | HostState::Indexing => self.c("warning", "#e0b341"),
+                HostState::Error => self.c("error", "#d46a6a"),
+                HostState::Offline => self.muted(),
             };
             let host_id = id.clone();
             body = body.child(
@@ -4931,9 +5279,9 @@ impl Workspace {
                 .tooltip(self.tip(
                     &format!(
                             "{} · {}{}",
-                            host.state,
+                            host.state(),
                             host.config.ssh_alias,
-                            host.error
+                            host.error()
                                 .as_ref()
                                 .map(|e| format!(" · {e}"))
                                 .unwrap_or_default()
@@ -4957,7 +5305,7 @@ impl Workspace {
                         root.path.display(),
                         root.volume_id,
                         root.identity_kind,
-                        host.state
+                        host.state()
                     );
                     body = body.child(
                         row(
@@ -5175,7 +5523,7 @@ impl Workspace {
                 let running = self
                     .duplicate_scan
                     .as_ref()
-                    .is_some_and(|s| matches!(s.phase.as_str(), "queued" | "running"));
+                    .is_some_and(|s| s.phase.is_active());
                 row.child(
                     self.button(
                         "duplicate-scan",
@@ -5236,15 +5584,49 @@ impl Workspace {
             )
             .into_any_element()
     }
+    /// Every open overlay, topmost first — the order `key()` routes input in.
+    /// Several can be set at once (a folder picker over preferences or import,
+    /// add-host beneath the palette), so guards must ask here rather than
+    /// re-listing fields.
+    fn overlays(&self) -> impl Iterator<Item = Overlay> + '_ {
+        [
+            (Overlay::FolderPicker, self.folder_picker.is_some()),
+            (Overlay::Deletion, self.deletion.open()),
+            (Overlay::ImageContext, self.image_context.is_some()),
+            (Overlay::GettingStarted, self.getting_started),
+            (Overlay::RatingFilter, self.rating_filter_open),
+            (Overlay::Preferences, self.preferences),
+            (Overlay::Palette, self.palette),
+            (Overlay::AddHost, self.add_host.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(overlay, open)| open.then_some(overlay))
+    }
+    /// The text field that owns the keyboard, following `key()`'s routing order;
+    /// only its caret blinks, so idle windows do not repaint for hidden fields.
+    fn focused_edit(&mut self) -> Option<&mut text_input::Edit> {
+        if let Some(picker) = &mut self.folder_picker {
+            return picker.focused_edit();
+        }
+        if self.palette {
+            return Some(&mut self.palette_edit);
+        }
+        if let Some(form) = &mut self.add_host {
+            return Some(&mut form.edit);
+        }
+        self.import_ui
+            .active_field
+            .is_some()
+            .then_some(&mut self.text_edit)
+    }
+    fn top_overlay(&self) -> Option<Overlay> {
+        self.overlays().next()
+    }
     fn other_overlay_open(&self) -> bool {
-        self.deletion.open()
-            || self.folder_picker.is_some()
-            || self.image_context.is_some()
-            || self.palette
-            || self.preferences
-            || self.getting_started
-            || self.import_ui.open
-            || self.add_host.is_some()
+        self.import_ui.open
+            || self
+                .overlays()
+                .any(|overlay| overlay != Overlay::RatingFilter)
     }
     fn reconcile_rating_filter(&mut self) {
         if self.other_overlay_open() {
@@ -5321,15 +5703,10 @@ impl Workspace {
         } else {
             0
         };
+        let (mtime, size) = (preview_mtime(p), preview_size(p));
         self.textures
-            .contains_key(&(p.id, tier + effect, preview_mtime(p), preview_size(p)))
-            || (tier == 1
-                && self.textures.contains_key(&(
-                    p.id,
-                    2 + effect,
-                    preview_mtime(p),
-                    preview_size(p),
-                )))
+            .contains_key(&(p.id, tier + effect, mtime, size))
+            || (tier == 1 && self.textures.contains_key(&(p.id, 2 + effect, mtime, size)))
     }
     fn trim_display_cache(&mut self) {
         let budget = (self.settings.memory_budget_bytes() / 3).max(32 * 1024 * 1024);
@@ -5368,8 +5745,13 @@ impl Workspace {
         PreviewKind,
         ColorStatus,
     )> {
-        let photo = self.photos[photo_index].clone();
-        self.texture_photo(&photo, wanted, cx)
+        // Lend the catalog out instead of cloning a Photo (paths, strings,
+        // metadata) for every visible cell on every frame. texture_photo never
+        // reads self.photos synchronously; its completion task runs later.
+        let photos = std::mem::take(&mut self.photos);
+        let result = self.texture_photo(&photos[photo_index], wanted, cx);
+        self.photos = photos;
+        result
     }
     fn texture_photo(
         &mut self,
@@ -5389,12 +5771,14 @@ impl Workspace {
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
         };
+        // Display identity; preview_size hashes paths for companions/remotes.
+        let (mtime, size) = (preview_mtime(p), preview_size(p));
         let mut fallback = None;
         let peaking = self.focus_peaking && wanted != PreviewKind::Thumbnail;
         let effect = if peaking { 4 } else { 0 };
         let search_max = if desired == 1 { 2 } else { desired };
         for k in (0..=search_max).rev() {
-            let key = (p.id, k + effect, preview_mtime(p), preview_size(p));
+            let key = (p.id, k + effect, mtime, size);
             if let Some(texture) = self.textures.get_mut(&key) {
                 self.tick += 1;
                 texture.tick = self.tick;
@@ -5416,7 +5800,7 @@ impl Workspace {
         // Keep the ordinary image visible while its peaking copy is prepared.
         if fallback.is_none() && peaking {
             for k in (0..=search_max).rev() {
-                let key = (p.id, k, preview_mtime(p), preview_size(p));
+                let key = (p.id, k, mtime, size);
                 if let Some(texture) = self.textures.get(&key) {
                     self.visible_textures.insert(key);
                     fallback = Some((
@@ -5447,7 +5831,7 @@ impl Workspace {
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
         };
-        let key = (p.id, k + effect, preview_mtime(p), preview_size(p));
+        let key = (p.id, k + effect, mtime, size);
         self.visible_textures.insert(key);
         self.tick += 1;
         if let Some(texture) = self.textures.get_mut(&key) {
@@ -5743,7 +6127,11 @@ impl Workspace {
                 let scroll_size = pane_size.clone();
                 let scale = window.scale_factor() / (zoom_factor * source_scale);
                 pane = pane
-                    .cursor(CursorStyle::ClosedHand)
+                    .cursor(if self.pan_drag.holds(reference) {
+                        CursorStyle::ClosedHand
+                    } else {
+                        CursorStyle::OpenHand
+                    })
                     .on_scroll_wheel(cx.listener(
                         move |this, event: &ScrollWheelEvent, window, cx| {
                             let delta = event.delta.pixel_delta(px(24.));
@@ -5764,21 +6152,23 @@ impl Workspace {
                     ))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, _| {
-                            this.drag_origin = Some(event.position);
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if this.dock_drag.is_none() {
+                                this.pan_drag = PanDrag::press(reference, event.position);
+                                cx.notify();
+                            }
                         }),
                     );
                 let drag_size = pane_size.clone();
                 pane =
                     pane.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        if event.dragging() && this.dock_drag.is_none() {
-                            if let Some(previous) = this.drag_origin.replace(event.position) {
-                                let delta = event.position - previous;
-                                this.pan_photo(reference, delta, drag_size.get(), w, h, scale);
-                                cx.notify();
-                            }
-                        } else {
-                            this.drag_origin = None;
+                        let held = event.dragging() && this.dock_drag.is_none();
+                        let was = this.pan_drag;
+                        if let Some(delta) = this.pan_drag.motion(reference, event.position, held) {
+                            this.pan_photo(reference, delta, drag_size.get(), w, h, scale);
+                            cx.notify();
+                        } else if was != this.pan_drag {
+                            cx.notify();
                         }
                     }));
             } else {
@@ -7437,6 +7827,13 @@ impl Workspace {
     }
 }
 
+/// Whether this process talks to a Wayland compositor. The environment is
+/// fixed for the process lifetime, so render reads a cached answer instead of
+/// locking and scanning the environment twice per frame.
+fn wayland_session() -> bool {
+    static WAYLAND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WAYLAND.get_or_init(|| std::env::var_os("WAYLAND_DISPLAY").is_some())
+}
 fn transparent_black() -> Hsla {
     rgba(0x00000000).into()
 }
@@ -7477,8 +7874,8 @@ fn persist_theme_source(source: &str, deadline: Option<std::time::Instant>) -> R
 
 impl Workspace {
     fn persistence_state(&self) -> Value {
-        json!({"state":if self.unsaved.is_empty(){"durable"}else if self.awaiting.is_empty(){"failed"}else{"pending"},
-            "pending_batches":self.awaiting.len(),"queued_batches":self.outbox.len(),"unsaved_ids":self.unsaved.keys().copied().collect::<Vec<_>>(),"revision":self.save_revisions.revision()})
+        json!({"state":self.save_state().as_str(),
+            "pending_batches":self.awaiting,"queued_batches":self.outbox.len(),"unsaved_ids":self.unsaved.keys().copied().collect::<Vec<_>>(),"revision":self.save_revisions.revision()})
     }
     fn api_state(&self) -> Value {
         let mut state = json!({"app":"Shadowroom","version":env!("CARGO_PKG_VERSION"),"view":format!("{:?}",self.mode).to_lowercase(),
@@ -7490,7 +7887,7 @@ impl Workspace {
             "theme":self.theme.name,"theme_diagnostics":self.theme_diagnostics,"interface_font":self.settings.interface_font,"sidebar":self.sidebar,"inspector":self.inspector,"histogram":self.histogram,
             "trash_count":self.counts.trash,"duplicates_only":self.duplicates_only,"duplicate_scan":self.duplicate_scan,
             "recovery":{"pending":self.recovery_pending,"needs_repair":self.recovery_broken},"persistence":self.persistence_state(),"indexing":self.busy,"status":self.status,"error":self.error,"export_jobs":self.export_jobs,
-            "closing":self.quitting,"settings_writable":self.settings_writable,"settings_persistence":{"state":if self.settings_failure.is_some(){"failed"}else if self.settings_dirty{"pending"}else{"durable"},"error":self.settings_failure}});
+            "closing":self.quit.closing(),"settings_writable":self.settings_writable,"settings_persistence":{"state":if self.settings_failure.is_some(){"failed"}else if self.prefs_sync.dirty(){"pending"}else{"durable"},"error":self.settings_failure}});
         state["inspector_tab"] = json!(if self.inspector_info {
             "info"
         } else {
@@ -7563,10 +7960,10 @@ impl Workspace {
             })
             .collect();
         if !self.apply_decisions(after.clone()) {
-            return Err(self
-                .error
-                .clone()
-                .unwrap_or_else(|| "Decision was not admitted".into()));
+            return Err(self.error.as_ref().map_or_else(
+                || "Decision was not admitted".into(),
+                |notice| notice.text.clone(),
+            ));
         }
         self.history.push(before, after);
         self.rebuild_after_decisions(self.selected_id());
@@ -7681,7 +8078,7 @@ impl Workspace {
                     .into(),
             );
         }
-        if self.quitting
+        if self.quit.closing()
             && ![
                 "workspace_state",
                 "settings_get",
@@ -7733,7 +8130,7 @@ impl Workspace {
                 let id = p["host"].as_str().ok_or("Host id required")?;
                 let host = self.remote_hosts.get(id).ok_or("Unknown remote host")?;
                 let roots: Vec<_> = host.roots.iter().map(|root| json!({"id":root.id,"volume_id":root.volume_id,"identity_kind":root.identity_kind,"path":root.path,"label":root.label,"scope":host.hello.as_ref().map(|h|shadowroom::model::remote_root_scope(&h.device_id,&root.id))})).collect();
-                return Ok(json!({"host":id,"state":host.state,"roots":roots}));
+                return Ok(json!({"host":id,"state":host.state(),"roots":roots}));
             }
             "remote_host_add" => {
                 let alias = p["ssh_alias"].as_str().unwrap_or("");
@@ -8192,7 +8589,10 @@ impl Workspace {
     fn palette_view(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let cache = self.matches();
         let total = cache.matches.len();
-        let start = self.palette_index.saturating_sub(6);
+        // Matches can shrink while the palette is open (busy, scan or theme
+        // changes); never index or window past the current list.
+        let selected = self.palette_index.min(total.saturating_sub(1));
+        let start = selected.saturating_sub(6);
         let end = (start + 12).min(total);
         let mut results = div().flex().flex_col().py(px(space::XS));
         for (n, &index) in cache
@@ -8200,10 +8600,10 @@ impl Workspace {
             .iter()
             .enumerate()
             .skip(start)
-            .take(end - start)
+            .take(end.saturating_sub(start))
         {
             let item = &cache.items[index];
-            let active = n == self.palette_index;
+            let active = n == selected;
             let hover = self.hover_bg();
             let cmd = item.command.clone();
             let title = item.title.clone();
@@ -8327,7 +8727,13 @@ impl Workspace {
                             .text_size(px(13.))
                             .child(icon("search", self.icon_muted()))
                             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(
-                                self.input_text(&self.palette_query, "Execute a command…", true),
+                                self.input_field(
+                                    &self.palette_edit,
+                                    &self.palette_query,
+                                    "Execute a command…",
+                                    true,
+                                    true,
+                                ),
                             )),
                     )
                     .child(results),
@@ -8961,10 +9367,10 @@ impl Workspace {
         let stats = self.media.stats();
         let failed = self.recovery_broken
             || self.settings_failure.is_some()
-            || (!self.unsaved.is_empty() && self.pending_saves == 0);
+            || self.save_state() == SaveState::Failed;
         let (save_text, save_color) = if failed {
             ("Not saved · retry", self.c("error", "#d46a6a"))
-        } else if self.pending_saves > 0 || self.settings_dirty || self.recovery_pending {
+        } else if self.awaiting > 0 || self.prefs_sync.dirty() || self.recovery_pending {
             ("Saving…", self.muted())
         } else {
             ("Saved", self.muted())
@@ -8986,10 +9392,10 @@ impl Workspace {
             || self.inspector_resize_focus.is_focused(window)
         {
             "← → resize · Shift for larger steps · Home to reset · Esc to finish".into()
-        } else if self.quitting {
+        } else if self.quit.closing() {
             self.status.clone()
         } else if self.import_ui.active() {
-            if self.import_ui.progress.phase == "paused" {
+            if self.import_ui.progress.phase == Phase::Paused {
                 "Import paused".into()
             } else {
                 format!(
@@ -8997,14 +9403,14 @@ impl Workspace {
                     self.import_ui.progress.completed, self.import_ui.progress.total
                 )
             }
-        } else if self.import_ui.scanning {
+        } else if self.import_ui.scanning() {
             "Scanning import…".into()
         } else if self.busy {
             "Indexing photos…".into()
         } else if let Some(scan) = self
             .duplicate_scan
             .as_ref()
-            .filter(|s| s.phase == "running")
+            .filter(|s| s.phase == ScanPhase::Running)
         {
             format!(
                 "Checking duplicates · {} of {}",
@@ -9014,7 +9420,7 @@ impl Workspace {
             let exports = self
                 .export_jobs
                 .iter()
-                .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
+                .filter(|job| job.state.is_active())
                 .count();
             if exports > 0 {
                 format!("Exporting · {}", plural(exports, "job", "jobs"))
@@ -9074,7 +9480,7 @@ impl Workspace {
                 ))
                 .child(self.compact_button(
                     "ingest-status-pause",
-                    if self.import_ui.progress.phase == "paused" {
+                    if self.import_ui.progress.phase == Phase::Paused {
                         "Resume"
                     } else {
                         "Pause"
@@ -9109,17 +9515,17 @@ impl Workspace {
                     && self
                         .remote_hosts
                         .values()
-                        .any(|host| host.state != "connected"),
+                        .any(|host| host.state() != HostState::Connected),
                 |s| {
                     let text = if let Some(host) = self
                         .remote_hosts
                         .values()
-                        .find(|h| h.state == "indexing" || h.state == "connecting")
+                        .find(|h| h.state().is_transient())
                     {
                         format!(
                             "{} · {}{}",
                             host.config.display_name,
-                            host.state,
+                            host.state(),
                             host.progress
                                 .as_ref()
                                 .map(|p| format!(" · {} scanned", p.scanned))
@@ -9129,7 +9535,7 @@ impl Workspace {
                         let offline = self
                             .remote_hosts
                             .values()
-                            .filter(|h| h.state != "connected")
+                            .filter(|h| h.state() != HostState::Connected)
                             .count();
                         if offline > 0 {
                             format!("Network · {offline} offline")
@@ -9250,6 +9656,10 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // Input (or any repaint poll did not cause) returns poll to full speed.
+        if !std::mem::take(&mut self.poll_render) {
+            self.poll_wake.kick();
+        }
         if self._automation_wake.is_none() {
             self.drain_automation(window, cx);
         }
@@ -9262,7 +9672,7 @@ impl Render for Workspace {
         let viewport = window.viewport_size();
         let (mut width, mut height) = (f32::from(viewport.width), f32::from(viewport.height));
         if let Decorations::Client { tiling } = window.window_decorations() {
-            let edge = if std::env::var_os("WAYLAND_DISPLAY").is_some() && !tiling.is_tiled() {
+            let edge = if wayland_session() && !tiling.is_tiled() {
                 9.
             } else {
                 1.
@@ -9419,6 +9829,9 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.scroll_drag = None;
+                    if this.pan_drag.release() {
+                        cx.notify();
+                    }
                     this.finish_dock_resize(cx);
                 }),
             )
@@ -9426,6 +9839,9 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.scroll_drag = None;
+                    if this.pan_drag.release() {
+                        cx.notify();
+                    }
                     this.finish_dock_resize(cx);
                 }),
             )
@@ -9464,12 +9880,17 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w(px(0.))
                             .whitespace_normal()
-                            .child(error.clone()),
+                            .child(error.text.clone()),
                     )
-                    .child(self.button("dismiss-error", "", "close", Cmd::Close, false, cx)),
+                    .child(self.button("dismiss-error", "", "close", Cmd::DismissError, false, cx)),
             );
         }
-        if let Some((fields, active)) = &self.add_host {
+        if let Some(AddHostForm {
+            fields,
+            active,
+            edit,
+        }) = &self.add_host
+        {
             let mut form = div().w(px(560.)).p(px(space::XL)).flex().flex_col().gap(px(space::MD)).border_1().border_color(self.border()).bg(self.c("elevated_surface.background", "#1b1b1b"))
                 .child(div().text_size(px(16.)).child("Add network host"))
                 .child(div().text_color(self.muted()).child("Use your existing SSH configuration. Tab changes fields; Enter checks the agent."));
@@ -9496,13 +9917,16 @@ impl Render for Workspace {
                                 })
                                 .bg(self.bg())
                                 .overflow_hidden()
-                                .child(self.input_text(&fields[n], "", *active == n))
+                                .child(self.input_field(
+                                    edit,
+                                    &fields[n],
+                                    "",
+                                    *active == n,
+                                    !self.palette,
+                                ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some((_, active)) = &mut this.add_host {
-                                        *active = n;
-                                    }
-                                    if let Some((fields, _)) = &this.add_host {
-                                        this.text_edit.focus(&fields[n]);
+                                    if let Some(form) = &mut this.add_host {
+                                        form.focus(n);
                                     }
                                     cx.notify();
                                 })),
@@ -9565,7 +9989,7 @@ impl Render for Workspace {
         };
         // Wayland surfaces are transparent, so the resize margin sits outside a
         // shadowed frame. GPUI's X11 surface is opaque: grips go inside the edge.
-        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let wayland = wayland_session();
         let inset = if wayland && !tiling.is_tiled() {
             px(8.)
         } else {
@@ -9752,9 +10176,12 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod ui_tests {
     use super::{
-        BurstIndex, Cmd, CollectionCounts, PaletteCache, SurveySummary, UiInbox, adjust_folder,
-        index_filtered_positions, item, label_index,
+        AddHostForm, BurstIndex, Cmd, CollectionCounts, Notice, NoticeKind, PaletteCache, PanDrag,
+        SurveySummary, UiInbox, adjust_folder, clear_notice, index_filtered_positions, item,
+        label_index, text_input,
     };
+    use gpui::{point, px};
+    use serde_json::json;
     use shadowroom::{
         model::{ColorLabel, Flag, Photo},
         workspace::{Decision, Filter, fuzzy_score},
@@ -10064,5 +10491,76 @@ mod ui_tests {
             send.send_timeout(3, Duration::from_secs(2)),
             Err(crossbeam_channel::SendTimeoutError::Disconnected(3))
         ));
+    }
+
+    #[test]
+    fn pan_drag_pans_only_the_pressed_pane_and_never_goes_stale() {
+        let at = |x: f32, y: f32| point(px(x), px(y));
+        // A drag that began elsewhere (filmstrip, scrollbar) never pans.
+        let mut drag = PanDrag::Idle;
+        assert_eq!(drag.motion(false, at(5., 5.), true), None);
+        assert_eq!(drag, PanDrag::Idle);
+        // Press then move: deltas follow the pointer from the press point.
+        drag = PanDrag::press(false, at(10., 10.));
+        assert!(drag.holds(false) && !drag.holds(true));
+        assert_eq!(drag.motion(false, at(14., 7.), true), Some(at(4., -3.)));
+        assert!(matches!(
+            drag,
+            PanDrag::Dragging {
+                reference: false,
+                ..
+            }
+        ));
+        assert_eq!(drag.motion(false, at(15., 7.), true), Some(at(1., 0.)));
+        // The other compare pane ignores this drag and leaves it intact.
+        assert_eq!(drag.motion(true, at(40., 7.), true), None);
+        assert!(drag.holds(false));
+        // Release returns to Idle; a later drag into the pane does not jump.
+        assert!(drag.release());
+        assert!(!drag.release());
+        assert_eq!(drag.motion(false, at(400., 300.), true), None);
+        // A release the window never saw is detected on the next plain move.
+        drag = PanDrag::press(true, at(1., 1.));
+        assert_eq!(drag.motion(true, at(2., 2.), false), None);
+        assert_eq!(drag, PanDrag::Idle);
+    }
+
+    #[test]
+    fn notices_clear_by_kind_not_by_message_text() {
+        let mut slot = Some(Notice::new(
+            NoticeKind::UnsavedDecisions,
+            "Decisions remain unsaved: disk full",
+        ));
+        clear_notice(&mut slot, NoticeKind::UnsavedPreferences);
+        assert!(slot.is_some());
+        clear_notice(&mut slot, NoticeKind::UnsavedDecisions);
+        assert!(slot.is_none());
+        // A general error that happens to quote the same words survives.
+        let mut slot: Option<Notice> = Some("Decisions remain unsaved: from import".into());
+        clear_notice(&mut slot, NoticeKind::UnsavedDecisions);
+        assert_eq!(
+            slot.as_ref().map(|n| n.text.as_str()),
+            Some("Decisions remain unsaved: from import")
+        );
+        assert_eq!(
+            serde_json::to_value(&slot).unwrap(),
+            json!("Decisions remain unsaved: from import")
+        );
+    }
+
+    #[test]
+    fn add_host_form_keeps_its_own_caret() {
+        let mut form = AddHostForm::new();
+        assert_eq!(form.active, 0);
+        form.fields[0] = "studio".into();
+        form.focus(1);
+        assert_eq!(form.active, 1);
+        // The palette has a separate edit state (formerly one shared
+        // `text_edit`), so focusing it cannot move the form's caret.
+        let mut palette = text_input::Edit::default();
+        palette.focus("");
+        assert_eq!(form.edit.caret(), form.fields[1].len());
+        form.focus(0);
+        assert_eq!(form.edit.caret(), "studio".len());
     }
 }

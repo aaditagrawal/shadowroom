@@ -1,7 +1,7 @@
 //! Catalog actor and bounded background export/grouping work, independent of GPUI.
 use crate::{
     catalog::{Catalog, ExportPlan},
-    duplicates::{DuplicateJob, DuplicateScanState},
+    duplicates::{DuplicateJob, DuplicateScanState, ScanPhase},
     grouping::{GroupingCache, GroupingMode, GroupingOptions},
     indexer::{Drive, IndexEvent, IndexJob, IndexOptions, Indexer, discover_drives},
     model::{Photo, PhotoDecision},
@@ -98,10 +98,28 @@ pub enum IoEvent {
     DuplicateScan(DuplicateScanState),
     ExportJob {
         id: u64,
-        state: String,
+        state: JobState,
         completed: usize,
         error: Option<String>,
     },
+}
+
+/// Lifecycle of one tracked export: `Queued ─▶ Running ─▶ Completed | Failed`
+/// (admission failures go straight to `Failed`). Serialized in lowercase for
+/// the automation API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobState {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+impl JobState {
+    /// The job still holds work that a clean shutdown must wait for.
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
 }
 
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(1);
@@ -224,7 +242,7 @@ fn run_catalog(
         .name("shadowroom-export".into())
         .spawn(move || {
             while let Ok(request) = export_work.recv() {
-                export_job(&export_events, request.id, "running", 0, None);
+                export_job(&export_events, request.id, JobState::Running, 0, None);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     exporter(request.plan)
                 }))
@@ -233,7 +251,13 @@ fn run_catalog(
                     &export_events,
                     match result {
                         Ok(count) => {
-                            export_job(&export_events, request.id, "completed", count, None);
+                            export_job(
+                                &export_events,
+                                request.id,
+                                JobState::Completed,
+                                count,
+                                None,
+                            );
                             IoEvent::Status(format!(
                                 "Exported {count} {} to {}",
                                 if request.picks { "files" } else { "sidecars" },
@@ -247,7 +271,7 @@ fn run_catalog(
                             export_job(
                                 &export_events,
                                 request.id,
-                                "failed",
+                                JobState::Failed,
                                 completed,
                                 Some(format!("{error:#}")),
                             );
@@ -299,6 +323,9 @@ fn run_catalog(
     let mut status = None;
     let mut busy = None;
     let mut pending_drives = None;
+    // The drive scan repeats every few seconds; forward only actual changes so
+    // an idle window is not repainted for an identical list.
+    let mut published_drives: Option<Vec<Drive>> = None;
     let mut shutdown = Vec::<Sender<()>>::new();
     let mut active_exports = 0usize;
     let mut duplicate_job: Option<DuplicateJob> = None;
@@ -307,7 +334,22 @@ fn run_catalog(
         if remote_changes.try_recv().is_ok() {
             refresh_needed = true;
         }
-        let first = match commands.recv_timeout(Duration::from_millis(25)) {
+        // Timer-driven work (debounces, index/duplicate/export progress, pending
+        // telemetry, shutdown) needs the 25 ms tick; commands always wake at once.
+        let idle = job.is_none()
+            && roots.is_empty()
+            && duplicate_job.is_none()
+            && pending_settings.is_none()
+            && pending_hashes.is_empty()
+            && !index_dirty
+            && !refresh_needed
+            && active_exports == 0
+            && shutdown.is_empty()
+            && status.is_none()
+            && busy.is_none()
+            && pending_drives.is_none();
+        let wait = Duration::from_millis(if idle { 250 } else { 25 });
+        let first = match commands.recv_timeout(wait) {
             Ok(command) => Some(command),
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
@@ -356,12 +398,26 @@ fn run_catalog(
                         crate::ingest::worker::Command::Scan { path, auto: None }
                     };
                     if let Err(error) = ingest.send(command) {
-                        reliable(&events, IoEvent::Error(format!("Import: {error:#}")));
+                        // Routed to the Import view so a scan or queued start never
+                        // waits forever for a command the worker never received.
+                        reliable(
+                            &events,
+                            IoEvent::Ingest(crate::ingest::worker::Event::Error(format!(
+                                "{error:#}"
+                            ))),
+                        );
                     }
                 }
                 IoCommand::IngestPlan(options) => {
                     if let Err(error) = ingest.send(crate::ingest::worker::Command::Plan(options)) {
-                        reliable(&events, IoEvent::Error(format!("Import: {error:#}")));
+                        // Routed to the Import view so a scan or queued start never
+                        // waits forever for a command the worker never received.
+                        reliable(
+                            &events,
+                            IoEvent::Ingest(crate::ingest::worker::Event::Error(format!(
+                                "{error:#}"
+                            ))),
+                        );
                     }
                 }
                 IoCommand::IngestStart
@@ -383,7 +439,14 @@ fn run_catalog(
                         _ => unreachable!(),
                     };
                     if let Err(error) = ingest.send(request) {
-                        reliable(&events, IoEvent::Error(format!("Import: {error:#}")));
+                        // Routed to the Import view so a scan or queued start never
+                        // waits forever for a command the worker never received.
+                        reliable(
+                            &events,
+                            IoEvent::Ingest(crate::ingest::worker::Event::Error(format!(
+                                "{error:#}"
+                            ))),
+                        );
                     }
                 }
                 IoCommand::Import(path) => {
@@ -428,7 +491,7 @@ fn run_catalog(
                             &events,
                             IoEvent::DuplicateScan(DuplicateScanState {
                                 id,
-                                phase: "failed".into(),
+                                phase: ScanPhase::Failed,
                                 errors: vec![format!("{error:#}")],
                                 ..Default::default()
                             }),
@@ -444,8 +507,13 @@ fn run_catalog(
                     let result = catalog.set_decisions(&decisions);
                     // Invalidate before acknowledging: a queued pre-decision
                     // snapshot must never replace newly acknowledged UI state.
-                    let _ = take(&photos);
-                    refresh_needed = true;
+                    // The UI already applied these decisions, so only a discarded
+                    // snapshot (which may carry other changes) needs republishing;
+                    // otherwise a full catalog reload and regroup per keystroke
+                    // would only confirm what the UI shows.
+                    if take(&photos).is_some() {
+                        refresh_needed = true;
+                    }
                     match result {
                         Ok(()) => reliable(&events, IoEvent::Saved),
                         Err(error) => reliable(
@@ -610,7 +678,7 @@ fn run_catalog(
         if let Some(job) = &duplicate_job {
             let finished = job.is_finished();
             if let Some(state) = job.take_update() {
-                if state.phase != "running" || events.len() < TELEMETRY_LIMIT {
+                if state.phase != ScanPhase::Running || events.len() < TELEMETRY_LIMIT {
                     reliable(&events, IoEvent::DuplicateScan(state));
                 }
             }
@@ -692,6 +760,9 @@ fn run_catalog(
                         "ignore" => {}
                         "index_in_place" => roots.push_back(drive.path.clone()),
                         "auto" => {
+                            // Announce the detection first so the UI's queued job is
+                            // marked failed by the error if the worker rejects it.
+                            reliable(&events, IoEvent::IngestDetected(drive.path.clone()));
                             if let Err(error) =
                                 ingest.send(crate::ingest::worker::Command::ScanCard {
                                     path: drive.path.clone(),
@@ -702,16 +773,20 @@ fn run_catalog(
                             {
                                 reliable(
                                     &events,
-                                    IoEvent::Error(format!("Auto import: {error:#}")),
+                                    IoEvent::Ingest(crate::ingest::worker::Event::Error(format!(
+                                        "Auto import: {error:#}"
+                                    ))),
                                 );
                             }
-                            reliable(&events, IoEvent::IngestDetected(drive.path.clone()));
                         }
                         _ => reliable(&events, IoEvent::IngestDetected(drive.path.clone())),
                     }
                 }
             }
-            pending_drives = Some(drives);
+            if published_drives.as_ref() != Some(&drives) {
+                published_drives = Some(drives.clone());
+                pending_drives = Some(drives);
+            }
         }
 
         let mut finished = false;
@@ -895,7 +970,7 @@ fn reliable(events: &Sender<IoEvent>, event: IoEvent) {
 fn export_job(
     events: &Sender<IoEvent>,
     id: Option<u64>,
-    state: &str,
+    state: JobState,
     completed: usize,
     error: Option<String>,
 ) {
@@ -904,7 +979,7 @@ fn export_job(
             events,
             IoEvent::ExportJob {
                 id,
-                state: state.into(),
+                state,
                 completed,
                 error,
             },
@@ -930,7 +1005,7 @@ fn queue_export(
             Ok(plan) => {
                 // Emit queued before dispatch so a fast worker cannot report
                 // running/completed ahead of its queued transition.
-                export_job(events, id, "queued", 0, None);
+                export_job(events, id, JobState::Queued, 0, None);
                 match exports.try_send(ExportRequest {
                     id,
                     plan,
@@ -952,7 +1027,7 @@ fn queue_export(
         }
     };
     if let Some(message) = failure {
-        export_job(events, id, "failed", 0, Some(message.clone()));
+        export_job(events, id, JobState::Failed, 0, Some(message.clone()));
         reliable(events, IoEvent::Error(message));
         false
     } else {
@@ -1052,7 +1127,11 @@ fn options(settings: &Settings) -> GroupingOptions {
 }
 
 struct GroupInput {
-    revision: u64,
+    /// Bumped only when the photo snapshot or options change: groups computed
+    /// for an older epoch describe a different catalog and must not publish.
+    /// Hash arrivals refine the current epoch; a result that predates some of
+    /// them is still valid, and the worker runs again for the rest.
+    epoch: u64,
     photos: Option<Vec<Photo>>,
     hashes: HashMap<i64, u64>,
     options: GroupingOptions,
@@ -1082,7 +1161,7 @@ fn wait_for_group_batch(
 impl GroupWorker {
     fn start(output: GroupSlot, options: GroupingOptions) -> Self {
         let input = Arc::new(Mutex::new(GroupInput {
-            revision: 0,
+            epoch: 0,
             photos: None,
             hashes: HashMap::new(),
             options,
@@ -1106,10 +1185,10 @@ impl GroupWorker {
                     ) {
                         return;
                     }
-                    let (revision, replacement, hashes, options) = {
+                    let (epoch, replacement, hashes, options) = {
                         let mut next = work.lock().unwrap_or_else(|p| p.into_inner());
                         (
-                            next.revision,
+                            next.epoch,
                             next.photos.take(),
                             std::mem::take(&mut next.hashes),
                             next.options,
@@ -1149,7 +1228,7 @@ impl GroupWorker {
                         groups
                     };
                     let current = work.lock().unwrap_or_else(|p| p.into_inner());
-                    if revision == current.revision {
+                    if epoch == current.epoch {
                         replace(&result, groups);
                     }
                 }
@@ -1161,28 +1240,32 @@ impl GroupWorker {
             output,
         }
     }
-    fn update(&self, update: impl FnOnce(&mut GroupInput)) {
+    fn update(&self, new_epoch: bool, update: impl FnOnce(&mut GroupInput)) {
         let mut state = self.input.lock().unwrap_or_else(|p| p.into_inner());
-        state.revision = state.revision.wrapping_add(1);
         update(&mut state);
-        let obsolete = take(&self.output);
+        // Withdraw unconsumed groups only when they describe an older epoch;
+        // discarding them on every hash starved the UI while analysis streamed.
+        let obsolete = new_epoch.then(|| {
+            state.epoch = state.epoch.wrapping_add(1);
+            take(&self.output)
+        });
         drop(state);
         drop(obsolete);
         let _ = self.wake.try_send(());
     }
     fn photos(&self, photos: Vec<Photo>) {
-        self.update(|input| {
+        self.update(true, |input| {
             input.photos = Some(photos);
             input.hashes.clear();
         });
     }
     fn hash(&self, id: i64, hash: u64) {
-        self.update(|input| {
+        self.update(false, |input| {
             input.hashes.insert(id, hash);
         });
     }
     fn configure(&self, options: GroupingOptions) {
-        self.update(|input| input.options = options);
+        self.update(true, |input| input.options = options);
     }
 }
 
@@ -1730,7 +1813,7 @@ mod tests {
         let mut completed: Vec<_> = events
             .try_iter()
             .filter_map(|event| match event {
-                IoEvent::ExportJob { id, state, .. } if state == "completed" => Some(id),
+                IoEvent::ExportJob { id, state, .. } if state == JobState::Completed => Some(id),
                 _ => None,
             })
             .collect();
@@ -1858,7 +1941,7 @@ mod tests {
             let event = events
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap();
-            if matches!(event, IoEvent::DuplicateScan(ref state) if state.stage == "verifying" && state.phase == "running")
+            if matches!(event, IoEvent::DuplicateScan(ref state) if state.stage == crate::duplicates::ScanStage::Verifying && state.phase == ScanPhase::Running)
             {
                 break;
             }
@@ -1872,7 +1955,8 @@ mod tests {
             match events.recv_timeout(Duration::from_secs(3)).unwrap() {
                 IoEvent::Saved => break,
                 IoEvent::DuplicateScan(state) => assert_ne!(
-                    state.phase, "completed",
+                    state.phase,
+                    ScanPhase::Completed,
                     "decision writer waited for the entire source scan"
                 ),
                 _ => {}
@@ -1880,7 +1964,7 @@ mod tests {
         }
         shutdown(&commands);
         assert_eq!(PhotoDecision::from(&catalog.photos().unwrap()[0]), trashed);
-        assert!(events.try_iter().any(|event| matches!(event,IoEvent::DuplicateScan(state) if state.id==42 && state.phase=="cancelled")));
+        assert!(events.try_iter().any(|event| matches!(event,IoEvent::DuplicateScan(state) if state.id==42 && state.phase==ScanPhase::Cancelled)));
         for photo in source_photos {
             assert_eq!(
                 std::fs::metadata(photo.path).unwrap().len(),
@@ -2078,15 +2162,18 @@ mod tests {
                 .unwrap()
             {
                 assert_eq!(id, 7);
-                states.push(state.clone());
-                if state == "failed" {
+                states.push(state);
+                if state == JobState::Failed {
                     assert_eq!(completed, 1);
                     assert!(error.unwrap().contains("manifest:"));
                     break;
                 }
             }
         }
-        assert_eq!(states, vec!["queued", "running", "failed"]);
+        assert_eq!(
+            states,
+            vec![JobState::Queued, JobState::Running, JobState::Failed]
+        );
         shutdown(&commands);
     }
     #[test]
@@ -2115,14 +2202,14 @@ mod tests {
         };
         commands.send(request(1)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
-        let mut transitions = HashMap::<u64, Vec<String>>::new();
+        let mut transitions = HashMap::<u64, Vec<JobState>>::new();
         loop {
             if let IoEvent::ExportJob { id, state, .. } = events
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap()
             {
-                transitions.entry(id).or_default().push(state.clone());
-                if id == 1 && state == "running" {
+                transitions.entry(id).or_default().push(state);
+                if id == 1 && state == JobState::Running {
                     break;
                 }
             }
@@ -2139,9 +2226,9 @@ mod tests {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap()
             {
-                transitions.entry(id).or_default().push(state.clone());
+                transitions.entry(id).or_default().push(state);
                 if id == 3 {
-                    assert_eq!(state, "failed");
+                    assert_eq!(state, JobState::Failed);
                     assert_eq!(completed, 0);
                     assert!(error.unwrap().contains("queue is full"));
                     break;
@@ -2152,7 +2239,7 @@ mod tests {
         release.send(()).unwrap();
         while transitions
             .get(&2)
-            .is_none_or(|states| states.last().map(String::as_str) != Some("completed"))
+            .is_none_or(|states| states.last() != Some(&JobState::Completed))
         {
             if let IoEvent::ExportJob {
                 id,
@@ -2163,16 +2250,22 @@ mod tests {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap()
             {
-                if state == "completed" {
+                if state == JobState::Completed {
                     assert_eq!(completed, 2);
                     assert!(error.is_none());
                 }
                 transitions.entry(id).or_default().push(state);
             }
         }
-        assert_eq!(transitions[&1], vec!["queued", "running", "completed"]);
-        assert_eq!(transitions[&2], vec!["queued", "running", "completed"]);
-        assert_eq!(transitions[&3], vec!["failed"]);
+        assert_eq!(
+            transitions[&1],
+            vec![JobState::Queued, JobState::Running, JobState::Completed]
+        );
+        assert_eq!(
+            transitions[&2],
+            vec![JobState::Queued, JobState::Running, JobState::Completed]
+        );
+        assert_eq!(transitions[&3], vec![JobState::Failed]);
         shutdown(&commands);
     }
 }

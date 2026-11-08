@@ -29,6 +29,16 @@ Each member is copied with a fixed 64 KiB buffer while computing a BLAKE3 digest
 
 If a source/companion/sidecar cannot be read, writing or syncing fails, or verification fails, the worker removes all newly reserved outputs from that group. Files verified earlier in the failed group are marked rolled back. Completed independent groups remain. Cleanup verifies the reserved file identity before deletion on Unix, so a path replaced by another process is left untouched and reported as a cleanup failure. Cleanup failures are explicit in the report.
 
+Manifest status values are a stable format (typed enums in the code, serialized as these exact strings):
+
+| Field | Values |
+| --- | --- |
+| picks manifest `state` | `running`, `completed`, `partial_failure` |
+| group `status` | `verified`, `failed` |
+| file `status` | `not_attempted`, `verified`, `failed`, `rolled_back`, `cleanup_failed` |
+| file `kind` | `original`, `companion`, `sidecar`, `media` (listed only when sidecar discovery failed) |
+| XMP manifest entry `status` | `written`, `failed` |
+
 Every operation creates a uniquely named `shadowroom-picks-manifest.json` (then `-1`, `-2`, and so on). It starts with a small `running` record, then is atomically replaced with the final report. The final schema includes completed file/group counts, failed group count, and each group's original path, chosen basename, status and error. Each file records its source, destination, role, outcome, copied bytes, BLAKE3 hash, whether output remains, and any failure. The returned count includes verified media and existing sidecar files, excluding the manifest.
 
 When some groups fail, the API returns an error containing the completed verified-file count and manifest path. Read that manifest to distinguish completed groups, rolled-back files, unattempted members and cleanup failures. The worker continues independent groups to provide a complete partial-success report. A process interruption can leave a `running` manifest and incomplete reserved outputs; those are not certified complete, and a retry creates new filenames. If final manifest persistence itself fails, the error identifies its path and the completed-file count.

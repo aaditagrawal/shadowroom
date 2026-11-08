@@ -55,7 +55,7 @@ impl Workspace {
                 if let Some(draft) = &mut self.preferences_draft {
                     draft.applying = false;
                 }
-                self.error = Some(error);
+                self.error = Some(error.into());
             }
         }
     }
@@ -112,7 +112,7 @@ impl Workspace {
                     }
                     Err(error) => {
                         this.preferences_draft.as_mut().unwrap().applying = false;
-                        this.error = Some(format!("Theme import: {error:#}"));
+                        this.error = Some(format!("Theme import: {error:#}").into());
                     }
                 }
                 cx.notify();
@@ -154,7 +154,9 @@ impl Workspace {
                             }
                             match result {
                                 Ok((source, themes)) => draft.import(source, themes),
-                                Err(error) => this.error = Some(format!("Theme import: {error:#}")),
+                                Err(error) => {
+                                    this.error = Some(format!("Theme import: {error:#}").into())
+                                }
                             }
                             cx.notify();
                         }

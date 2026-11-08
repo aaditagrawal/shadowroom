@@ -1,8 +1,8 @@
 use shadowroom::{
     catalog::Catalog,
     ingest::{
-        self, Control, CopyHooks, FsCapacity, FsStats, IngestOptions, SequenceState, execute,
-        execute_with, naming,
+        self, Control, CopyHooks, FsCapacity, FsStats, IngestOptions, Phase, SequenceState,
+        execute, execute_with, naming,
     },
     model::{ColorLabel, Flag, Photo, PhotoDecision},
     settings::Settings,
@@ -402,7 +402,7 @@ fn corrupt_backup_rolls_back_raw_jpeg_sidecar_and_counters() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.failed, 1);
     assert!(report.progress.errors[0].contains("verification"));
     assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 0);
@@ -442,7 +442,7 @@ fn backup_fanout_both_verified_mtime_preserved_manifest_and_persistent_sequence(
     let mut plan = f.plan();
     plan.options.backup_roots = vec![f.temp.path().join("backup")];
     let report = execute(&plan, &f.catalog, &Control::default(), |_| {}).unwrap();
-    assert_eq!(report.progress.phase, "completed");
+    assert_eq!(report.progress.phase, Phase::Completed);
     assert_eq!(report.records[0].files[0].destinations.len(), 2);
     let expected = blake3::hash(&fs::read(source).unwrap())
         .to_hex()
@@ -513,7 +513,7 @@ fn cancellation_cleans_temps_then_same_plan_resumes() {
         |_| {},
     )
     .unwrap();
-    assert_eq!(report.progress.phase, "cancelled");
+    assert_eq!(report.progress.phase, Phase::Cancelled);
     assert_eq!(report.progress.completed, 0);
     assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 0);
     no_parts(f.temp.path());
@@ -857,7 +857,7 @@ fn cancel_keeps_committed_groups_and_retry_skips_them_without_counter_gaps() {
     })
     .unwrap();
     assert_eq!(report.progress.completed, 1);
-    assert_eq!(report.progress.phase, "cancelled");
+    assert_eq!(report.progress.phase, Phase::Cancelled);
     assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 1);
     let resumed = execute(&plan, &f.catalog, &Control::default(), |_| {}).unwrap();
     assert_eq!(resumed.progress.skipped, 1);
@@ -909,7 +909,7 @@ fn worker_scan_plan_start_poll_history_and_unsupported_eject_without_gui() {
         matches!(event,Event::Plan(p) if p.ready && p.space.len()==2 && p.plan.example.is_some())
     );
     worker.send(Command::Start).unwrap();
-    let event = wait(&|e| matches!(e,Event::Progress(p) if p.phase=="completed"));
+    let event = wait(&|e| matches!(e,Event::Progress(p) if p.phase == Phase::Completed));
     assert!(matches!(event,Event::Progress(p) if p.completed==1));
     worker.send(Command::History(10)).unwrap();
     let event = wait(&|e| matches!(e, Event::History(_)));

@@ -29,6 +29,9 @@ pub struct AgentOptions {
     /// Shared media working-set admission budget, including cached pixels and
     /// in-flight decodes. Native RAW estimates for 24 MP exceed 512 MiB.
     pub decode_budget_bytes: usize,
+    /// How long to wait for a previous agent on the same state directory to
+    /// release it before failing; see [`STATE_LOCK_WAIT`].
+    pub state_lock_wait: Duration,
 }
 impl AgentOptions {
     pub fn new(state_dir: PathBuf) -> Self {
@@ -39,6 +42,7 @@ impl AgentOptions {
             workers: 4,
             jpeg_cache_bytes: 4 * 1024 * 1024 * 1024,
             decode_budget_bytes: 2 * 1024 * 1024 * 1024,
+            state_lock_wait: STATE_LOCK_WAIT,
         }
     }
 }
@@ -150,7 +154,7 @@ impl Agent {
             .read(true)
             .write(true)
             .open(state_dir.join("agent.lock"))?;
-        state_lock.try_lock().context("Agent state directory is already in use; one stdio agent per state directory is supported")?;
+        lock_state(&state_lock, options.state_lock_wait)?;
         let device_id = device_id(&state_dir)?;
         let mut roots: Vec<Root> = Vec::new();
         for path in paths {
@@ -410,6 +414,36 @@ impl Agent {
         })
     }
 }
+/// Upper bound on one blocking wait for media completions. Decoder completion
+/// and buffer releases wake waiters immediately; this bounds cancellation
+/// latency and a completion that races the caller's last check.
+const MEDIA_WAIT: Duration = Duration::from_millis(50);
+/// How long a starting agent waits for a previous agent on the same state
+/// directory to release it. A reconnect starts the new agent while the old one
+/// may still be exiting (ssh noticing EOF, workers joining a cancelled decode),
+/// and a concurrent fork elsewhere in the process can briefly hold a duplicate
+/// of the lock descriptor until its exec. Both release within moments; a
+/// genuinely concurrent second agent still fails after this bound.
+const STATE_LOCK_WAIT: Duration = Duration::from_secs(5);
+fn lock_state(file: &File, wait: Duration) -> Result<()> {
+    let deadline = Instant::now() + wait;
+    let mut nap = Duration::from_millis(5);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(100));
+            }
+            Err(fs::TryLockError::WouldBlock) => bail!(
+                "Agent state directory is already in use; one stdio agent per state directory is supported"
+            ),
+            Err(fs::TryLockError::Error(error)) => {
+                return Err(error).context("Lock agent state directory");
+            }
+        }
+    }
+}
 fn send(
     writer: &Mutex<impl Write>,
     id: u64,
@@ -663,7 +697,7 @@ impl State {
                                 break;
                             }
                             self.media.request_with_size(&path, modified, size, kind);
-                            thread::sleep(Duration::from_millis(5));
+                            self.media.wait_for_change(MEDIA_WAIT);
                         }
                     }
                     root.catalog.set_dhashes(&hashes)?;
@@ -770,7 +804,7 @@ impl State {
                     }
                     self.media
                         .request_with_size(&preview_path, modified, size, *kind);
-                    thread::sleep(Duration::from_millis(5));
+                    self.media.wait_for_change(MEDIA_WAIT);
                 };
                 ensure!(
                     *kind != crate::media::PreviewKind::Full
@@ -803,7 +837,7 @@ impl State {
                         "JPEG working memory requires approximately {} MiB; increase decode budget",
                         encode_bytes.div_ceil(1024 * 1024)
                     );
-                    thread::sleep(Duration::from_millis(5));
+                    self.media.wait_for_change(MEDIA_WAIT);
                 };
                 // Convert borrowed RGBA directly: cloning the full RGBA buffer
                 // before conversion added another large sensor-sized allocation.

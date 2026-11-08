@@ -1,5 +1,5 @@
 //! Catalog-backed history and counters; one shared SQLite connection, no per-file opens.
-use super::{IngestGroup, IngestPlan, SequenceState};
+use super::{IngestGroup, IngestPlan, Phase, SequenceState};
 use crate::{
     catalog::Catalog,
     model::{PhotoDecision, PhotoSource},
@@ -199,7 +199,7 @@ impl Catalog {
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let progress = super::Progress {
             job_id: id.into(),
-            phase: "copying".into(),
+            phase: Phase::Copying,
             total: plan.groups.len(),
             total_bytes: plan.bytes,
             library_root: Some(plan.options.library_root.clone()),
@@ -226,7 +226,7 @@ impl Catalog {
         for (id, counts) in &jobs {
             let mut progress: super::Progress = serde_json::from_str(counts).unwrap_or_default();
             progress.job_id = id.clone();
-            progress.phase = "failed".into();
+            progress.phase = Phase::Failed;
             progress.completed = 0;
             progress.skipped = 0;
             progress.failed = 0;
@@ -279,8 +279,8 @@ impl Catalog {
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let finished =
-            (progress.phase != "finalizing").then(|| chrono::Utc::now().timestamp_millis());
-        connection.execute("UPDATE ingest_jobs SET finished=?2,counts=?3,bytes=?4,errors=?5,verification=?6 WHERE id=?1", params![progress.job_id, finished, serde_json::to_string(progress)?, progress.bytes, serde_json::to_string(&progress.errors)?, progress.phase])?;
+            (progress.phase != Phase::Finalizing).then(|| chrono::Utc::now().timestamp_millis());
+        connection.execute("UPDATE ingest_jobs SET finished=?2,counts=?3,bytes=?4,errors=?5,verification=?6 WHERE id=?1", params![progress.job_id, finished, serde_json::to_string(progress)?, progress.bytes, serde_json::to_string(&progress.errors)?, progress.phase.as_str()])?;
         Ok(())
     }
     /// Files are verified/published before this transaction. A failed commit causes
@@ -297,6 +297,32 @@ impl Catalog {
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let tx = connection.transaction()?;
+        insert_record(&tx, record, group, day)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// All-or-nothing: a failure marks none of the groups, so the worker's scan
+    /// state (refreshed only on success) never disagrees with the catalog.
+    pub fn ingest_mark_imported(&self, groups: &[IngestGroup]) -> Result<usize> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
+        let tx = connection.transaction()?;
+        for group in groups {
+            insert_record(&tx, &ImportRecord::marked(group), None, None)?;
+        }
+        tx.commit()?;
+        Ok(groups.len())
+    }
+}
+fn insert_record(
+    tx: &rusqlite::Transaction<'_>,
+    record: &ImportRecord,
+    group: Option<&IngestGroup>,
+    day: Option<&str>,
+) -> Result<()> {
+    {
         tx.execute("INSERT INTO ingest_log(source_volume,source_relative,original_filename,size,mtime_ns,capture_ms,capture_kind,content_hash,destinations,backups,job_id,imported_at,data) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)", params![record.source_volume, record.source_relative.to_string_lossy(), record.original_filename, record.size, record.mtime_ns, record.capture_ms, record.capture_kind, record.content_hash, serde_json::to_string(&record.destinations)?, serde_json::to_string(&record.backups)?, record.job_id, record.imported_at, serde_json::to_string(record)?])?;
         if let Some(day) = day {
             for key in ["stored".to_string(), format!("day:{day}")] {
@@ -342,15 +368,10 @@ impl Catalog {
                 }
             }
         }
-        tx.commit()?;
-        Ok(())
     }
-    pub fn ingest_mark_imported(&self, groups: &[IngestGroup]) -> Result<usize> {
-        for group in groups {
-            self.ingest_commit(&ImportRecord::marked(group), None, None)?;
-        }
-        Ok(groups.len())
-    }
+    Ok(())
+}
+impl Catalog {
     pub fn ingest_history(&self, limit: usize) -> Result<serde_json::Value> {
         let connection = self
             .connection

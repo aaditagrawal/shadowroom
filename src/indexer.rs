@@ -1063,7 +1063,7 @@ fn parse_capture_time(date: &str, subsec: &str, offset: &str) -> Option<i64> {
     Some(base.and_utc().timestamp_millis() + ms - offset_seconds * 1000)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Drive {
     pub name: String,
     pub path: PathBuf,

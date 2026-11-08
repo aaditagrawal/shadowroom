@@ -34,6 +34,9 @@ pub enum Event {
     Scanned(Arc<Scan>),
     Plan(Arc<PlanSummary>),
     Progress(Progress),
+    /// Acknowledges a pause or resume with the job's real progress: `Paused`
+    /// while paused, otherwise the phase the job resumed into.
+    Control(Progress),
     History(serde_json::Value),
     Marked(usize),
     Committed(Vec<(usize, super::store::SeenRecord)>),
@@ -238,6 +241,12 @@ fn run(
                     ensure!(!plan.groups.is_empty(), "No media selected for import");
                     super::copy::preflight(plan, &NativeFsStats)?;
                     control.reset();
+                    // A pause/resume acknowledged before the job thread first
+                    // reports must read as active, never as `Idle`.
+                    control.report(&Progress {
+                        phase: Phase::Queued,
+                        ..Progress::default()
+                    });
                     job = Some(start_job(
                         plan.clone(),
                         catalog.clone(),
@@ -250,24 +259,12 @@ fn run(
                 Command::Pause => {
                     ensure!(job.is_some(), "No active import");
                     control.pause();
-                    emit(
-                        &events,
-                        Event::Progress(Progress {
-                            phase: "paused".into(),
-                            ..Default::default()
-                        }),
-                    );
+                    emit(&events, Event::Control(control.snapshot()));
                 }
                 Command::Resume => {
                     ensure!(job.is_some(), "No active import");
                     control.resume();
-                    emit(
-                        &events,
-                        Event::Progress(Progress {
-                            phase: "copying".into(),
-                            ..Default::default()
-                        }),
-                    );
+                    emit(&events, Event::Control(control.snapshot()));
                 }
                 Command::Cancel => control.cancel(),
                 Command::History(limit) => {
@@ -387,8 +384,10 @@ fn start_job_with_hooks_and_activity(
                 total: plan.groups.len(),
                 total_bytes: plan.bytes,
                 library_root: Some(plan.options.library_root.clone()),
+                phase: Phase::Queued,
                 ..Default::default()
             };
+            control.report(&latest);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 execute_with(
                     &plan,
@@ -398,10 +397,8 @@ fn start_job_with_hooks_and_activity(
                     hooks.as_ref(),
                     |progress| {
                         latest = progress.clone();
-                        if events.len() < 64
-                            && !["completed", "failed", "cancelled"]
-                                .contains(&progress.phase.as_str())
-                        {
+                        control.report(progress);
+                        if events.len() < 64 && !progress.phase.is_terminal() {
                             emit(&events, Event::Progress(progress.clone()));
                         }
                     },
@@ -429,7 +426,8 @@ fn start_job_with_hooks_and_activity(
                         .collect();
                     emit(&events, Event::Committed(committed));
                     let mut indexing = report.progress.clone();
-                    indexing.phase = "indexing".into();
+                    indexing.phase = Phase::Indexing;
+                    control.report(&indexing);
                     emit(&events, Event::Progress(indexing));
                     // Reuse the normal indexer for dimensions/format metadata. Decisions
                     // are already attached to destination rows at each group commit.
@@ -470,7 +468,7 @@ fn start_job_with_hooks_and_activity(
                 Err(error) => {
                     // Job failures are terminal; ancillary command errors remain
                     // ordinary Event::Error diagnostics in the dispatcher.
-                    latest.phase = "failed".into();
+                    latest.phase = Phase::Failed;
                     latest.errors.push(format!("{error:#}"));
                     let _ = changed.try_send(());
                     control.finish();

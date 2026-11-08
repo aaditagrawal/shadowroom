@@ -78,16 +78,132 @@ impl HostConfig {
         }
     }
 }
+/// Wire/persisted/MCP spelling of a host's lifecycle state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostState {
+    #[default]
+    Offline,
+    Connecting,
+    Connected,
+    Indexing,
+    Error,
+}
+impl HostState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Indexing => "indexing",
+            Self::Error => "error",
+        }
+    }
+    /// Work in progress: connecting or indexing.
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::Connecting | Self::Indexing)
+    }
+}
+impl std::fmt::Display for HostState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+/// Host lifecycle. A failure message exists only in the states that can carry
+/// one, so a snapshot can never claim "connected" or "indexing" with an error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostStatus {
+    /// Not connected; `error` explains why when the host went offline on failure.
+    Offline {
+        error: Option<String>,
+    },
+    /// Connecting; `retrying` is the failure from the previous attempt, if any.
+    Connecting {
+        retrying: Option<String>,
+    },
+    Connected,
+    Indexing,
+    Error(String),
+}
+impl Default for HostStatus {
+    fn default() -> Self {
+        Self::Offline { error: None }
+    }
+}
+impl HostStatus {
+    pub fn state(&self) -> HostState {
+        match self {
+            Self::Offline { .. } => HostState::Offline,
+            Self::Connecting { .. } => HostState::Connecting,
+            Self::Connected => HostState::Connected,
+            Self::Indexing => HostState::Indexing,
+            Self::Error(_) => HostState::Error,
+        }
+    }
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Offline { error } | Self::Connecting { retrying: error } => error.as_deref(),
+            Self::Error(error) => Some(error),
+            Self::Connected | Self::Indexing => None,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(into = "HostSnapshotWire", from = "HostSnapshotWire")]
 pub struct HostSnapshot {
     pub config: HostConfig,
     pub hello: Option<Hello>,
     pub roots: Vec<RemoteRoot>,
-    pub state: String,
-    pub error: Option<String>,
+    pub status: HostStatus,
     pub progress: Option<Progress>,
-    #[serde(default)]
     pub revisions: BTreeMap<String, u64>,
+}
+/// Field order and spelling are the persisted hosts.json and MCP format.
+#[derive(Serialize, Deserialize)]
+struct HostSnapshotWire {
+    config: HostConfig,
+    hello: Option<Hello>,
+    roots: Vec<RemoteRoot>,
+    state: HostState,
+    error: Option<String>,
+    progress: Option<Progress>,
+    #[serde(default)]
+    revisions: BTreeMap<String, u64>,
+}
+impl From<HostSnapshot> for HostSnapshotWire {
+    fn from(s: HostSnapshot) -> Self {
+        Self {
+            state: s.status.state(),
+            error: s.status.error().map(str::to_owned),
+            config: s.config,
+            hello: s.hello,
+            roots: s.roots,
+            progress: s.progress,
+            revisions: s.revisions,
+        }
+    }
+}
+impl From<HostSnapshotWire> for HostSnapshot {
+    fn from(w: HostSnapshotWire) -> Self {
+        let status = match w.state {
+            HostState::Offline => HostStatus::Offline { error: w.error },
+            HostState::Connecting => HostStatus::Connecting { retrying: w.error },
+            HostState::Connected => HostStatus::Connected,
+            HostState::Indexing => HostStatus::Indexing,
+            HostState::Error => HostStatus::Error(
+                w.error
+                    .unwrap_or_else(|| "Unknown remote host error".into()),
+            ),
+        };
+        Self {
+            config: w.config,
+            hello: w.hello,
+            roots: w.roots,
+            status,
+            progress: w.progress,
+            revisions: w.revisions,
+        }
+    }
 }
 impl HostSnapshot {
     fn new(config: HostConfig) -> Self {
@@ -95,11 +211,25 @@ impl HostSnapshot {
             config,
             hello: None,
             roots: vec![],
-            state: "offline".into(),
-            error: None,
+            status: HostStatus::default(),
             progress: None,
             revisions: BTreeMap::new(),
         }
+    }
+    pub fn state(&self) -> HostState {
+        self.status.state()
+    }
+    pub fn error(&self) -> Option<&str> {
+        self.status.error()
+    }
+    /// Offline, keeping the last failure (if any) for diagnostics.
+    fn go_offline(&mut self) {
+        let error = self.error().map(str::to_owned);
+        self.status = HostStatus::Offline { error };
+    }
+    fn begin_connecting(&mut self) {
+        let retrying = self.error().map(str::to_owned);
+        self.status = HostStatus::Connecting { retrying };
     }
 }
 struct Store {
@@ -116,7 +246,7 @@ impl Store {
             Err(e) => return Err(e.into()),
         };
         for snapshot in hosts.values_mut() {
-            snapshot.state = "offline".into();
+            snapshot.go_offline();
             snapshot.progress = None;
         }
         Ok(Self {
@@ -343,12 +473,53 @@ impl Drop for RemoteService {
 fn emit(snapshot: &HostSnapshot, events: &Sender<IoEvent>) {
     let _ = events.send(IoEvent::Remote(snapshot.clone()));
 }
+/// Surfaces each failure once per transition into failure. Snapshots carry the
+/// current error for status/automation, but re-sending them (progress, retries)
+/// must not re-raise a message the user already dismissed. Automatic retries that
+/// fail identically stay quiet; every user command re-arms it.
+struct Alerts {
+    name: String,
+    last: Option<String>,
+}
+impl Alerts {
+    fn raise(&mut self, message: &str, events: &Sender<IoEvent>) {
+        if self.last.as_deref() != Some(message) {
+            let _ = events.send(IoEvent::Error(format!("{}: {message}", self.name)));
+            self.last = Some(message.to_owned());
+        }
+    }
+    fn rearm(&mut self) {
+        self.last = None;
+    }
+}
+/// Non-fatal per-file warnings streamed during index/analyze, reported once.
+#[derive(Default)]
+struct Warnings {
+    count: u64,
+    first: Option<String>,
+}
+impl Warnings {
+    fn push(&mut self, message: String) {
+        self.count += 1;
+        self.first.get_or_insert(message);
+    }
+    fn summary(&self) -> Option<String> {
+        let first = self.first.as_deref()?;
+        Some(if self.count == 1 {
+            format!("Remote indexing warning: {first}")
+        } else {
+            format!("{} remote indexing warnings; first: {first}", self.count)
+        })
+    }
+}
+/// Fallback wake-up while idle. Commands, session closure and retry deadlines
+/// wake the actor directly; this only bounds any missed-signal edge case.
+const IDLE_WAKE: Duration = Duration::from_secs(30);
 fn connect(
     snapshot: &mut HostSnapshot,
     host: &mut Option<RemoteHost>,
     provider: &RemotePreviewProvider,
 ) -> Result<()> {
-    snapshot.state = "connecting".into();
     let remote = match host {
         Some(remote) => {
             remote.reconnect(1)?;
@@ -377,11 +548,53 @@ fn connect(
     snapshot.roots = roots;
     provider.connect(hello.device_id, remote.clone());
     *host = Some(remote);
-    snapshot.state = "connected".into();
-    snapshot.error = None;
+    snapshot.status = HostStatus::Connected;
     Ok(())
 }
+/// Streams an index/analyze request to completion, publishing throttled progress.
 #[allow(clippy::too_many_arguments)]
+fn stream_index(
+    remote: &RemoteHost,
+    request: Request,
+    require_complete: bool,
+    snapshot: &mut HostSnapshot,
+    warnings: &mut Warnings,
+    events: &Sender<IoEvent>,
+    cancelled: impl Fn() -> bool,
+) -> Result<()> {
+    let mut pending = remote.request_with_timeout(request, Duration::from_secs(24 * 3600))?;
+    let mut last = Instant::now() - Duration::from_secs(1);
+    loop {
+        match pending.recv_cancellable(&cancelled)?.header.message {
+            Response::Progress(p) => {
+                snapshot.progress = Some(p);
+                if last.elapsed() >= Duration::from_millis(150) && events.len() < 128 {
+                    emit(snapshot, events);
+                    last = Instant::now();
+                }
+            }
+            Response::Indexed(summary) => {
+                ensure!(
+                    !(require_complete && summary.cancelled),
+                    "Remote indexing cancelled"
+                );
+                snapshot.progress = Some(summary.progress);
+                return Ok(());
+            }
+            Response::Error { message, .. } => warnings.push(message),
+            _ => bail!("Unexpected index response"),
+        }
+    }
+}
+#[allow(clippy::too_many_arguments)]
+/// A session that stays up this long resets the reconnect backoff.
+const STABLE_SESSION: Duration = Duration::from_secs(5);
+
+/// Exponential reconnect backoff: 250 ms doubling per failure, capped at 30 s.
+fn reconnect_delay(failures: u32) -> Duration {
+    Duration::from_millis((250u64 << failures.min(7)).min(30_000))
+}
+
 fn run_host(
     mut snapshot: HostSnapshot,
     commands: Receiver<Command>,
@@ -397,13 +610,45 @@ fn run_host(
     let mut desired = false;
     let mut retry = Instant::now();
     let mut failures = 0u32;
+    // When the current session connected, so a session that dies right after
+    // connecting counts as a failure and backs off instead of looping.
+    let mut connected_at: Option<Instant> = None;
+    let mut alerts = Alerts {
+        name: snapshot.config.display_name.clone(),
+        last: None,
+    };
     emit(&snapshot, &events);
     while !stop.load(Ordering::Acquire) {
-        let command = match commands.recv_timeout(Duration::from_millis(100)) {
-            Ok(Command::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            Ok(command) => Some(command),
-            Err(_) => None,
+        // Block until a command, the session closing, or the reconnect backoff
+        // elapses; an idle host performs no periodic wake-ups.
+        let connected = host.as_ref().is_some_and(RemoteHost::is_connected);
+        let closed = match &host {
+            Some(remote) if connected => remote.closed_signal(),
+            _ => crossbeam_channel::never(),
         };
+        let wait = if desired && !connected {
+            retry.saturating_duration_since(Instant::now())
+        } else {
+            IDLE_WAKE
+        };
+        let command = crossbeam_channel::select! {
+            recv(commands) -> command => match command {
+                Ok(Command::Stop) | Err(_) => break,
+                Ok(command) => Some(command),
+            },
+            recv(closed) -> _ => {
+                let short = connected_at
+                    .take()
+                    .is_some_and(|at| at.elapsed() < STABLE_SESSION);
+                failures = if short { failures.saturating_add(1) } else { 0 };
+                retry = Instant::now() + reconnect_delay(failures);
+                None
+            }
+            default(wait) => None,
+        };
+        if command.is_some() {
+            alerts.rearm();
+        }
         if let Some(Command::Disconnect) = command {
             desired = false;
             if let Some(remote) = &host {
@@ -412,9 +657,8 @@ fn run_host(
             if let Some(hello) = &snapshot.hello {
                 provider.disconnect(&hello.device_id);
             }
-            snapshot.state = "offline".into();
+            snapshot.status = HostStatus::Offline { error: None };
             snapshot.progress = None;
-            snapshot.error = None;
             emit(&snapshot, &events);
             let _ = store.put(snapshot.clone());
             continue;
@@ -429,11 +673,14 @@ fn run_host(
                 || matches!(command, Some(Command::Connect)))
             && retry <= Instant::now()
         {
-            snapshot.state = "connecting".into();
+            snapshot.begin_connecting();
             emit(&snapshot, &events);
             match connect(&mut snapshot, &mut host, &provider) {
                 Ok(()) => {
-                    failures = 0;
+                    // `failures` resets once the session proves stable (see the
+                    // closed-signal arm), not merely on a successful hello.
+                    connected_at = Some(Instant::now());
+                    alerts.rearm();
                     let _ = changed.try_send(());
                 }
                 Err(error) => {
@@ -444,19 +691,15 @@ fn run_host(
                         provider.disconnect(&hello.device_id);
                     }
                     failures = failures.saturating_add(1);
-                    snapshot.state = "error".into();
-                    snapshot.error = Some(format!(
+                    let message = format!(
                         "Connection/hello failed: {error:#}. Check the SSH alias, remote command, agent version, and stdout banners."
-                    ));
-                    if snapshot
-                        .error
-                        .as_deref()
-                        .is_some_and(|e| e.contains("Device identity changed"))
-                    {
+                    );
+                    if message.contains("Device identity changed") {
                         desired = false;
                     }
-                    retry = Instant::now()
-                        + Duration::from_millis((250u64 << failures.min(7)).min(30_000));
+                    alerts.raise(&message, &events);
+                    snapshot.status = HostStatus::Error(message);
+                    retry = Instant::now() + reconnect_delay(failures);
                 }
             }
             emit(&snapshot, &events);
@@ -466,13 +709,20 @@ fn run_host(
         }
         if !desired {
             if matches!(command, Some(Command::Index(_, _) | Command::Sync(_, _, _))) {
-                snapshot.error =
-                    Some("Host is offline; connect before indexing or refreshing".into());
+                let message = "Host is offline; connect before indexing or refreshing";
+                alerts.raise(message, &events);
+                // Keep a non-offline failure state (e.g. identity mismatch) intact.
+                if snapshot.state() == HostState::Offline {
+                    snapshot.status = HostStatus::Offline {
+                        error: Some(message.into()),
+                    };
+                }
                 emit(&snapshot, &events);
             }
             continue;
         }
         if let Some(command @ (Command::Index(_, _) | Command::Sync(_, _, _))) = command {
+            let mut warnings = Warnings::default();
             let result = (|| -> Result<()> {
                 let remote = host
                     .as_ref()
@@ -491,44 +741,20 @@ fn run_host(
                     cancel.load(Ordering::Acquire) == epoch,
                     "Remote operation cancelled before starting"
                 );
-                snapshot.state = "indexing".into();
-                snapshot.error = None;
+                snapshot.status = HostStatus::Indexing;
                 emit(&snapshot, &events);
+                let cancelled =
+                    || cancel.load(Ordering::Acquire) != epoch || stop.load(Ordering::Acquire);
                 if index {
-                    let mut pending = remote.request_with_timeout(
+                    stream_index(
+                        remote,
                         Request::Index { root: root.clone() },
-                        Duration::from_secs(24 * 3600),
+                        true,
+                        &mut snapshot,
+                        &mut warnings,
+                        &events,
+                        cancelled,
                     )?;
-                    let mut last = Instant::now() - Duration::from_secs(1);
-                    loop {
-                        match pending
-                            .recv_cancellable(|| {
-                                cancel.load(Ordering::Acquire) != epoch
-                                    || stop.load(Ordering::Acquire)
-                            })?
-                            .header
-                            .message
-                        {
-                            Response::Progress(p) => {
-                                snapshot.progress = Some(p);
-                                if last.elapsed() >= Duration::from_millis(150)
-                                    && events.len() < 128
-                                {
-                                    emit(&snapshot, &events);
-                                    last = Instant::now();
-                                }
-                            }
-                            Response::Indexed(summary) => {
-                                ensure!(!summary.cancelled, "Remote indexing cancelled");
-                                snapshot.progress = Some(summary.progress);
-                                break;
-                            }
-                            Response::Error { message, .. } => {
-                                snapshot.error = Some(message);
-                            }
-                            _ => bail!("Unexpected index response"),
-                        }
-                    }
                 }
                 let device = &remote.hello().device_id;
                 let mut revision =
@@ -538,37 +764,15 @@ fn run_host(
                 // Photos are visible now; fill in perceptual hashes on the agent so
                 // burst grouping is complete without fetching every preview.
                 if index && remote.hello().capabilities.iter().any(|c| c == "analyze") {
-                    let mut pending = remote.request_with_timeout(
+                    stream_index(
+                        remote,
                         Request::Analyze { root: root.clone() },
-                        Duration::from_secs(24 * 3600),
+                        false,
+                        &mut snapshot,
+                        &mut warnings,
+                        &events,
+                        cancelled,
                     )?;
-                    let mut last = Instant::now() - Duration::from_secs(1);
-                    loop {
-                        match pending
-                            .recv_cancellable(|| {
-                                cancel.load(Ordering::Acquire) != epoch
-                                    || stop.load(Ordering::Acquire)
-                            })?
-                            .header
-                            .message
-                        {
-                            Response::Progress(p) => {
-                                snapshot.progress = Some(p);
-                                if last.elapsed() >= Duration::from_millis(150)
-                                    && events.len() < 128
-                                {
-                                    emit(&snapshot, &events);
-                                    last = Instant::now();
-                                }
-                            }
-                            Response::Indexed(summary) => {
-                                snapshot.progress = Some(summary.progress);
-                                break;
-                            }
-                            Response::Error { message, .. } => snapshot.error = Some(message),
-                            _ => bail!("Unexpected analyze response"),
-                        }
-                    }
                     revision = sync_root(
                         &catalog, remote, device, &root, false, epoch, &cancel, &stop,
                     )?;
@@ -577,18 +781,21 @@ fn run_host(
                 }
                 Ok(())
             })();
+            if let Some(summary) = warnings.summary() {
+                alerts.raise(&summary, &events);
+            }
             match result {
-                Ok(()) => {
-                    snapshot.state = "connected".into();
-                }
+                Ok(()) => snapshot.status = HostStatus::Connected,
                 Err(e) => {
-                    snapshot.state = if host.as_ref().is_some_and(|h| h.is_connected()) {
-                        "error"
+                    let message = format!("Remote operation: {e:#}");
+                    alerts.raise(&message, &events);
+                    snapshot.status = if host.as_ref().is_some_and(|h| h.is_connected()) {
+                        HostStatus::Error(message)
                     } else {
-                        "offline"
-                    }
-                    .into();
-                    snapshot.error = Some(format!("Remote operation: {e:#}"));
+                        HostStatus::Offline {
+                            error: Some(message),
+                        }
+                    };
                 }
             }
             emit(&snapshot, &events);
@@ -596,13 +803,12 @@ fn run_host(
         }
         if desired
             && host.as_ref().is_some_and(|h| !h.is_connected())
-            && snapshot.state != "offline"
-            && snapshot.state != "connecting"
+            && !matches!(snapshot.state(), HostState::Offline | HostState::Connecting)
         {
             if let Some(hello) = &snapshot.hello {
                 provider.disconnect(&hello.device_id);
             }
-            snapshot.state = "offline".into();
+            snapshot.go_offline();
             emit(&snapshot, &events);
         }
     }
@@ -612,7 +818,7 @@ fn run_host(
     if let Some(hello) = &snapshot.hello {
         provider.disconnect(&hello.device_id);
     }
-    snapshot.state = "offline".into();
+    snapshot.go_offline();
     snapshot.progress = None;
     if let Err(e) = store.put(snapshot) {
         let _ = events.send(IoEvent::Error(format!("Save remote host state: {e:#}")));
@@ -679,6 +885,88 @@ mod tests {
     use super::*;
     use crate::remote::protocol::{Frame, PROTOCOL_VERSION, PhotoKey, read_frame, write_frame};
     use std::os::unix::net::UnixStream;
+
+    fn config() -> HostConfig {
+        HostConfig {
+            id: "h".into(),
+            display_name: "Host".into(),
+            ssh_alias: "alias".into(),
+            remote_command: default_command(),
+            extra_ssh_args: vec![],
+            local_program: None,
+            local_args: vec![],
+        }
+    }
+
+    #[test]
+    fn host_snapshot_wire_format_is_unchanged_and_round_trips() {
+        let mut snapshot = HostSnapshot::new(config());
+        snapshot.status = HostStatus::Error("boom".into());
+        assert_eq!(
+            serde_json::to_string(&snapshot).unwrap(),
+            r#"{"config":{"id":"h","display_name":"Host","ssh_alias":"alias","remote_command":"shadowroom-remote serve --stdio","extra_ssh_args":[]},"hello":null,"roots":[],"state":"error","error":"boom","progress":null,"revisions":{}}"#
+        );
+        for (status, state, error) in [
+            (HostStatus::Offline { error: None }, "offline", None),
+            (
+                HostStatus::Offline {
+                    error: Some("gone".into()),
+                },
+                "offline",
+                Some("gone"),
+            ),
+            (
+                HostStatus::Connecting {
+                    retrying: Some("again".into()),
+                },
+                "connecting",
+                Some("again"),
+            ),
+            (HostStatus::Connected, "connected", None),
+            (HostStatus::Indexing, "indexing", None),
+        ] {
+            snapshot.status = status.clone();
+            let value = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(value["state"], state);
+            assert_eq!(value["error"].as_str(), error);
+            let back: HostSnapshot = serde_json::from_value(value).unwrap();
+            assert_eq!(back.status, status);
+        }
+        // Contradictory legacy records normalize to a representable status.
+        let mut value = serde_json::to_value(&snapshot).unwrap();
+        value["state"] = "connected".into();
+        value["error"] = "stale".into();
+        let back: HostSnapshot = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(back.status, HostStatus::Connected);
+        value["state"] = "error".into();
+        value["error"] = serde_json::Value::Null;
+        let back: HostSnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(back.state(), HostState::Error);
+        assert!(back.error().is_some());
+    }
+
+    #[test]
+    fn alerts_raise_once_per_failure_until_rearmed() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut alerts = Alerts {
+            name: "Host".into(),
+            last: None,
+        };
+        alerts.raise("down", &tx);
+        alerts.raise("down", &tx);
+        alerts.raise("down", &tx);
+        alerts.raise("other", &tx);
+        alerts.rearm();
+        alerts.raise("other", &tx);
+        let raised: Vec<_> = rx
+            .try_iter()
+            .map(|event| match event {
+                IoEvent::Error(message) => message,
+                _ => panic!("unexpected event"),
+            })
+            .collect();
+        assert_eq!(raised, ["Host: down", "Host: other", "Host: other"]);
+    }
 
     #[test]
     fn failed_stream_after_staged_batch_preserves_catalog_and_cursor() {

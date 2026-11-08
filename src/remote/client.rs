@@ -98,11 +98,35 @@ impl<R: Read> Read for CountingReader<R> {
 }
 type Delivery = std::result::Result<Frame<Response>, String>;
 type Pending = Arc<Mutex<HashMap<u64, Sender<Delivery>>>>;
+/// Session liveness: a flag for cheap checks plus a channel that disconnects
+/// once the session closes, so owners can block on closure instead of polling.
+struct Closed {
+    flag: AtomicBool,
+    signal: Mutex<Option<Sender<()>>>,
+    receiver: Receiver<()>,
+}
+impl Closed {
+    fn new() -> Self {
+        let (signal, receiver) = crossbeam_channel::bounded(0);
+        Self {
+            flag: AtomicBool::new(false),
+            signal: Mutex::new(Some(signal)),
+            receiver,
+        }
+    }
+    fn load(&self, ordering: Ordering) -> bool {
+        self.flag.load(ordering)
+    }
+    fn mark(&self) {
+        self.flag.store(true, Ordering::Release);
+        self.signal.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
 struct Session {
     hello: OnceLock<Hello>,
     writer: Mutex<Option<Sender<(u64, Request)>>>,
     pending: Pending,
-    closed: Arc<AtomicBool>,
+    closed: Arc<Closed>,
     next_id: AtomicU64,
     child: Mutex<Option<Child>>,
 }
@@ -118,7 +142,7 @@ impl Session {
             counters: counters.clone(),
         };
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let closed = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(Closed::new());
         let (write_tx, write_rx) = crossbeam_channel::bounded::<(u64, Request)>(MAX_IN_FLIGHT);
         let session = Arc::new(Self {
             hello: OnceLock::new(),
@@ -145,7 +169,7 @@ impl Session {
                                 .fetch_add(bytes as u64, Ordering::Relaxed);
                         }
                         Err(error) => {
-                            writer_closed.store(true, Ordering::Release);
+                            writer_closed.mark();
                             for (_, tx) in writer_pending.lock().unwrap().drain() {
                                 let _ = tx.try_send(Err(format!("Remote write failed: {error:#}")));
                             }
@@ -186,7 +210,7 @@ impl Session {
                         Err(e) => break format!("Remote protocol error: {e:#}"),
                     }
                 };
-                closed.store(true, Ordering::Release);
+                closed.mark();
                 for (_, tx) in pending.lock().unwrap().drain() {
                     let _ = tx.try_send(Err(error.clone()));
                 }
@@ -242,16 +266,16 @@ impl Session {
         let _ = self.write(id, Request::Cancel { request_id });
     }
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        self.closed.mark();
         self.writer.lock().unwrap().take();
         if let Some(mut child) = self.child.lock().unwrap().take() {
             // Close stdin first for graceful EOF; kill is a bounded fallback for
             // SSH/decoders that cannot finish promptly after cancellation.
-            for _ in 0..10 {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(10));
+            let deadline = Instant::now() + Duration::from_millis(100);
+            let mut nap = Duration::from_millis(1);
+            while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(20));
             }
             if child.try_wait().ok().flatten().is_none() {
                 let _ = child.kill();
@@ -268,6 +292,9 @@ impl Drop for Session {
         self.close();
     }
 }
+/// Caller cancellation is a predicate, so it is sampled while waiting. Frames
+/// still wake the receiver immediately; this only bounds cancellation latency.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// An outstanding multiplexed request. Dropping it sends best-effort cancellation.
 /// `recv` has an overall deadline (progress does not extend it).
 pub struct PendingRequest {
@@ -282,16 +309,24 @@ impl PendingRequest {
         self.session.cancel(self.id);
     }
     pub fn recv(&mut self) -> Result<Frame<Response>> {
-        self.recv_cancellable(|| false)
+        // Nothing to poll: block until a frame, disconnection or the deadline.
+        self.recv_polling(|| false, None)
     }
     pub fn recv_cancellable(&mut self, cancelled: impl Fn() -> bool) -> Result<Frame<Response>> {
+        self.recv_polling(cancelled, Some(CANCEL_POLL))
+    }
+    fn recv_polling(
+        &mut self,
+        cancelled: impl Fn() -> bool,
+        poll: Option<Duration>,
+    ) -> Result<Frame<Response>> {
         let frame = loop {
             ensure!(!cancelled(), "Remote request cancelled");
             let remaining = self.deadline.saturating_duration_since(Instant::now());
             ensure!(!remaining.is_zero(), "Remote request timed out");
             match self
                 .rx
-                .recv_timeout(remaining.min(Duration::from_millis(25)))
+                .recv_timeout(poll.map_or(remaining, |poll| remaining.min(poll)))
             {
                 Ok(frame) => break frame.map_err(anyhow::Error::msg)?,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => (),
@@ -780,6 +815,16 @@ impl RemoteHost {
             .unwrap()
             .as_ref()
             .is_some_and(|s| !s.closed.load(Ordering::Acquire))
+    }
+    /// A receiver that becomes disconnected (ready) once the current session
+    /// closes, for blocking in `select!` instead of polling `is_connected`.
+    /// Without a session it is ready immediately. A later reconnect starts a new
+    /// session; call this again after reconnecting.
+    pub fn closed_signal(&self) -> Receiver<()> {
+        match self.inner.session.lock().unwrap().as_ref() {
+            Some(session) => session.closed.receiver.clone(),
+            None => crossbeam_channel::bounded(0).1,
+        }
     }
     pub fn disconnect(&self) {
         if let Some(session) = self.inner.session.lock().unwrap().take() {

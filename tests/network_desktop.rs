@@ -6,7 +6,7 @@ use shadowroom::{
     grouping::{GroupingMode, GroupingOptions, group_photos},
     media::{MediaPipeline, MediaStats, PreviewKind, RemotePreviewProvider},
     model::{ColorLabel, Flag, Photo, PhotoDecision, PhotoSource, RemoteSource},
-    network::{HostConfig, HostSnapshot, RemoteCommand},
+    network::{HostConfig, HostSnapshot, HostState, RemoteCommand},
     remote::{
         ConnectionSpec, PreviewCache, PreviewResult, RemoteHost,
         protocol::{MAX_PAYLOAD, PhotoKey, PhotoRecord},
@@ -573,7 +573,9 @@ fn wait_host(
         {
             IoEvent::Remote(host) if predicate(&host) => return host,
             IoEvent::Error(error) => panic!("{error}"),
-            IoEvent::Remote(host) if host.state == "error" => panic!("{:?}", host.error),
+            IoEvent::Remote(host) if host.state() == HostState::Error => {
+                panic!("{:?}", host.error())
+            }
             _ => (),
         }
     }
@@ -616,7 +618,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
     commands
         .send(IoCommand::Remote(RemoteCommand::Add(config)))
         .unwrap();
-    let connected = wait_host(&events, |h| h.state == "connected");
+    let connected = wait_host(&events, |h| h.state() == HostState::Connected);
     let root_id = connected.roots[0].id.clone();
     commands
         .send(IoCommand::Remote(RemoteCommand::Index {
@@ -625,7 +627,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
         }))
         .unwrap();
     let indexed = wait_host(&events, |h| {
-        h.state == "connected" && h.revisions.contains_key(&root_id)
+        h.state() == HostState::Connected && h.revisions.contains_key(&root_id)
     });
     assert!(indexed.revisions[&root_id] > 0);
     let photo = wait_photos(&photos, |p| p.len() == 1).remove(0);
@@ -644,8 +646,8 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
             root: root_id.clone(),
         }))
         .unwrap();
-    wait_host(&events, |h| h.state == "indexing");
-    wait_host(&events, |h| h.state == "connected");
+    wait_host(&events, |h| h.state() == HostState::Indexing);
+    wait_host(&events, |h| h.state() == HostState::Connected);
     fs::remove_file(original).unwrap();
     commands
         .send(IoCommand::Remote(RemoteCommand::Index {
@@ -654,7 +656,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
         }))
         .unwrap();
     wait_host(&events, |h| {
-        h.state == "connected"
+        h.state() == HostState::Connected
             && h.revisions
                 .get(&root_id)
                 .is_some_and(|r| *r > indexed.revisions[&root_id])
@@ -669,7 +671,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
             "test-host".into(),
         )))
         .unwrap();
-    wait_host(&events, |h| h.state == "offline");
+    wait_host(&events, |h| h.state() == HostState::Offline);
     let offline_decision = PhotoDecision {
         rating: 5,
         ..decision
@@ -702,7 +704,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
         },
         None,
     );
-    let persisted = wait_host(&events, |h| h.state == "offline");
+    let persisted = wait_host(&events, |h| h.state() == HostState::Offline);
     assert_eq!(persisted.roots[0].id, root_id);
     assert_eq!(wait_photos(&photos, |p| p.len() == 1)[0].rating, 5);
     commands

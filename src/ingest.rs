@@ -785,6 +785,9 @@ struct ControlState {
     paused: bool,
     cancelled: bool,
     finished: bool,
+    /// Last progress the running job reported, so pause/resume acknowledgements
+    /// carry real counters and the phase the job is actually in.
+    progress: Progress,
 }
 impl Control {
     pub fn reset(&self) {
@@ -792,8 +795,27 @@ impl Control {
             state.cancelled = false;
             state.finished = false;
             state.paused = false;
+            state.progress = Progress::default();
             self.0.1.notify_all();
         }
+    }
+    pub(crate) fn report(&self, progress: &Progress) {
+        if let Ok(mut state) = self.0.0.lock() {
+            state.progress.clone_from(progress);
+        }
+    }
+    /// The job's latest progress, with the phase shown as `Paused` while paused.
+    pub fn snapshot(&self) -> Progress {
+        self.0.0.lock().map_or_else(
+            |_| Progress::default(),
+            |state| {
+                let mut progress = state.progress.clone();
+                if state.paused && !state.finished && !progress.phase.is_terminal() {
+                    progress.phase = Phase::Paused;
+                }
+                progress
+            },
+        )
     }
     pub(crate) fn finish(&self) {
         if let Ok(mut state) = self.0.0.lock() {
@@ -840,10 +862,80 @@ impl Control {
         Ok(())
     }
 }
+/// Lifecycle of one import job.
+///
+/// ```text
+/// Idle ─start─▶ Queued ─▶ Copying ⇄ Verifying ─▶ Finalizing ─▶ Indexing ─▶ Completed
+///                  │         │  ▲                    │                       Failed
+///                  │      pause resume               └──────────────────────▶ Cancelled
+///                  │         ▼  │
+///                  └──────▶ Paused ─cancel─▶ Cancelled
+/// ```
+///
+/// Serialized as the same lowercase strings earlier releases wrote to manifests,
+/// the catalog and the automation API (`""` for no job).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    #[default]
+    #[serde(rename = "")]
+    Idle,
+    Queued,
+    Copying,
+    Verifying,
+    Paused,
+    Finalizing,
+    Indexing,
+    Completed,
+    Failed,
+    Cancelled,
+}
+impl Phase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "",
+            Self::Queued => "queued",
+            Self::Copying => "copying",
+            Self::Verifying => "verifying",
+            Self::Paused => "paused",
+            Self::Finalizing => "finalizing",
+            Self::Indexing => "indexing",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+    /// A job owns the import worker: new jobs and app exit must wait or cancel.
+    pub const fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Queued
+                | Self::Copying
+                | Self::Verifying
+                | Self::Paused
+                | Self::Finalizing
+                | Self::Indexing
+        )
+    }
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+    /// The copy loop is moving bytes (a stale report of this kind must not
+    /// override a pause the user already requested).
+    pub const fn is_transferring(self) -> bool {
+        matches!(self, Self::Copying | Self::Verifying)
+    }
+}
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Progress {
     pub job_id: String,
-    pub phase: String,
+    pub phase: Phase,
     pub completed: usize,
     pub skipped: usize,
     pub failed: usize,

@@ -639,10 +639,16 @@ impl MediaPipeline {
         let key = state.satisfying(&requested)?;
         let entry = state.previews.get_mut(&key)?;
         entry.touched = touched;
-        entry.fresh = false;
+        // Only the first display of a fresh entry makes it evictable, which is
+        // the one transition a blocked reservation waits for. Repeat hits (every
+        // frame for every visible preview) must not wake decoders and waiters.
+        let became_evictable = std::mem::replace(&mut entry.fresh, false);
         let preview = entry.value.clone();
         state.stats.memory_hits += 1;
-        self.shared.wake.notify_all();
+        drop(state);
+        if became_evictable {
+            self.shared.wake.notify_all();
+        }
         Some(preview)
     }
 
@@ -662,10 +668,13 @@ impl MediaPipeline {
             key.source.sensor_raw = false;
             if let Some(entry) = state.previews.get_mut(&key) {
                 entry.touched = touched;
-                entry.fresh = false;
+                let became_evictable = std::mem::replace(&mut entry.fresh, false);
                 let preview = entry.value.clone();
                 state.stats.memory_hits += 1;
-                self.shared.wake.notify_all();
+                drop(state);
+                if became_evictable {
+                    self.shared.wake.notify_all();
+                }
                 return Some(preview);
             }
         }
@@ -858,11 +867,29 @@ impl MediaPipeline {
             bytes,
         })
     }
+
+    /// Background waiters only (never the UI thread): block until any media
+    /// task finishes, a buffer is released, or `timeout` elapses, instead of
+    /// sleep-polling `get`/`error`/`reserve_display_bytes`. Wake-ups may be
+    /// spurious, and a completion racing the caller's last check is caught by
+    /// the timeout, so callers re-check and loop.
+    pub fn wait_for_change(&self, timeout: std::time::Duration) {
+        let state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.shared.stop.load(Ordering::Relaxed) {
+            let _ = self.shared.wake.wait_timeout(state, timeout);
+        }
+    }
 }
 
 impl Drop for MediaPipeline {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        // Workers and the persister test `stop` under the state mutex, then
+        // wait without a timeout. Passing through the mutex orders this store
+        // before such a test or after the waiter is parked, so the notify
+        // cannot be lost (that leaked the threads and Shared forever). The
+        // mutex only guards short bookkeeping, never decode or I/O.
+        drop(self.shared.state.lock());
         self.shared.wake.notify_all();
         // Do not join codecs on the render thread. Their Shared storage lives until they exit.
     }
@@ -1274,8 +1301,17 @@ fn source_bytes(shared: &Arc<Shared>, key: &SourceKey, task: &Task) -> Result<Ar
     let mut permit = reserve(shared, task, length)?;
     let mut bytes = vec![0; length];
     File::open(&key.path)?.read_exact(&mut bytes)?;
-    if raw && !key.sensor_raw && extract_raw_jpeg(&bytes).is_some() {
-        let jpeg = extract_raw_jpeg(&bytes).unwrap();
+    // Scan the (up to 128 MiB) prefix once, not once to test and again to use.
+    let embedded = (raw && !key.sensor_raw)
+        .then(|| {
+            extract_raw_jpeg(&bytes).map(|jpeg| {
+                let start = jpeg.as_ptr() as usize - bytes.as_ptr() as usize;
+                start..start + jpeg.len()
+            })
+        })
+        .flatten();
+    if let Some(range) = embedded {
+        let jpeg = &bytes[range];
         let orientation = tiff_orientation(&bytes);
         let compact_length = jpeg.len() + if orientation.is_some() { 36 } else { 0 };
         let compact_permit = reserve_growth(shared, task, compact_length, permit.bytes)?;
@@ -1534,11 +1570,16 @@ fn persistence_loop(shared: Arc<Shared>) {
                 if !state.persist.is_empty() && state.queue.is_empty() && state.stats.active == 0 {
                     break;
                 }
-                state = shared
-                    .wake
-                    .wait_timeout(state, std::time::Duration::from_millis(30))
-                    .unwrap()
-                    .0;
+                // Block until an event can change this predicate. Each input
+                // is mutated under the state mutex and followed by a notify:
+                // publication (enqueue_persist), a worker finishing (`active`),
+                // cancellation, and stop (Drop passes through the mutex before
+                // notifying). Display releases also notify and are settled by
+                // apply_cancellation on every wake. Retired Arcs need no
+                // periodic reaper: every reader of `memory` (evict_for, stats,
+                // settle_display) reaps first. No timeout: an idle pipeline
+                // must not wake this thread (it previously woke every 30 ms).
+                state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
             }
             let item = state.persist.pop_front().unwrap();
             state.persist_bytes -= item.preview.byte_len();
@@ -4723,8 +4764,12 @@ mod tests {
             let result = source_bytes(&shared, &key.source, &task);
             let _ = send.send(result.err().map(|e| e.to_string()));
         });
+        // A self-deadlock never completes; the bound only has to separate that
+        // from legitimate work. Zero-filling, reading and scanning the 128 MiB
+        // prefix takes ~1 s of CPU in an unoptimized build, so a 5 s bound
+        // failed spuriously when the machine was saturated by parallel builds.
         let error = receive
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(120))
             .expect("RAW compaction waited on its own reservation")
             .expect("RAW growth should reject an impossible combined reservation");
         assert!(error.contains("memory"));
@@ -4765,8 +4810,9 @@ mod tests {
         }
         barrier.wait();
         for _ in 0..2 {
+            // Deadlock detector only: generous for scheduler starvation under load.
             receive
-                .recv_timeout(std::time::Duration::from_secs(2))
+                .recv_timeout(std::time::Duration::from_secs(60))
                 .expect("held reservations deadlocked during concurrent growth");
         }
         let state = pipeline.shared.state.lock().unwrap();
@@ -4915,6 +4961,84 @@ mod tests {
                 .peak_estimated_bytes
                 <= 1_000_000
         );
+    }
+
+    /// (tid, comm) for every thread of this process.
+    #[cfg(target_os = "linux")]
+    fn media_threads() -> Vec<(String, String)> {
+        let Ok(tasks) = fs::read_dir("/proc/self/task") else {
+            return Vec::new();
+        };
+        tasks
+            .filter_map(|task| {
+                let task = task.ok()?;
+                let comm = fs::read_to_string(task.path().join("comm")).ok()?;
+                let comm = comm.trim().to_owned();
+                comm.starts_with("shadowroom-")
+                    .then(|| (task.file_name().to_string_lossy().into_owned(), comm))
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn context_switches(tid: &str) -> Option<u64> {
+        let status = fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
+        Some(
+            status
+                .lines()
+                .filter(|line| line.contains("ctxt_switches:"))
+                .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+                .sum(),
+        )
+    }
+
+    /// An idle pipeline (nothing queued, decoding, persisting or retired) must
+    /// not wake its threads. Other tests create pipelines concurrently, so only
+    /// measure when exactly this pipeline's three threads can be identified.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn idle_pipeline_threads_block_without_polling() {
+        let temp = tempfile::tempdir().unwrap();
+        for _ in 0..20 {
+            let before: std::collections::HashSet<_> = media_threads().into_iter().collect();
+            let pipeline = MediaPipeline::new(temp.path().into(), 1_000_000);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut new = Vec::new();
+            while std::time::Instant::now() < deadline {
+                new = media_threads()
+                    .into_iter()
+                    .filter(|thread| !before.contains(thread))
+                    .collect::<Vec<_>>();
+                if new.len() >= 3 {
+                    break;
+                }
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let persist = new.iter().filter(|(_, c)| c.starts_with("shadowroom-pers"));
+            if new.len() != 3 || persist.count() != 1 {
+                drop(pipeline);
+                continue;
+            }
+            // Let the threads reach their first wait.
+            thread::sleep(std::time::Duration::from_millis(100));
+            let start: Vec<_> = new.iter().map(|(tid, _)| context_switches(tid)).collect();
+            thread::sleep(std::time::Duration::from_millis(600));
+            let end: Vec<_> = new.iter().map(|(tid, _)| context_switches(tid)).collect();
+            for (((_, comm), start), end) in new.iter().zip(start).zip(end) {
+                let (Some(start), Some(end)) = (start, end) else {
+                    continue;
+                };
+                eprintln!("idle 600 ms: {comm} context switches {}", end - start);
+                assert!(
+                    end - start <= 2,
+                    "{comm} woke {} times while idle",
+                    end - start
+                );
+            }
+            drop(pipeline);
+            return;
+        }
+        eprintln!("idle wakeup measurement skipped: thread identities were ambiguous");
     }
 
     #[test]

@@ -346,7 +346,7 @@ fn stage(
     rollback: &mut Rollback,
     control: &Control,
     hooks: &dyn CopyHooks,
-    mut update: impl FnMut(u64, &str),
+    mut update: impl FnMut(u64, Phase),
 ) -> Result<Staged> {
     control.checkpoint()?;
     let scanned = checked_source(&file.source)?;
@@ -435,7 +435,7 @@ fn stage(
                         }
                     }
                 }
-                update(read as u64, "copying");
+                update(read as u64, Phase::Copying);
             }
             let after = input.metadata()?;
             ensure!(
@@ -471,7 +471,7 @@ fn stage(
         file.source.path.display()
     );
     let hash = hasher.finalize();
-    update(0, "verifying");
+    update(0, Phase::Verifying);
     for temp in &temps {
         verify_interruptible(temp, size, &hash, control)?;
     }
@@ -611,7 +611,7 @@ fn group_copy(
     catalog: &Catalog,
     control: &Control,
     hooks: &dyn CopyHooks,
-    mut update: impl FnMut(u64, &str),
+    mut update: impl FnMut(u64, Phase),
 ) -> Result<Option<CommittedGroup>> {
     let mut rollback = Rollback::default();
     let outcome = (|| -> Result<Option<CommittedGroup>> {
@@ -814,7 +814,7 @@ pub fn execute_with(
     let mut report = Report {
         progress: Progress {
             job_id: job.clone(),
-            phase: "copying".into(),
+            phase: Phase::Copying,
             total: plan.groups.len(),
             total_bytes: plan.bytes,
             library_root: Some(roots[0].clone()),
@@ -910,7 +910,9 @@ pub fn execute_with(
                 hooks,
                 |bytes, phase| {
                     transferred += bytes;
-                    report.progress.phase = phase.into();
+                    // Phase changes are reported immediately; byte counts are throttled.
+                    let phase_changed = report.progress.phase != phase;
+                    report.progress.phase = phase;
                     let elapsed = started.elapsed().as_secs_f64().max(0.001);
                     report.progress.mb_per_second = transferred as f64 / elapsed / 1_000_000.;
                     report.progress.eta_seconds = if transferred > 0 {
@@ -922,7 +924,7 @@ pub fn execute_with(
                     } else {
                         None
                     };
-                    if last_update.elapsed() >= Duration::from_millis(100) {
+                    if phase_changed || last_update.elapsed() >= Duration::from_millis(100) {
                         update(&report.progress);
                         last_update = Instant::now();
                     }
@@ -980,13 +982,12 @@ pub fn execute_with(
         }
     }
     report.progress.phase = if control.is_cancelled() {
-        "cancelled"
+        Phase::Cancelled
     } else if report.progress.errors.is_empty() {
-        "completed"
+        Phase::Completed
     } else {
-        "failed"
-    }
-    .into();
+        Phase::Failed
+    };
     report.progress.destinations = roots
         .iter()
         .map(|p| {
@@ -1009,9 +1010,9 @@ fn finalize_report(report: &mut Report, root: &Path, catalog: &Catalog, hooks: &
     let manifest = root.join(format!("shadowroom-ingest-{}.json", report.progress.job_id));
     report.progress.manifest = Some(manifest.clone());
     let mut pending = report.progress.clone();
-    pending.phase = "finalizing".into();
+    pending.phase = Phase::Finalizing;
     if let Err(error) = catalog.ingest_finish(&pending) {
-        report.progress.phase = "failed".into();
+        report.progress.phase = Phase::Failed;
         report
             .progress
             .errors
@@ -1020,7 +1021,7 @@ fn finalize_report(report: &mut Report, root: &Path, catalog: &Catalog, hooks: &
     let artifact = match write_manifest(report, &manifest, hooks) {
         Ok(owned) => Some(owned),
         Err(error) => {
-            report.progress.phase = "failed".into();
+            report.progress.phase = Phase::Failed;
             report
                 .progress
                 .errors
@@ -1031,7 +1032,7 @@ fn finalize_report(report: &mut Report, root: &Path, catalog: &Catalog, hooks: &
     // A completed history write is possible only when the outcome artifact above
     // verified. Failed candidates instead persist a failed outcome, never success.
     let history_failed = if let Err(error) = catalog.ingest_finish(&report.progress) {
-        report.progress.phase = "failed".into();
+        report.progress.phase = Phase::Failed;
         report
             .progress
             .errors

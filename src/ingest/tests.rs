@@ -63,7 +63,12 @@ impl Fixture {
         .unwrap()
     }
     fn assert_rolled_back(&self, report: &Report) {
-        assert_eq!(report.progress.phase, "failed", "{:?}", report.progress);
+        assert_eq!(
+            report.progress.phase,
+            Phase::Failed,
+            "{:?}",
+            report.progress
+        );
         assert_eq!(report.progress.completed, 0);
         assert_eq!(report.progress.failed, 1);
         assert_eq!(self.catalog.ingest_sequences().unwrap().stored, 0);
@@ -352,7 +357,7 @@ fn cancel_while_paused_rolls_back_then_same_plan_restarts() {
         .unwrap()
         .unwrap();
     job.join().unwrap();
-    assert_eq!(report.progress.phase, "cancelled");
+    assert_eq!(report.progress.phase, Phase::Cancelled);
     assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 0);
     assert_no_parts(f.temp.path());
     assert_eq!(f.run(&plan, &DefaultHooks).progress.completed, 1);
@@ -481,13 +486,13 @@ fn worker_final_history_update_failure_is_terminal_and_publishes_committed_photo
     assert!(matches!(committed, Event::Committed(records) if records.len() == 1));
     let terminal = next_event(&rx, |e| {
         matches!(e, Event::Progress(p)
-        if ["completed", "failed", "cancelled"].contains(&p.phase.as_str()))
+        if p.phase.is_terminal())
     });
     worker.stop().unwrap();
     let Event::Progress(progress) = terminal else {
         unreachable!()
     };
-    assert_eq!(progress.phase, "failed");
+    assert_eq!(progress.phase, Phase::Failed);
     assert!(!progress.job_id.is_empty());
     assert_eq!(progress.completed, 1);
     assert_eq!(progress.total, 1);
@@ -559,13 +564,13 @@ fn worker_job_begin_failure_emits_terminal_progress_with_job_identity() {
     worker.send(Command::Start).unwrap();
     let terminal = next_event(&rx, |e| {
         matches!(e, Event::Progress(p)
-        if ["completed", "failed", "cancelled"].contains(&p.phase.as_str()))
+        if p.phase.is_terminal())
     });
     worker.stop().unwrap();
     let Event::Progress(progress) = terminal else {
         unreachable!()
     };
-    assert_eq!(progress.phase, "failed");
+    assert_eq!(progress.phase, Phase::Failed);
     assert!(!progress.job_id.is_empty());
     assert_eq!(progress.total, 1);
     assert_eq!(progress.completed, 0);
@@ -634,13 +639,13 @@ fn postcommit_cleanup_failure_keeps_publication_counts_decisions_and_later_seque
     assert!(matches!(committed, Event::Committed(records) if records.len() == 2));
     let terminal = next_event(&rx, |e| {
         matches!(e, Event::Progress(p)
-        if ["completed", "failed", "cancelled"].contains(&p.phase.as_str()))
+        if p.phase.is_terminal())
     });
     job.join().unwrap();
     let Event::Progress(progress) = terminal else {
         unreachable!()
     };
-    assert_eq!(progress.phase, "failed");
+    assert_eq!(progress.phase, Phase::Failed);
     assert_eq!(progress.completed, 2);
     assert_eq!(
         progress.failed, 0,
@@ -699,7 +704,7 @@ fn manifest_verification_failure_removes_artifact_and_persists_failed_job() {
     f.write("A.mov", b"original video");
     let plan = f.plan();
     let report = f.run(&plan, &CorruptManifest);
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.completed, 1);
     assert_eq!(report.records.len(), 1);
     assert!(report.progress.manifest.is_none());
@@ -746,7 +751,7 @@ fn manifest_failure_and_rejected_failure_update_report_both_errors_without_succe
     .unwrap();
     drop(db);
     let report = f.run(&plan, &CorruptManifest);
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.completed, 1);
     assert_eq!(report.records.len(), 1);
     assert!(report.progress.manifest.is_none());
@@ -811,7 +816,7 @@ fn startup_reconciles_rejected_finalization_using_committed_log_counts() {
     )
     .unwrap();
     let failed = f.run(&plan, &DefaultHooks);
-    assert_eq!(failed.progress.phase, "failed");
+    assert_eq!(failed.progress.phase, Phase::Failed);
     assert_eq!(
         f.catalog.ingest_history(10).unwrap()["jobs"][0]["verification"],
         "running"
@@ -922,7 +927,7 @@ impl CopyHooks for ObserveFinalizing {
             assert_eq!(history["jobs"][0]["verification"], "finalizing");
             assert!(history["jobs"][0]["finished"].is_null());
             let candidate: Report = serde_json::from_slice(&fs::read(path)?)?;
-            assert_eq!(candidate.progress.phase, "completed");
+            assert_eq!(candidate.progress.phase, Phase::Completed);
         }
         Ok(())
     }
@@ -947,7 +952,7 @@ fn last_completed_history_write_failure_replaces_owned_manifest_with_failed_outc
     };
     let report = f.run(&plan, &hooks);
     assert!(!hooks.first.load(Ordering::SeqCst));
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.completed, 1);
     assert_eq!(report.records.len(), 1);
     assert!(
@@ -960,7 +965,7 @@ fn last_completed_history_write_failure_replaces_owned_manifest_with_failed_outc
     let disk: Report =
         serde_json::from_slice(&fs::read(report.progress.manifest.as_ref().unwrap()).unwrap())
             .unwrap();
-    assert_eq!(disk.progress.phase, "failed");
+    assert_eq!(disk.progress.phase, Phase::Failed);
     assert_eq!(disk.progress.job_id, report.progress.job_id);
     assert_eq!(disk.progress.completed, report.progress.completed);
     assert_eq!(disk.progress.errors, report.progress.errors);
@@ -998,11 +1003,11 @@ fn rejected_terminal_history_writes_leave_failed_manifest_and_recoverable_finali
         catalog: f.catalog.clone(),
     };
     let report = f.run(&plan, &hooks);
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.completed, 1);
     let manifest = report.progress.manifest.as_ref().unwrap();
     let disk: Report = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
-    assert_eq!(disk.progress.phase, "failed");
+    assert_eq!(disk.progress.phase, Phase::Failed);
     assert_eq!(disk.progress.errors, report.progress.errors);
     assert_eq!(disk.progress.completed, 1);
     assert_eq!(disk.records.len(), 1);
@@ -1035,7 +1040,7 @@ fn rejected_terminal_history_writes_leave_failed_manifest_and_recoverable_finali
         b"original video"
     );
     let after_restart: Report = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
-    assert_eq!(after_restart.progress.phase, "failed");
+    assert_eq!(after_restart.progress.phase, Phase::Failed);
 }
 
 #[cfg(unix)]
@@ -1045,7 +1050,7 @@ fn replaced_failed_manifest_path_is_never_adopted_or_deleted() {
     impl CopyHooks for ReplaceFailedManifest {
         fn before_manifest_verify(&self, path: &Path) -> Result<()> {
             let candidate: Report = serde_json::from_slice(&fs::read(path)?)?;
-            if candidate.progress.phase == "failed" {
+            if candidate.progress.phase == Phase::Failed {
                 fs::rename(path, path.with_extension("owned-moved"))?;
                 fs::write(path, b"foreign entry must remain")?;
             }
@@ -1064,7 +1069,7 @@ fn replaced_failed_manifest_path_is_never_adopted_or_deleted() {
     .unwrap();
     drop(db);
     let report = f.run(&plan, &ReplaceFailedManifest);
-    assert_eq!(report.progress.phase, "failed");
+    assert_eq!(report.progress.phase, Phase::Failed);
     assert_eq!(report.progress.completed, 1);
     assert!(report.progress.manifest.is_none());
     assert!(
@@ -1121,4 +1126,61 @@ fn every_reference_token_expands() {
                 .unwrap_or_else(|e| panic!("{token} (folder: {folder}): {e:#}"));
         }
     }
+}
+
+#[test]
+fn pause_and_resume_acknowledge_real_progress_and_the_phase_actually_resumed() {
+    let control = Control::default();
+    control.report(&Progress {
+        job_id: "job".into(),
+        phase: Phase::Verifying,
+        completed: 3,
+        total: 9,
+        bytes: 42,
+        ..Default::default()
+    });
+    control.pause();
+    let paused = control.snapshot();
+    assert_eq!(paused.phase, Phase::Paused);
+    assert_eq!(
+        (paused.job_id.as_str(), paused.completed, paused.total),
+        ("job", 3, 9)
+    );
+    assert_eq!(paused.bytes, 42);
+    control.resume();
+    let resumed = control.snapshot();
+    assert_eq!(resumed.phase, Phase::Verifying, "not hard-coded copying");
+    assert_eq!(resumed.completed, 3);
+    // A pause racing job completion reports the terminal outcome, never Paused.
+    control.pause();
+    control.report(&Progress {
+        job_id: "job".into(),
+        phase: Phase::Completed,
+        ..Default::default()
+    });
+    assert_eq!(control.snapshot().phase, Phase::Completed);
+    control.reset();
+    assert_eq!(control.snapshot().phase, Phase::Idle);
+}
+
+#[test]
+fn worker_pause_without_a_job_is_rejected_not_faked() {
+    use worker::{Command, Event, Worker};
+    let f = Fixture::new();
+    let (events, rx) = crossbeam_channel::unbounded();
+    let (changed, _) = crossbeam_channel::bounded(1);
+    let worker = Worker::start(f.catalog.clone(), events, changed);
+    worker.send(Command::Pause).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let event = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining).expect("ingest event timeout") {
+            crate::service::IoEvent::Ingest(event @ (Event::Error(_) | Event::Control(_))) => {
+                break event;
+            }
+            _ => {}
+        }
+    };
+    worker.stop().unwrap();
+    assert!(matches!(event, Event::Error(e) if e.contains("No active import")));
 }

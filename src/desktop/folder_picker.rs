@@ -37,8 +37,13 @@ pub(super) struct State {
     unreadable: usize,
     error: Option<String>,
     request: u64,
+    /// The address field's own caret, independent of any field beneath.
+    edit: text_input::Edit,
 }
 impl State {
+    pub(super) fn focused_edit(&mut self) -> Option<&mut text_input::Edit> {
+        self.address_focused.then_some(&mut self.edit)
+    }
     pub(super) fn snapshot(&self) -> Value {
         json!({"purpose":self.purpose.title(),"directory":self.directory,
             "address":self.address,"loading":self.loading,"error":self.error,
@@ -87,8 +92,11 @@ impl Workspace {
             unreadable: 0,
             error: None,
             request: 0,
+            edit: text_input::Edit::default(),
         });
-        self.text_edit.focus(&initial.to_string_lossy());
+        if let Some(state) = &mut self.folder_picker {
+            state.edit.focus(&state.address);
+        }
         self.picker_navigate(initial, cx);
         cx.notify();
     }
@@ -124,7 +132,7 @@ impl Workspace {
                         state.selected = None;
                         state.truncated = listing.truncated;
                         state.unreadable = listing.unreadable;
-                        this.text_edit.focus(&state.address);
+                        state.edit.focus(&state.address);
                     }
                     Err(error) => state.error = Some(format!("{error:#}")),
                 }
@@ -245,7 +253,7 @@ impl Workspace {
                             } => {
                                 this.status = "Exporting in background…".into();
                                 if let Err(error) = this.queue_export(path, picks, ids) {
-                                    this.error = Some(error);
+                                    this.error = Some(error.into());
                                 }
                             }
                             Purpose::Workspace { export: None, .. } => {
@@ -293,13 +301,13 @@ impl Workspace {
         let primary = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
         if primary && key == "l" {
             state.address_focused = true;
-            self.text_edit.focus(&state.address);
+            state.edit.focus(&state.address);
         } else if primary && key == "enter" {
             self.picker_action(Action::Choose, cx);
         } else if key == "tab" {
             state.address_focused = !state.address_focused;
             if state.address_focused {
-                self.text_edit.focus(&state.address);
+                state.edit.focus(&state.address);
             } else if !state.entries.is_empty() {
                 state.selected = Some(0);
             }
@@ -309,7 +317,7 @@ impl Workspace {
             if key == "enter" {
                 self.picker_action(Action::Go, cx);
             } else {
-                self.text_edit.key(&mut state.address, event, cx);
+                state.edit.key(&mut state.address, event, cx);
             }
         } else {
             match key {
@@ -449,9 +457,11 @@ impl Workspace {
                             } else {
                                 self.border()
                             })
-                            .child(self.input_text(
+                            .child(self.input_field(
+                                &state.edit,
                                 &state.address,
                                 "Folder path",
+                                state.address_focused,
                                 state.address_focused,
                             ))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -459,7 +469,7 @@ impl Workspace {
                                 window.focus(&this.focus);
                                 if let Some(state) = this.folder_picker.as_mut() {
                                     state.address_focused = true;
-                                    this.text_edit.focus(&state.address);
+                                    state.edit.focus(&state.address);
                                 }
                                 cx.notify();
                             })),

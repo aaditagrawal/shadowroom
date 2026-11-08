@@ -154,7 +154,7 @@ impl Workspace {
         position: Point<Pixels>,
         cx: &mut gpui::Context<Self>,
     ) {
-        if self.other_overlay_open() || self.quitting || self.recovery_pending {
+        if self.other_overlay_open() || self.quit.closing() || self.recovery_pending {
             return;
         }
         let Some(visible) = self.visible_position(id) else {
@@ -201,7 +201,7 @@ impl Workspace {
                     .map(|&i| &self.photos[i])
                 {
                     if let Err(error) = photo.require_local("Show in folder") {
-                        self.error = Some(error.to_string());
+                        self.error = Some(error.to_string().into());
                     } else {
                         cx.reveal_path(&photo.path);
                     }
@@ -231,6 +231,15 @@ impl Workspace {
                 }
                 self.execute(Cmd::View(ViewMode::Compare), window, cx);
             }
+            ImageAction::Pick
+            | ImageAction::Reject
+            | ImageAction::Reset
+            | ImageAction::Trash
+            | ImageAction::PermanentDelete
+                if !self.target_context_photo(menu.photo_id) =>
+            {
+                self.status = "That photograph is no longer in this view".into();
+            }
             ImageAction::Pick => self.execute(Cmd::Flag(Flag::Pick), window, cx),
             ImageAction::Reject => self.execute(Cmd::Flag(Flag::Reject), window, cx),
             ImageAction::Reset => self.execute(Cmd::ResetDecision, window, cx),
@@ -238,6 +247,35 @@ impl Workspace {
             ImageAction::PermanentDelete => self.execute(Cmd::PermanentDelete, window, cx),
         }
         cx.notify();
+    }
+
+    /// Decision actions act on the review target or the batch selection.
+    /// The catalog may rebuild while the menu is open (writes, imports,
+    /// filters), so re-aim at the clicked photo first; false when it left
+    /// the view.
+    fn target_context_photo(&mut self, id: i64) -> bool {
+        if self.mode == ViewMode::Grid && self.multi.contains(&id) {
+            return true;
+        }
+        if self.review_photo().map(|p| p.id) == Some(id) {
+            return true;
+        }
+        if self.mode == ViewMode::Compare && self.reference == Some(id) {
+            self.multi.clear();
+            self.reference_focus = true;
+            return self.review_photo().is_some();
+        }
+        let Some(position) = self.visible_position(id) else {
+            return false;
+        };
+        self.multi.clear();
+        if self.mode == ViewMode::Grid {
+            self.multi.insert(id);
+        }
+        self.selected = position;
+        self.reference_focus = false;
+        self.selection_anchor = Some(id);
+        true
     }
 
     pub(super) fn image_context_key(

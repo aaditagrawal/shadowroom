@@ -23,11 +23,58 @@ const MAX_ERRORS: usize = 64;
 const MAX_GROUPS: usize = 1000;
 const MAX_RESULT_IDS: usize = 10_000;
 
+/// Lifecycle of one duplicate scan, as seen by the UI.
+///
+/// `Queued ─▶ Running ─▶ Completed | Cancelled | Failed`, and a `Completed` result
+/// becomes `Stale` when any scanned photo's source identity changes. Serialized
+/// as the lowercase strings the automation API has always reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanPhase {
+    #[default]
+    Queued,
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+    Stale,
+}
+impl ScanPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Stale => "stale",
+        }
+    }
+    /// A scan owns the duplicate worker; another may not start.
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+}
+impl std::fmt::Display for ScanPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+/// Progress within a running scan: size buckets, then sampled hashes, then full reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanStage {
+    #[default]
+    Sizing,
+    Sampling,
+    Verifying,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DuplicateScanState {
     pub id: u64,
-    pub phase: String,
-    pub stage: String,
+    pub phase: ScanPhase,
+    pub stage: ScanStage,
     pub total: usize,
     pub candidates: usize,
     pub processed: usize,
@@ -67,8 +114,8 @@ impl DuplicateJob {
             .spawn(move || {
                 let mut state = DuplicateScanState {
                     id,
-                    phase: "running".into(),
-                    stage: "sizing".into(),
+                    phase: ScanPhase::Running,
+                    stage: ScanStage::Sizing,
                     ..Default::default()
                 };
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -79,19 +126,18 @@ impl DuplicateJob {
                 match outcome {
                     Ok(Ok(())) => {
                         state.phase = if stop.load(Ordering::Acquire) {
-                            "cancelled"
+                            ScanPhase::Cancelled
                         } else {
-                            "completed"
-                        }
-                        .into();
+                            ScanPhase::Completed
+                        };
                     }
                     Ok(Err(error)) => {
                         state.error(format!("Duplicate scan: {error:#}"));
-                        state.phase = "failed".into();
+                        state.phase = ScanPhase::Failed;
                     }
                     Err(_) => {
                         state.error("Duplicate scan worker panicked");
-                        state.phase = "failed".into();
+                        state.phase = ScanPhase::Failed;
                     }
                 }
                 *output.lock().unwrap_or_else(|p| p.into_inner()) = Some(state);
@@ -464,7 +510,7 @@ fn scan(
     buckets.sort_unstable_by_key(|(key, _)| *key);
     let candidates: Vec<_> = buckets.into_iter().flat_map(|(_, values)| values).collect();
     state.candidates = candidates.len();
-    state.stage = "sampling".into();
+    state.stage = ScanStage::Sampling;
     progress(state);
     let mut samples = BTreeMap::<Vec<String>, Vec<Candidate>>::new();
     for candidate in candidates {
@@ -512,7 +558,7 @@ fn scan(
         }
         thread::yield_now();
     }
-    state.stage = "verifying".into();
+    state.stage = ScanStage::Verifying;
     progress(state);
     let mut verified = BTreeMap::<Vec<String>, Vec<Candidate>>::new();
     let mut buffer = vec![0u8; CHUNK];
@@ -1035,7 +1081,7 @@ mod tests {
         let output = job.updates.clone();
         job.join().unwrap();
         let result = output.lock().unwrap().take().unwrap();
-        assert_eq!(result.phase, "failed");
+        assert_eq!(result.phase, ScanPhase::Failed);
         assert!(result.groups.is_empty());
         assert_eq!(result.bytes_read, 0);
         assert!(
@@ -1069,7 +1115,7 @@ mod tests {
             &AtomicBool::new(false),
             &mut state,
             |state| {
-                if state.stage == "verifying" && !promoted {
+                if state.stage == ScanStage::Verifying && !promoted {
                     catalog
                         .upsert_photos(&[Photo {
                             path: raw.clone(),

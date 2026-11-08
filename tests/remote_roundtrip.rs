@@ -554,6 +554,8 @@ fn bounded_streams_deliver_more_than_mailbox_capacity_and_kind_sizes() {
     assert!(thumb.width.max(thumb.height) <= 384);
     let mut other = AgentOptions::new(state);
     other.discover_drives = false;
+    // Only the rejection matters here, not the restart grace period.
+    other.state_lock_wait = Duration::ZERO;
     assert!(Agent::new(other).is_err());
 }
 

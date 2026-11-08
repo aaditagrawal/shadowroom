@@ -14,6 +14,28 @@ enum ImportPanel {
 
 const IMPORT_RESIZE_HANDLE: f32 = space::SM;
 
+/// Source scan lifecycle of the Import view.
+///
+/// ```text
+/// Idle ─request─▶ Scanning ─Scanned─▶ Ready
+///                    │  ▲
+///   enqueue/worker   │  └─request (rescan)
+///   error            ▼
+///                  Failed
+/// ```
+///
+/// Every path out of `Scanning` is explicit: a scan that could not be queued, or
+/// that the worker rejected or aborted, ends in `Failed` instead of leaving the
+/// view (and plan/start gating) stuck on "scanning" forever.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ScanState {
+    #[default]
+    Idle,
+    Scanning,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum IngestMenu {
     Preset,
@@ -78,7 +100,7 @@ impl ImportLayout {
 
 pub(super) struct ImportUi {
     pub open: bool,
-    pub scanning: bool,
+    scan_state: ScanState,
     pub scan: Option<Arc<Scan>>,
     pub items: Vec<IngestGroup>,
     pub selected: HashSet<usize>,
@@ -142,7 +164,7 @@ impl ImportUi {
         ];
         Self {
             open: false,
-            scanning: false,
+            scan_state: ScanState::Idle,
             scan: None,
             items: Vec::new(),
             selected: HashSet::new(),
@@ -413,8 +435,37 @@ impl ImportUi {
         self.options.clone()
     }
     pub fn active(&self) -> bool {
-        ["queued", "copying", "verifying", "paused", "indexing"]
-            .contains(&self.progress.phase.as_str())
+        self.progress.phase.is_active()
+    }
+    pub fn scanning(&self) -> bool {
+        self.scan_state == ScanState::Scanning
+    }
+    /// Opens the view on `path`. Returns whether a scan should be queued: while an
+    /// import job owns the worker the scan would be rejected, so the current
+    /// source and items stay as they are and the reason is shown instead.
+    fn request_scan(&mut self, path: PathBuf) -> bool {
+        self.open = true;
+        self.panel = ImportPanel::Photos;
+        self.active_field = None;
+        self.resizing = None;
+        self.show_history = false;
+        if self.active() {
+            self.error =
+                Some("An import is running; wait or cancel before scanning another source".into());
+            return false;
+        }
+        self.error = None;
+        self.scan_state = ScanState::Scanning;
+        self.source = path;
+        self.plan = None;
+        true
+    }
+    /// The scan never started (queue full or worker unavailable) or was aborted.
+    fn scan_failed(&mut self, error: String) {
+        if self.scan_state == ScanState::Scanning {
+            self.scan_state = ScanState::Failed;
+        }
+        self.error = Some(error);
     }
 }
 impl Workspace {
@@ -465,17 +516,8 @@ impl Workspace {
     }
 
     pub(super) fn open_ingest(&mut self, path: PathBuf) {
-        self.import_ui.open = true;
-        self.import_ui.panel = ImportPanel::Photos;
-        self.import_ui.active_field = None;
-        self.import_ui.resizing = None;
-        self.import_ui.show_history = false;
-        self.import_ui.error = None;
-        self.import_ui.scanning = true;
-        self.import_ui.source = path.clone();
-        self.import_ui.plan = None;
-        self.enqueue(
-            if self
+        if self.import_ui.request_scan(path.clone()) {
+            let command = if self
                 .drives
                 .iter()
                 .any(|drive| drive.removable && drive.path == path)
@@ -483,8 +525,12 @@ impl Workspace {
                 IoCommand::IngestScanCard(path)
             } else {
                 IoCommand::IngestScan(path)
-            },
-        );
+            };
+            if !self.enqueue(command) {
+                self.import_ui
+                    .scan_failed("The scan could not be queued; try again".into());
+            }
+        }
         self.palette_revision = self.palette_revision.wrapping_add(1);
     }
     pub(super) fn ingest_event(&mut self, event: Event) {
@@ -494,7 +540,7 @@ impl Workspace {
                 self.import_ui.scan = None;
                 self.import_ui.plan = None;
                 self.import_ui.source = path;
-                self.import_ui.scanning = true;
+                self.import_ui.scan_state = ScanState::Scanning;
                 self.import_ui.error = None;
             }
             Event::Batch(groups) => {
@@ -512,7 +558,7 @@ impl Workspace {
                 self.import_ui.timeline_counts();
                 self.import_ui.source = scan.source.clone();
                 self.import_ui.scan = Some(scan);
-                self.import_ui.scanning = false;
+                self.import_ui.scan_state = ScanState::Ready;
                 self.import_ui.changed();
             }
             Event::Plan(plan) => {
@@ -523,28 +569,43 @@ impl Workspace {
                     self.import_ui.plan = Some(plan);
                 }
             }
+            Event::Control(progress) => {
+                // A pause/resume acknowledgement that arrives after the job ended (or
+                // for another job) must not resurrect it; terminal phases come from
+                // the job's own Progress event.
+                let same_job = self.import_ui.progress.job_id.is_empty()
+                    || progress.job_id.is_empty()
+                    || self.import_ui.progress.job_id == progress.job_id;
+                if self.import_ui.active() && progress.phase.is_active() && same_job {
+                    if progress.job_id.is_empty() {
+                        self.import_ui.progress.phase = progress.phase;
+                    } else {
+                        self.import_ui.progress = progress;
+                    }
+                }
+            }
             Event::Progress(mut progress) => {
                 if progress.job_id.is_empty() {
                     self.import_ui.progress.phase = progress.phase;
                 } else {
-                    if self.import_ui.progress.phase == "paused"
-                        && ["copying", "verifying"].contains(&progress.phase.as_str())
+                    if self.import_ui.progress.phase == Phase::Paused
+                        && progress.phase.is_transferring()
                     {
-                        progress.phase = "paused".into();
+                        progress.phase = Phase::Paused;
                     }
                     self.import_ui.progress = progress;
                 }
                 let p = &self.import_ui.progress;
-                if p.phase == "failed" {
+                if p.phase == Phase::Failed {
                     let error = if p.errors.is_empty() {
                         "Import failed; inspect import history for committed groups".to_string()
                     } else {
                         p.errors.join("; ")
                     };
                     self.import_ui.error = Some(error.clone());
-                    self.error = Some(format!("Import: {error}"));
+                    self.error = Some(format!("Import: {error}").into());
                 }
-                self.status = if p.phase == "completed" {
+                self.status = if p.phase == Phase::Completed {
                     format!(
                         "Imported {}{} · all destinations verified",
                         plural(p.photos, "photo", "photos"),
@@ -564,7 +625,7 @@ impl Workspace {
                         p.eta_seconds.unwrap_or(0)
                     )
                 };
-                if p.phase == "completed" {
+                if p.phase == Phase::Completed {
                     if self.settings.eject_after_ingest {
                         self.enqueue(IoCommand::Eject(self.import_ui.source.clone()));
                     }
@@ -610,21 +671,20 @@ impl Workspace {
             }
             Event::Ejected(path) => self.status = format!("Ejected {}", path.display()),
             Event::Error(error) => {
-                self.import_ui.scanning = false;
-                if self.import_ui.progress.phase == "queued" {
-                    self.import_ui.progress.phase = "failed".into();
+                if self.import_ui.progress.phase == Phase::Queued {
+                    self.import_ui.progress.phase = Phase::Failed;
                 }
-                self.import_ui.error = Some(error.clone());
-                self.error = Some(format!("Import: {error}"));
+                self.error = Some(format!("Import: {error}").into());
+                self.import_ui.scan_failed(error);
             }
         }
         self.palette_revision = self.palette_revision.wrapping_add(1);
     }
     pub(super) fn ingest_tick(&mut self) {
         if self.outbox.is_empty()
-            && self.pending_saves == 0
+            && self.awaiting == 0
             && self.unsaved.is_empty()
-            && !self.import_ui.scanning
+            && !self.import_ui.scanning()
             && !self.import_ui.active()
             && self
                 .import_ui
@@ -666,13 +726,19 @@ impl Workspace {
                 self.open_ingest(PathBuf::from(
                     params["path"].as_str().ok_or("path required")?,
                 ));
-                self.import_ui.scanning = true;
+                if !self.import_ui.scanning() {
+                    return Err(self
+                        .import_ui
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "Scan was not queued".into()));
+                }
             }
             "ingest_plan" => {
-                if !self.unsaved.is_empty() || self.pending_saves > 0 || !self.outbox.is_empty() {
+                if !self.unsaved.is_empty() || self.awaiting > 0 || !self.outbox.is_empty() {
                     return Err("Wait for cull decisions to finish saving before planning".into());
                 }
-                if self.import_ui.scanning {
+                if self.import_ui.scanning() {
                     return Err("Wait for the scan to finish".into());
                 }
                 let mut value = serde_json::to_value(IngestOptions::from_settings(&self.settings))
@@ -704,7 +770,7 @@ impl Workspace {
                 }
             }
             "ingest_start" => {
-                if !self.unsaved.is_empty() || self.pending_saves > 0 || !self.outbox.is_empty() {
+                if !self.unsaved.is_empty() || self.awaiting > 0 || !self.outbox.is_empty() {
                     return Err("Wait for cull decisions to finish saving before importing".into());
                 }
                 if self.import_ui.active() {
@@ -719,11 +785,11 @@ impl Workspace {
                     return Err("A valid nonempty import plan is required".into());
                 }
                 self.import_ui.progress = Progress {
-                    phase: "queued".into(),
+                    phase: Phase::Queued,
                     ..Default::default()
                 };
                 if !self.enqueue(IoCommand::IngestStart) {
-                    self.import_ui.progress.phase = "failed".into();
+                    self.import_ui.progress.phase = Phase::Failed;
                     return Err("Import was not queued".into());
                 }
             }
@@ -736,7 +802,7 @@ impl Workspace {
                 let items: Vec<_> = self.import_ui.items.iter().skip(start).take(limit).map(|g| json!({"id":g.id,"path":g.primary.path,"filename":g.photo.filename,"kind":g.kind,"size":g.bytes(),"capture_ms":g.capture_ms,"capture_kind":g.capture_kind,"selected":self.import_ui.selected.contains(&g.id),"seen":g.seen,"warning":g.warning,"companion":g.companion,"sidecars":g.sidecars})).collect();
                 let plan = self.import_ui.plan.as_ref().map(|s| json!({"ready":s.ready,"error":s.error,"photos":s.plan.photos,"videos":s.plan.videos,"files":s.plan.files,"bytes":s.plan.bytes,"example":s.plan.example,"space":s.space,"options":s.plan.options,"examples":s.plan.groups.iter().take(5).map(|g| &g.files).collect::<Vec<_>>()}));
                 return Ok(
-                    json!({"scanning":self.import_ui.scanning,"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock)}),
+                    json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock)}),
                 );
             }
             "ingest_cancel" => {
@@ -957,11 +1023,11 @@ impl Workspace {
             }
             "start" => {
                 if let Err(error) = self.ingest_api("ingest_start", &json!({})) {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                 }
             }
             "pause" => {
-                self.enqueue(if self.import_ui.progress.phase == "paused" {
+                self.enqueue(if self.import_ui.progress.phase == Phase::Paused {
                     IoCommand::IngestResume
                 } else {
                     IoCommand::IngestPause
@@ -2293,7 +2359,7 @@ impl Workspace {
         let short = self.center_size.1 < 360.;
         let source_label = format!(
             "Import from {title}{}",
-            if self.import_ui.scanning {
+            if self.import_ui.scanning() {
                 " · scanning…"
             } else {
                 ""
@@ -2416,7 +2482,7 @@ impl Workspace {
                 self.import_ui.progress.completed,
                 self.import_ui.progress.total
             )
-        } else if self.import_ui.scanning {
+        } else if self.import_ui.scanning() {
             "Scanning…".into()
         } else if self.import_ui.error.is_some() {
             "Import needs attention".into()
@@ -2445,7 +2511,7 @@ impl Workspace {
             actions = actions
                 .child(self.button(
                     "ingest-pause",
-                    if self.import_ui.progress.phase == "paused" {
+                    if self.import_ui.progress.phase == Phase::Paused {
                         "Resume"
                     } else {
                         "Pause"
@@ -2799,6 +2865,30 @@ mod responsive_tests {
         state.timeline = ingest::timeline(&scan, 60);
         state.timeline_counts();
         state
+    }
+
+    #[test]
+    fn scan_requests_always_leave_scanning_and_never_replace_a_running_job_source() {
+        use super::{Phase, ScanState};
+        use std::path::PathBuf;
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        assert!(state.request_scan(PathBuf::from("/card")));
+        assert!(state.scanning());
+        // Queue full / worker error: the view must not stay "scanning" forever.
+        state.scan_failed("queue full".into());
+        assert!(!state.scanning());
+        assert_eq!(state.scan_state, ScanState::Failed);
+        assert!(state.request_scan(PathBuf::from("/card")));
+        assert!(state.scanning());
+        state.scan_state = ScanState::Ready;
+        state.progress.phase = Phase::Copying;
+        assert!(!state.request_scan(PathBuf::from("/other")));
+        assert_eq!(state.source, PathBuf::from("/card"));
+        assert!(!state.scanning());
+        assert!(state.error.is_some());
+        // An unrelated worker error after a finished scan keeps the scan usable.
+        state.scan_failed("eject failed".into());
+        assert_eq!(state.scan_state, ScanState::Ready);
     }
 
     #[test]
