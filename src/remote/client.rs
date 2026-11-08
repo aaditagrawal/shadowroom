@@ -1121,7 +1121,7 @@ impl RemoteHost {
             match pending.recv()?.header.message {
                 Response::Photo(p) => record(p),
                 Response::Deleted { relative_path } => deleted(relative_path),
-                Response::Synced { revision } => return Ok(revision),
+                Response::Synced { revision, .. } => return Ok(revision),
                 _ => bail!("Unexpected photos response"),
             }
         }

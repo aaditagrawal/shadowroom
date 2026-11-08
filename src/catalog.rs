@@ -45,8 +45,11 @@ impl Drop for StageToken {
 }
 /// How [`Catalog::publish_remote_sync`] publishes a staged batch.
 #[derive(Clone, Copy, Debug)]
-pub struct RemotePublish {
+pub struct RemotePublish<'a> {
     pub revision: u64,
+    /// The agent's revision-history identity, stored with the cursor. None
+    /// (older agent) keeps the stored identity.
+    pub history: Option<&'a str>,
     /// Since revision zero: records not restaged become unavailable.
     pub full: bool,
     /// Rows the caller staged (sum of `stage_remote` results), verified.
@@ -114,6 +117,14 @@ impl Catalog {
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS remote_cursors(device TEXT,root TEXT,revision INTEGER NOT NULL,PRIMARY KEY(device,root));
             CREATE TABLE IF NOT EXISTS remote_stage(token TEXT,path TEXT,data TEXT,PRIMARY KEY(token,path));")?;
+        // Nullable and ignored by older versions, which update only revision.
+        let cursor_columns = connection
+            .prepare("PRAGMA table_info(remote_cursors)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !cursor_columns.iter().any(|c| c == "history") {
+            connection.execute_batch("ALTER TABLE remote_cursors ADD COLUMN history TEXT;")?;
+        }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS exact_hashes(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,sample TEXT NOT NULL,full_hash TEXT);")?;
         crate::ingest::store::migrate(&connection)?;
         Ok(Self {
@@ -456,18 +467,23 @@ impl Catalog {
         Ok(photos.len())
     }
     pub fn remote_revision(&self, device: &str, root: &str) -> Result<u64> {
+        Ok(self.remote_cursor(device, root)?.0)
+    }
+    /// The stored sync cursor and the agent revision-history identity it
+    /// belongs to (None: never synced, or synced with an older agent).
+    pub fn remote_cursor(&self, device: &str, root: &str) -> Result<(u64, Option<String>)> {
         let conn = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         Ok(conn
             .query_row(
-                "SELECT revision FROM remote_cursors WHERE device=?1 AND root=?2",
+                "SELECT revision,history FROM remote_cursors WHERE device=?1 AND root=?2",
                 params![device, root],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
-            .unwrap_or(0))
+            .unwrap_or((0, None)))
     }
     /// Staging is durable and bounded by batches, but invisible until terminal sync.
     pub fn stage_remote(
@@ -618,6 +634,7 @@ impl Catalog {
             root,
             &RemotePublish {
                 revision,
+                history: None,
                 full,
                 staged_rows: None,
             },
@@ -638,6 +655,7 @@ impl Catalog {
     ) -> Result<()> {
         let RemotePublish {
             revision,
+            history,
             full,
             staged_rows,
         } = *publish;
@@ -673,7 +691,7 @@ impl Catalog {
                 AND (photos.data->'$.companion_modified_at') IS (excluded.data->'$.companion_modified_at')
               THEN json_set(excluded.data,'$.dhash',json(photos.data->'$.dhash'))
               ELSE excluded.data END", params![token,device,root])?;
-        tx.execute("INSERT INTO remote_cursors(device,root,revision) VALUES(?1,?2,?3) ON CONFLICT(device,root) DO UPDATE SET revision=excluded.revision", params![device,root,revision])?;
+        tx.execute("INSERT INTO remote_cursors(device,root,revision,history) VALUES(?1,?2,?3,?4) ON CONFLICT(device,root) DO UPDATE SET revision=excluded.revision,history=COALESCE(excluded.history,remote_cursors.history)", params![device,root,revision,history])?;
         tx.execute("DELETE FROM remote_stage WHERE token=?1", [token])?;
         tx.commit()?;
         Ok(())
@@ -2690,6 +2708,7 @@ mod tests {
             .unwrap();
         let publish = RemotePublish {
             revision: 5,
+            history: None,
             full: true,
             staged_rows: Some(rows),
         };

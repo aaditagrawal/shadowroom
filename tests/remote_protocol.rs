@@ -94,6 +94,35 @@ fn existing_request_spellings_are_unchanged_and_flow_control_is_additive() {
         .unwrap(),
         r#"{"type":"credit","request_id":9,"frames":128}"#
     );
+    // Synced keeps its old spelling without a history identity, and older
+    // agents' frames decode as "unknown history".
+    let legacy = Response::Synced {
+        revision: 3,
+        history: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&legacy).unwrap(),
+        r#"{"type":"synced","revision":3}"#
+    );
+    assert!(matches!(
+        serde_json::from_str::<Response>(r#"{"type":"synced","revision":3}"#).unwrap(),
+        Response::Synced {
+            revision: 3,
+            history: None
+        }
+    ));
+    let current: Response =
+        serde_json::from_str(r#"{"type":"synced","revision":3,"history":"h"}"#).unwrap();
+    assert!(matches!(current, Response::Synced { history: Some(h), .. } if h == "h"));
+    // An older client's definition ignores the new field.
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum OldResponse {
+        Synced { revision: u64 },
+    }
+    let OldResponse::Synced { revision } =
+        serde_json::from_str(r#"{"type":"synced","revision":3,"history":"h"}"#).unwrap();
+    assert_eq!(revision, 3);
     let mut wire = Vec::new();
     write_frame(
         &mut wire,

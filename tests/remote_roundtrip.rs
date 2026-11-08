@@ -1446,7 +1446,15 @@ fn legacy_agent_stream_spills_for_a_slow_consumer_without_blocking_others() {
                     }
                     write_frame(
                         &mut out,
-                        &Frame::new(id, true, Response::Synced { revision: 1 }, vec![]),
+                        &Frame::new(
+                            id,
+                            true,
+                            Response::Synced {
+                                revision: 1,
+                                history: None,
+                            },
+                            vec![],
+                        ),
                     )
                     .unwrap();
                     written_tx.send(()).unwrap();

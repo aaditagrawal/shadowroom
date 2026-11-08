@@ -824,6 +824,8 @@ fn run_host(
         let _ = events.send(IoEvent::Error(format!("Save remote host state: {e:#}")));
     }
 }
+/// The agent reports a different revision history than our cursor's.
+const HISTORY_CHANGED: &str = "Remote revision history changed";
 /// Overall deadline of one metadata sync stream.
 const SYNC_DEADLINE: Duration = Duration::from_secs(3600);
 /// Staging rows older than this belong to no live sync (see SYNC_DEADLINE).
@@ -848,7 +850,12 @@ fn sync_root(
         // its device id: our cursor is from its previous history. An
         // incremental sync can never succeed again, so resynchronize fully;
         // the full publish also retires records the agent no longer reports.
-        Err(error) if !full && format!("{error:#}").contains("Revision ahead of agent") => {
+        Err(error)
+            if !full && {
+                let error = format!("{error:#}");
+                error.contains("Revision ahead of agent") || error.contains(HISTORY_CHANGED)
+            } =>
+        {
             sync_root_once(catalog, host, device, root, true, epoch, cancel, stop)
         }
         result => result,
@@ -865,10 +872,10 @@ fn sync_root_once(
     cancel: &AtomicU64,
     stop: &AtomicBool,
 ) -> Result<u64> {
-    let since = if full {
-        0
+    let (since, stored_history) = if full {
+        (0, None)
     } else {
-        catalog.remote_revision(device, root)?
+        catalog.remote_cursor(device, root)?
     };
     // A sync killed mid-stream (crash, power loss) cannot discard its own
     // staging rows; retire such batches once they are far older than any
@@ -896,7 +903,17 @@ fn sync_root_once(
             {
                 Response::Photo(p) => records.push(p),
                 Response::Deleted { relative_path } => deleted.push(relative_path),
-                Response::Synced { revision } => {
+                Response::Synced { revision, history } => {
+                    // Our cursor belongs to an earlier history of this agent
+                    // root: records since it are meaningless. Known on both
+                    // sides only; an older agent never forces a resync.
+                    ensure!(
+                        since == 0
+                            || stored_history.is_none()
+                            || history.is_none()
+                            || stored_history == history,
+                        "{HISTORY_CHANGED}"
+                    );
                     staged += catalog.stage_remote(&token, device, root, &records, &deleted)?;
                     catalog.publish_remote_sync(
                         &token,
@@ -904,6 +921,7 @@ fn sync_root_once(
                         root,
                         &RemotePublish {
                             revision,
+                            history: history.as_deref(),
                             full: since == 0,
                             staged_rows: Some(staged),
                         },
@@ -1180,7 +1198,10 @@ mod tests {
                             &Frame::new(id, false, Response::Photo(record("kept.jpg", 2)), vec![]),
                         )
                         .unwrap();
-                        Response::Synced { revision: 2 }
+                        Response::Synced {
+                            revision: 2,
+                            history: None,
+                        }
                     }
                     Request::Cancel { .. } => continue,
                     other => panic!("unexpected {other:?}"),
@@ -1229,5 +1250,152 @@ mod tests {
         host.disconnect();
         let _ = socket.shutdown(std::net::Shutdown::Both);
         assert_eq!(worker.join().unwrap(), [40, 0]);
+    }
+
+    /// Syncs against an agent whose root history is `agent_history`, after a
+    /// previous sync stored cursor 5 with `stored_history`. The agent's new
+    /// history has passed the old cursor (revision 9). Returns the requested
+    /// `since` revisions and the photo availability afterwards.
+    fn sync_after_history(
+        stored_history: Option<&str>,
+        agent_history: Option<&str>,
+    ) -> (Vec<u64>, Vec<(String, bool)>, Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&dir.path().join("db")).unwrap();
+        let record = |path: &str| PhotoRecord {
+            key: PhotoKey {
+                root_id: "root".into(),
+                volume_id: "volume".into(),
+                relative_path: path.into(),
+                size_bytes: 1,
+                modified_at: 1,
+                companion_path: None,
+                companion_size_bytes: 0,
+                companion_modified_at: 0,
+            },
+            metadata: crate::model::Photo::default(),
+            revision: 9,
+        };
+        catalog
+            .stage_remote("old", "device", "root", &[record("gone.jpg")], &[])
+            .unwrap();
+        catalog
+            .publish_remote_sync(
+                "old",
+                "device",
+                "root",
+                &RemotePublish {
+                    revision: 5,
+                    history: stored_history,
+                    full: true,
+                    staged_rows: None,
+                },
+            )
+            .unwrap();
+        let agent_history = agent_history.map(str::to_owned);
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let socket = client.try_clone().unwrap();
+        let worker = thread::spawn(move || {
+            let mut sinces = Vec::new();
+            while let Some(frame) = read_frame::<Request>(&mut server).unwrap() {
+                let id = frame.header.id;
+                let response = match frame.header.message {
+                    Request::Hello { .. } => Response::Hello(Hello {
+                        protocol_version: PROTOCOL_VERSION,
+                        app_version: "test".into(),
+                        device_id: "device".into(),
+                        hostname: "test".into(),
+                        os: "test".into(),
+                        arch: "test".into(),
+                        capabilities: vec![],
+                    }),
+                    Request::Photos { since_revision, .. } => {
+                        sinces.push(since_revision);
+                        // The new history: one file changed after "5"; a full
+                        // listing is that file alone.
+                        write_frame(
+                            &mut server,
+                            &Frame::new(id, false, Response::Photo(record("kept.jpg")), vec![]),
+                        )
+                        .unwrap();
+                        Response::Synced {
+                            revision: 9,
+                            history: agent_history.clone(),
+                        }
+                    }
+                    Request::Cancel { .. } => continue,
+                    other => panic!("unexpected {other:?}"),
+                };
+                write_frame(&mut server, &Frame::new(id, true, response, vec![])).unwrap();
+            }
+            sinces
+        });
+        let host = RemoteHost::from_io(
+            client.try_clone().unwrap(),
+            client,
+            dir.path().join("wire"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let revision = sync_root(
+            &catalog,
+            &host,
+            "device",
+            "root",
+            false,
+            0,
+            &AtomicU64::new(0),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(revision, 9);
+        let mut photos: Vec<_> = catalog
+            .photos()
+            .unwrap()
+            .into_iter()
+            .map(|p| match p.source {
+                crate::model::PhotoSource::Remote(source) => (
+                    source.relative_path.to_string_lossy().into_owned(),
+                    source.available,
+                ),
+                _ => panic!("remote photo expected"),
+            })
+            .collect();
+        photos.sort();
+        let (stored_revision, stored) = catalog.remote_cursor("device", "root").unwrap();
+        assert_eq!(stored_revision, 9);
+        host.disconnect();
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+        (worker.join().unwrap(), photos, stored)
+    }
+
+    #[test]
+    fn changed_agent_history_past_the_old_cursor_forces_a_full_resync() {
+        let (sinces, photos, stored) = sync_after_history(Some("a"), Some("b"));
+        assert_eq!(sinces, [5, 0]);
+        assert_eq!(
+            photos,
+            [("gone.jpg".into(), false), ("kept.jpg".into(), true)]
+        );
+        assert_eq!(stored.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn unknown_or_unchanged_history_never_forces_a_full_resync() {
+        for (stored, agent, kept) in [
+            (Some("a"), Some("a"), Some("a")),
+            // Older agent: no identity; the stored one is kept.
+            (Some("a"), None, Some("a")),
+            // Cursor from an older client or agent: adopt the identity.
+            (None, Some("b"), Some("b")),
+        ] {
+            let (sinces, photos, history) = sync_after_history(stored, agent);
+            assert_eq!(sinces, [5], "{stored:?} {agent:?}");
+            assert_eq!(
+                photos,
+                [("gone.jpg".into(), true), ("kept.jpg".into(), true)]
+            );
+            assert_eq!(history.as_deref(), kept);
+        }
     }
 }

@@ -51,6 +51,10 @@ struct Manifest {
     revision: u64,
     records: BTreeMap<PathBuf, PhotoRecord>,
     deleted: BTreeMap<PathBuf, u64>,
+    /// Identity of this revision history, reported in `Synced`. Created with
+    /// the manifest; manifests written by older agents gain one on load.
+    #[serde(default)]
+    history: Option<String>,
 }
 struct Root {
     info: RemoteRoot,
@@ -285,6 +289,13 @@ impl Agent {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::default(),
                 Err(e) => return Err(e.into()),
             };
+            let mut manifest: Manifest = manifest;
+            if manifest.history.is_none() {
+                // Persist at once: an identity that changed on every restart
+                // would force needless full resyncs.
+                manifest.history = Some(format!("{:032x}", rand::random::<u128>()));
+                atomic_write(&manifest_path, &serde_json::to_vec(&manifest)?)?;
+            }
             roots.push(Root {
                 info,
                 catalog: Catalog::open(&state_dir.join(format!("{id}.sqlite")))?,
@@ -637,13 +648,13 @@ impl State {
                 since_revision,
             } => {
                 let root = self.root(root)?;
-                let revision = {
+                let (revision, history) = {
                     let manifest = root.manifest.lock().unwrap();
                     ensure!(
                         *since_revision <= manifest.revision,
                         "Revision ahead of agent; reset since_revision to zero"
                     );
-                    manifest.revision
+                    (manifest.revision, manifest.history.clone())
                 };
                 // Stream in bounded chunks, releasing the lock between them.
                 // A refresh between chunks is safe: each path is sent in some
@@ -677,7 +688,7 @@ impl State {
                         send(writer, id, false, tombstone, vec![])?;
                     }
                 }
-                Response::Synced { revision }
+                Response::Synced { revision, history }
             }
             Request::Index { root } => {
                 let root = self.root(root)?;
@@ -1129,6 +1140,7 @@ impl Root {
             revision: manifest.revision,
             records: BTreeMap::new(),
             deleted: manifest.deleted.clone(),
+            history: manifest.history.clone(),
         };
         let revision = manifest
             .revision
@@ -1554,7 +1566,7 @@ mod tests {
                 match frame.header.message {
                     Response::Photo(p) => photos.push(p.key.relative_path),
                     Response::Deleted { relative_path } => deleted.push(relative_path),
-                    Response::Synced { revision } => synced = Some(revision),
+                    Response::Synced { revision, .. } => synced = Some(revision),
                     other => panic!("unexpected {other:?}"),
                 }
             }
@@ -1603,6 +1615,61 @@ mod tests {
         let error = abandoned.acquire().unwrap_err();
         assert!(error.to_string().contains("credit"), "{error:#}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn revision_history_identity_is_stable_until_the_manifest_is_lost() {
+        let temp = tempfile::tempdir().unwrap();
+        let photos = temp.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        let open = || {
+            let mut options = AgentOptions::new(temp.path().join("state"));
+            options.discover_drives = false;
+            options.roots.push(photos.clone());
+            Agent::new(options).unwrap()
+        };
+        let synced = |agent: &Agent| {
+            let output = Mutex::new(Vec::new());
+            agent
+                .state
+                .handle(
+                    &Work {
+                        id: 1,
+                        request: Request::Photos {
+                            root: agent.state.roots[0].info.id.clone(),
+                            since_revision: 0,
+                        },
+                        control: Arc::new(Control::new(None)),
+                    },
+                    &output,
+                )
+                .unwrap();
+            match read_frame::<Response>(&mut &output.into_inner().unwrap()[..])
+                .unwrap()
+                .unwrap()
+                .header
+                .message
+            {
+                Response::Synced { history, .. } => history.unwrap(),
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let agent = open();
+        let first = synced(&agent);
+        let manifest_path = agent.state.roots[0].manifest_path.clone();
+        drop(agent);
+        assert_eq!(synced(&open()), first, "persisted across restart");
+        // A manifest from an older agent gains an identity, persisted once.
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("history");
+        fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let upgraded = synced(&open());
+        assert_ne!(upgraded, first);
+        assert_eq!(synced(&open()), upgraded);
+        // A lost manifest starts a new history.
+        fs::remove_file(&manifest_path).unwrap();
+        assert_ne!(synced(&open()), upgraded);
     }
 
     #[test]

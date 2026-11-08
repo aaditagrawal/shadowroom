@@ -162,6 +162,14 @@ pub enum Response {
     },
     Synced {
         revision: u64,
+        /// Optional identity of the agent's revision history for this root.
+        /// It changes when the agent starts a new history (manifest lost or
+        /// reset), so a client whose stored cursor came from another history
+        /// resynchronizes fully even if the new revision has passed it.
+        /// Absent from older agents (unknown: never forces a resync); older
+        /// clients ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<String>,
     },
     Indexed(IndexSummary),
     Preview {
