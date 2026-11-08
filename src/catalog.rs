@@ -631,6 +631,18 @@ impl Catalog {
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
+        // Hashes are rebuildable, so their commits skip the WAL fsync (about
+        // 20 ms each on a real disk) that decisions need. WAL+NORMAL remains
+        // crash-consistent; the next FULL decision commit or checkpoint
+        // (Flush/Shutdown) syncs these frames too.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        let result = Self::write_dhashes(&mut conn, hashes);
+        let restored = conn.pragma_update(None, "synchronous", "FULL");
+        result?;
+        restored?;
+        Ok(())
+    }
+    fn write_dhashes(conn: &mut Connection, hashes: &[(i64, u64)]) -> Result<()> {
         let tx = conn.transaction()?;
         {
             let mut select = tx.prepare_cached("SELECT data FROM photos WHERE id=?1")?;
@@ -1518,6 +1530,39 @@ mod tests {
                 .is_err()
         );
         assert_eq!(catalog.photos().unwrap().len(), 1);
+    }
+    #[test]
+    fn rebuildable_hash_commits_restore_full_sync_for_decisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.sqlite3")).unwrap();
+        catalog
+            .upsert_photos(&[Photo {
+                path: directory.path().join("a.jpg"),
+                ..Default::default()
+            }])
+            .unwrap();
+        let id = catalog.photos().unwrap()[0].id;
+        let synchronous = || -> i64 {
+            catalog
+                .connection
+                .lock()
+                .unwrap()
+                .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(synchronous(), 2);
+        catalog.set_dhashes(&[(id, 7), (id + 100, 8)]).unwrap();
+        assert_eq!(synchronous(), 2);
+        assert_eq!(catalog.photos().unwrap()[0].dhash, Some(7));
+        // A failed hash batch still restores durable decision commits.
+        catalog
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("ALTER TABLE photos RENAME TO renamed")
+            .unwrap();
+        assert!(catalog.set_dhashes(&[(id, 9)]).is_err());
+        assert_eq!(synchronous(), 2);
     }
     #[test]
     #[ignore]
