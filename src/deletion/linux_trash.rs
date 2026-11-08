@@ -27,7 +27,35 @@ struct Trash {
     top: Option<PathBuf>,
 }
 
-pub(super) fn trash(file: &DeletionFile, parent: &File) -> Result<()> {
+/// Directories whose post-move entries still need a best-effort fsync. One
+/// sync per distinct directory after the batch replaces two per file; restore
+/// metadata is still durable before each individual move.
+#[derive(Default)]
+pub(super) struct PendingSyncs(Vec<File>);
+impl PendingSyncs {
+    fn push(&mut self, directory: File) {
+        let Ok(metadata) = directory.metadata() else {
+            return;
+        };
+        let known = self.0.iter().any(|existing| {
+            existing
+                .metadata()
+                .is_ok_and(|m| m.dev() == metadata.dev() && m.ino() == metadata.ino())
+        });
+        if !known {
+            self.0.push(directory);
+        }
+    }
+    pub(super) fn sync(self) {
+        // A completed move remains successful if a directory fsync is
+        // unsupported; the restore metadata was synced before it moved.
+        for directory in self.0 {
+            let _ = directory.sync_all();
+        }
+    }
+}
+
+pub(super) fn trash(file: &DeletionFile, parent: &File, pending: &mut PendingSyncs) -> Result<()> {
     let data = data_home()?;
     let data_dir = directory_tree(&data)?;
     let trash = if data_dir.metadata()?.dev() == parent.metadata()?.dev() {
@@ -37,7 +65,12 @@ pub(super) fn trash(file: &DeletionFile, parent: &File) -> Result<()> {
         volume_trash(&top)?
     };
     move_to_trash(file, parent, &trash)
-        .context("Could not move file to Trash; no permanent-delete fallback was used")
+        .context("Could not move file to Trash; no permanent-delete fallback was used")?;
+    pending.push(trash.files);
+    if let Ok(parent) = parent.try_clone() {
+        pending.push(parent);
+    }
+    Ok(())
 }
 
 fn data_home() -> Result<PathBuf> {
@@ -272,13 +305,8 @@ fn move_to_trash(file: &DeletionFile, parent: &File, trash: &Trash) -> Result<()
             Ok(())
         })();
         match outcome {
-            Ok(()) => {
-                // A successful move remains successful if a directory fsync is
-                // unsupported. The complete restore metadata was synced first.
-                let _ = trash.files.sync_all();
-                let _ = parent.sync_all();
-                return Ok(());
-            }
+            // The caller syncs the files/ and source directories once per batch.
+            Ok(()) => return Ok(()),
             Err(error) => {
                 // Only remove the metadata reservation created above. No file
                 // in files/ is ever deleted as a fallback or failure cleanup.
@@ -346,6 +374,57 @@ mod tests {
         open_trash(&File::open(root).unwrap(), OsStr::new("Trash"), None).unwrap()
     }
 
+    #[test]
+    #[ignore]
+    fn bench_trash_200_files() {
+        let temporary = tempfile::tempdir_in(
+            std::env::var_os("SHADOWROOM_INDEX_BENCH_DIR").unwrap_or_else(|| "/tmp".into()),
+        )
+        .unwrap();
+        for round in 0..4 {
+            let per_file = round % 2 == 0;
+            let root = temporary.path().join(format!("round-{round}"));
+            fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            let photos: Vec<_> = (0..200)
+                .map(|i| {
+                    let path = root.join(format!("photo-{i:03}.jpg"));
+                    fs::write(&path, b"photo").unwrap();
+                    Photo {
+                        id: i + 1,
+                        path,
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            let plan = DeletionPlan::prepare(&photos, DeletionMode::SystemTrash).unwrap();
+            let trash = fixture_trash(&root);
+            let started = std::time::Instant::now();
+            let mut pending = PendingSyncs::default();
+            let report = plan.execute_with(|file, parent| {
+                move_to_trash(file, parent, &trash)?;
+                if per_file {
+                    let _ = trash.files.sync_all();
+                    let _ = parent.sync_all();
+                } else {
+                    pending.push(trash.files.try_clone()?);
+                    pending.push(parent.try_clone()?);
+                }
+                Ok(())
+            });
+            pending.sync();
+            assert!(report.is_success());
+            eprintln!(
+                "BENCH trash 200 files, {}: {:?}",
+                if per_file {
+                    "per-file directory syncs"
+                } else {
+                    "batched directory syncs"
+                },
+                started.elapsed()
+            );
+        }
+    }
     #[test]
     fn collisions_preserve_existing_payloads_and_metadata_and_encoded_paths_restore() {
         let temporary = tempfile::tempdir().unwrap();

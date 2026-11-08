@@ -210,11 +210,13 @@ impl DeletionPlan {
         }
     }
     pub fn execute(&self) -> DeletionReport {
-        self.execute_with(|file, parent| match self.mode {
+        #[cfg(target_os = "linux")]
+        let mut pending = linux_trash::PendingSyncs::default();
+        let report = self.execute_with(|file, parent| match self.mode {
             DeletionMode::SystemTrash => {
                 #[cfg(target_os = "linux")]
                 {
-                    linux_trash::trash(file, parent)
+                    linux_trash::trash(file, parent, &mut pending)
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -222,7 +224,10 @@ impl DeletionPlan {
                 }
             }
             DeletionMode::Permanent => remove_regular_at(parent, &file.path),
-        })
+        });
+        #[cfg(target_os = "linux")]
+        pending.sync();
+        report
     }
     fn execute_with(
         &self,
