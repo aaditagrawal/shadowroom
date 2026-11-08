@@ -645,50 +645,32 @@ impl State {
                 // real state, and every change after `revision` (the cursor the
                 // client stores) has a higher revision, so the next incremental
                 // sync delivers it again.
-                let mut after: Option<PathBuf> = None;
-                loop {
-                    let chunk: Vec<_> = {
-                        let manifest = root.manifest.lock().unwrap();
-                        let range = match &after {
-                            Some(last) => manifest.records.range::<PathBuf, _>((
-                                std::ops::Bound::Excluded(last),
-                                std::ops::Bound::Unbounded,
-                            )),
-                            None => manifest.records.range::<PathBuf, _>(..),
-                        };
-                        range
-                            .filter(|(_, r)| r.revision > *since_revision)
-                            .take(PHOTOS_CHUNK)
-                            .map(|(path, record)| (path.clone(), record.clone()))
-                            .collect()
-                    };
-                    let Some((last, _)) = chunk.last() else {
-                        break;
-                    };
-                    after = Some(last.clone());
-                    for (_, photo) in chunk {
+                let since = *since_revision;
+                let mut after = None;
+                while let Some(chunk) = root.chunk_after(
+                    &mut after,
+                    |m| &m.records,
+                    |_, r| (r.revision > since).then(|| Response::Photo(r.clone())),
+                ) {
+                    for photo in chunk {
                         work.control.acquire()?;
-                        send(writer, id, false, Response::Photo(photo), vec![])?;
+                        send(writer, id, false, photo, vec![])?;
                     }
                 }
-                let deleted: Vec<_> = root
-                    .manifest
-                    .lock()
-                    .unwrap()
-                    .deleted
-                    .iter()
-                    .filter(|(_, r)| **r > *since_revision)
-                    .map(|(p, _)| p.clone())
-                    .collect();
-                for relative_path in deleted {
-                    work.control.acquire()?;
-                    send(
-                        writer,
-                        id,
-                        false,
-                        Response::Deleted { relative_path },
-                        vec![],
-                    )?;
+                let mut after = None;
+                while let Some(chunk) = root.chunk_after(
+                    &mut after,
+                    |m| &m.deleted,
+                    |path, r| {
+                        (*r > since).then(|| Response::Deleted {
+                            relative_path: path.clone(),
+                        })
+                    },
+                ) {
+                    for tombstone in chunk {
+                        work.control.acquire()?;
+                        send(writer, id, false, tombstone, vec![])?;
+                    }
                 }
                 Response::Synced { revision }
             }
@@ -1052,6 +1034,36 @@ impl State {
     }
 }
 impl Root {
+    /// Up to [`PHOTOS_CHUNK`] selected entries of one manifest map after
+    /// `after`, copied under one short lock hold; advances `after`. None once
+    /// no selected entry remains.
+    fn chunk_after<V>(
+        &self,
+        after: &mut Option<PathBuf>,
+        map: fn(&Manifest) -> &BTreeMap<PathBuf, V>,
+        select: impl Fn(&PathBuf, &V) -> Option<Response>,
+    ) -> Option<Vec<Response>> {
+        use std::ops::Bound;
+        let manifest = self.manifest.lock().unwrap();
+        let map = map(&manifest);
+        let range = match after.as_ref() {
+            Some(last) => map.range::<PathBuf, _>((Bound::Excluded(last), Bound::Unbounded)),
+            None => map.range::<PathBuf, _>(..),
+        };
+        let mut chunk = Vec::new();
+        let mut last = None;
+        for (path, value) in range {
+            if let Some(response) = select(path, value) {
+                chunk.push(response);
+                last = Some(path);
+                if chunk.len() == PHOTOS_CHUNK {
+                    break;
+                }
+            }
+        }
+        *after = Some(last?.clone());
+        Some(chunk)
+    }
     fn refresh_manifest(&self, allow_deletions: bool) -> Result<u64> {
         let photos = self.catalog.photos()?;
         let mut records = BTreeMap::new();
@@ -1473,6 +1485,111 @@ mod tests {
                 .jpeg,
             second.payload
         );
+    }
+
+    #[test]
+    fn photos_stream_in_chunks_with_tombstones_and_respect_the_credit_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let photos = temp.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        let mut options = AgentOptions::new(temp.path().join("state"));
+        options.discover_drives = false;
+        options.roots.push(photos);
+        let agent = Agent::new(options).unwrap();
+        let root = &agent.state.roots[0];
+        {
+            let mut manifest = root.manifest.lock().unwrap();
+            for i in 0..PHOTOS_CHUNK * 2 + 7 {
+                let path = PathBuf::from(format!("p{i:04}.jpg"));
+                manifest.records.insert(
+                    path.clone(),
+                    PhotoRecord {
+                        key: PhotoKey {
+                            root_id: root.info.id.clone(),
+                            volume_id: root.info.volume_id.clone(),
+                            relative_path: path,
+                            size_bytes: 1,
+                            modified_at: 1,
+                            companion_path: None,
+                            companion_size_bytes: 0,
+                            companion_modified_at: 0,
+                        },
+                        metadata: Default::default(),
+                        revision: 1 + (i % 3) as u64,
+                    },
+                );
+            }
+            for i in 0..PHOTOS_CHUNK + 3 {
+                manifest
+                    .deleted
+                    .insert(format!("gone{i:04}.jpg").into(), 1 + (i % 3) as u64);
+            }
+            manifest.revision = 3;
+        }
+        let stream = |since_revision, control: Arc<Control>| {
+            let output = Mutex::new(Vec::new());
+            agent
+                .state
+                .handle(
+                    &Work {
+                        id: 1,
+                        request: Request::Photos {
+                            root: root.info.id.clone(),
+                            since_revision,
+                        },
+                        control,
+                    },
+                    &output,
+                )
+                .unwrap();
+            let bytes = output.into_inner().unwrap();
+            let mut reader = &bytes[..];
+            let (mut photos, mut deleted, mut synced) = (Vec::new(), Vec::new(), None);
+            while let Some(frame) = read_frame::<Response>(&mut reader).unwrap() {
+                match frame.header.message {
+                    Response::Photo(p) => photos.push(p.key.relative_path),
+                    Response::Deleted { relative_path } => deleted.push(relative_path),
+                    Response::Synced { revision } => synced = Some(revision),
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            (photos, deleted, synced)
+        };
+        let (all, gone, synced) = stream(0, Arc::new(Control::new(None)));
+        assert_eq!(synced, Some(3));
+        assert_eq!(all.len(), PHOTOS_CHUNK * 2 + 7);
+        assert!(all.windows(2).all(|w| w[0] < w[1]), "ordered, no repeats");
+        assert_eq!(gone.len(), PHOTOS_CHUNK + 3);
+        let (newer, gone_newer, _) = stream(2, Arc::new(Control::new(None)));
+        assert_eq!(newer.len(), (PHOTOS_CHUNK * 2 + 7) / 3);
+        assert_eq!(gone_newer.len(), (PHOTOS_CHUNK + 3) / 3);
+        // A windowed stream waits for credit; the reader's grants release it.
+        let control = Arc::new(Control::new(Some(10)));
+        let granter = {
+            let control = control.clone();
+            thread::spawn(move || {
+                for _ in 0..200 {
+                    thread::sleep(Duration::from_millis(1));
+                    control.grant(10);
+                }
+            })
+        };
+        let (windowed, _, synced) = stream(0, control.clone());
+        granter.join().unwrap();
+        assert_eq!(windowed, all);
+        assert_eq!(synced, Some(3));
+        // Without credit, cancellation (as from the reader) ends the wait.
+        let control = Arc::new(Control::new(Some(0)));
+        let canceller = {
+            let control = control.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                control.cancel();
+            })
+        };
+        let error = control.acquire().unwrap_err();
+        canceller.join().unwrap();
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]
