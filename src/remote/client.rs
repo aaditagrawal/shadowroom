@@ -120,6 +120,9 @@ struct MailboxState {
     bytes: usize,
     /// The consumer is gone; later frames are discarded.
     closed: bool,
+    /// A terminal error is queued (session closed or failed); a reader
+    /// blocked for space gives up instead of waiting for the deadline.
+    failed: bool,
     peak_bytes: usize,
 }
 impl Mailbox {
@@ -138,7 +141,7 @@ impl Mailbox {
     fn push(&self, frame: Frame<Response>, bytes: usize) -> bool {
         let mut state = self.lock();
         loop {
-            if state.closed {
+            if state.closed || state.failed {
                 return false;
             }
             if state.bytes == 0 || state.bytes.saturating_add(bytes) <= SPILL_BYTES {
@@ -162,10 +165,11 @@ impl Mailbox {
     /// Terminal failure; bypasses the byte bound so it is never lost.
     fn fail(&self, error: String) {
         let mut state = self.lock();
-        if !state.closed {
+        if !state.closed && !state.failed {
+            state.failed = true;
             state.queue.push_back((Err(error), 0));
-            self.changed.notify_all();
         }
+        self.changed.notify_all();
     }
     fn close(&self) {
         let mut state = self.lock();
@@ -337,9 +341,7 @@ impl Session {
         ensure!(id != 0, "Request id overflow");
         let deadline = Instant::now() + timeout;
         let mailbox = Arc::new(Mailbox::new(deadline));
-        // The agent windows exactly the Photos streams of a session that opted in.
-        let windowed =
-            matches!(message, Request::Photos { .. }) && self.flow.load(Ordering::Acquire);
+        let photos = matches!(message, Request::Photos { .. });
         {
             let mut pending = self.pending.lock().unwrap();
             ensure!(
@@ -348,10 +350,18 @@ impl Session {
             );
             pending.insert(id, mailbox.clone());
         }
-        if let Err(error) = self.write(id, message) {
-            self.pending.lock().unwrap().remove(&id);
-            return Err(error);
-        }
+        // The agent windows exactly the Photos streams queued after FlowControl.
+        // Reading the flag and queueing the request under the writer mutex
+        // (which negotiation holds while setting it and queueing FlowControl)
+        // makes the client's view match the agent's frame order exactly.
+        let windowed =
+            match self.write_with(id, message, |_| photos && self.flow.load(Ordering::Acquire)) {
+                Ok(windowed) => windowed,
+                Err(error) => {
+                    self.pending.lock().unwrap().remove(&id);
+                    return Err(error);
+                }
+            };
         Ok(PendingRequest {
             id,
             mailbox,
@@ -362,7 +372,9 @@ impl Session {
             consumed: 0,
         })
     }
-    /// Control frames that must not be dropped (credits): wait for queue space.
+    /// Control frames that must not be dropped (credits, cancellation of a
+    /// windowed stream): wait for queue space, bounded so a wedged transport
+    /// cannot hang the caller (the session is then failing anyway).
     fn write_blocking(&self, message: Request) -> Result<()> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let writer = self
@@ -372,24 +384,63 @@ impl Session {
             .clone()
             .context("Remote is disconnected")?;
         writer
-            .send((id, message))
-            .context("Remote writer disconnected")?;
+            .send_timeout((id, message), CONTROL_SEND)
+            .context("Remote writer stalled or disconnected")?;
         Ok(())
     }
-    fn write(&self, id: u64, message: Request) -> Result<()> {
-        let mut writer = self.writer.lock().unwrap();
-        let writer = writer.as_mut().context("Remote is disconnected")?;
+    /// Queue a request; `decide` runs under the writer mutex, atomically with
+    /// the enqueue, and its result is returned.
+    fn write_with<T>(
+        &self,
+        id: u64,
+        message: Request,
+        decide: impl FnOnce(&Sender<(u64, Request)>) -> T,
+    ) -> Result<T> {
+        let writer = self.writer.lock().unwrap();
+        let writer = writer.as_ref().context("Remote is disconnected")?;
+        let decided = decide(writer);
         writer
             .try_send((id, message))
             .context("Remote writer queue full or disconnected")?;
+        Ok(decided)
+    }
+    fn write(&self, id: u64, message: Request) -> Result<()> {
+        self.write_with(id, message, |_| ())
+    }
+    /// Enable credit-windowed Photos streams: set the flag and queue
+    /// FlowControl under the writer mutex, so every Photos request queued
+    /// after it is windowed on both sides and none before it is.
+    fn enable_flow(&self) -> Result<()> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let writer = self.writer.lock().unwrap();
+        let writer = writer.as_ref().context("Remote is disconnected")?;
+        writer
+            .send_timeout(
+                (
+                    id,
+                    Request::FlowControl {
+                        window: FLOW_WINDOW,
+                    },
+                ),
+                CONTROL_SEND,
+            )
+            .context("Remote writer stalled or disconnected")?;
+        self.flow.store(true, Ordering::Release);
         Ok(())
     }
-    fn cancel(&self, request_id: u64) {
+    /// Best-effort for ordinary requests. A windowed stream's agent worker
+    /// waits for credit that will never come, so its Cancel must not be
+    /// dropped on a full writer queue.
+    fn cancel(&self, request_id: u64, windowed: bool) {
         if self.closed.load(Ordering::Acquire) {
             return;
         }
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let _ = self.write(id, Request::Cancel { request_id });
+        if windowed {
+            let _ = self.write_blocking(Request::Cancel { request_id });
+        } else {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let _ = self.write(id, Request::Cancel { request_id });
+        }
     }
     fn close(&self) {
         self.closed.mark();
@@ -421,6 +472,9 @@ impl Drop for Session {
 /// Caller cancellation is a predicate, so it is sampled while waiting. Frames
 /// still wake the receiver immediately; this only bounds cancellation latency.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
+/// Bound on waiting for writer-queue space for a control frame that must not
+/// be dropped. The writer drains continuously unless the transport is wedged.
+const CONTROL_SEND: Duration = Duration::from_secs(5);
 /// An outstanding multiplexed request. Dropping it sends best-effort cancellation.
 /// `recv` has an overall deadline (progress does not extend it).
 pub struct PendingRequest {
@@ -435,7 +489,7 @@ pub struct PendingRequest {
 }
 impl PendingRequest {
     pub fn cancel(&self) {
-        self.session.cancel(self.id);
+        self.session.cancel(self.id, self.windowed);
     }
     pub fn recv(&mut self) -> Result<Frame<Response>> {
         // Nothing to poll: block until a frame, disconnection or the deadline.
@@ -490,7 +544,7 @@ impl Drop for PendingRequest {
         self.mailbox.close();
         if !self.finished {
             self.session.pending.lock().unwrap().remove(&self.id);
-            self.session.cancel(self.id);
+            self.session.cancel(self.id, self.windowed);
         }
     }
 }
@@ -940,15 +994,7 @@ impl RemoteHost {
             .iter()
             .any(|c| c == FLOW_CONTROL_CAPABILITY)
         {
-            // Flag first: a Photos request racing this negotiation reaches the
-            // agent before FlowControl and is sent unwindowed, so its credits
-            // are ignored. The reverse order could window a stream whose
-            // consumer never returns credit. The writer queue is ordered, so
-            // every Photos request issued afterwards is windowed.
-            session.flow.store(true, Ordering::Release);
-            session.write_blocking(Request::FlowControl {
-                window: FLOW_WINDOW,
-            })?;
+            session.enable_flow()?;
         }
         session
             .hello
@@ -1275,6 +1321,175 @@ mod mailbox_tests {
         expired.close();
         assert!(!expired.push(frame(), 1));
         assert!(expired.recv_until(Instant::now()).is_none());
+    }
+
+    #[test]
+    fn session_failure_wakes_a_reader_blocked_on_a_full_mailbox() {
+        let mailbox = Arc::new(Mailbox::new(Instant::now() + Duration::from_secs(3600)));
+        assert!(mailbox.push(frame(), SPILL_BYTES));
+        let reader = {
+            let mailbox = mailbox.clone();
+            thread::spawn(move || mailbox.push(frame(), 10))
+        };
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        mailbox.fail("Remote disconnected".into());
+        assert!(!reader.join().unwrap());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // The consumer still sees the parked frame, then the terminal error.
+        assert!(mailbox.recv_until(Instant::now()).unwrap().is_ok());
+        assert!(mailbox.recv_until(Instant::now()).unwrap().is_err());
+    }
+
+    /// Records written frames; writes block while the gate is closed.
+    #[derive(Clone)]
+    struct GatedWriter {
+        open: Arc<(Mutex<bool>, Condvar)>,
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+    impl GatedWriter {
+        fn new(open: bool) -> Self {
+            Self {
+                open: Arc::new((Mutex::new(open), Condvar::new())),
+                bytes: Arc::default(),
+            }
+        }
+        fn open(&self) {
+            *self.open.0.lock().unwrap() = true;
+            self.open.1.notify_all();
+        }
+        fn frames(&self) -> Vec<Frame<Request>> {
+            let bytes = self.bytes.lock().unwrap().clone();
+            let mut reader = &bytes[..];
+            let mut frames = Vec::new();
+            // Only complete frames: the writer may be mid-frame.
+            while reader.len() >= 4
+                && reader.len() >= 4 + u32::from_le_bytes(reader[..4].try_into().unwrap()) as usize
+            {
+                frames.push(read_frame::<Request>(&mut reader).unwrap().unwrap());
+            }
+            frames
+        }
+    }
+    impl Write for GatedWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let mut open = self.open.0.lock().unwrap();
+            while !*open {
+                open = self.open.1.wait(open).unwrap();
+            }
+            self.bytes.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    /// A reader that never yields a frame until the test drops its peer.
+    fn idle_reader() -> (
+        std::os::unix::net::UnixStream,
+        std::os::unix::net::UnixStream,
+    ) {
+        std::os::unix::net::UnixStream::pair().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windowed_cancel_waits_for_queue_space_instead_of_being_dropped() {
+        let writer = GatedWriter::new(false);
+        let (reader, peer) = idle_reader();
+        let session = Session::start(reader, writer.clone(), None, Arc::default());
+        // The writer thread is parked on the gate; fill the queue behind it.
+        let mut queued = 0;
+        for _ in 0..2 {
+            while session.write(1000 + queued, Request::Ping).is_ok() {
+                queued += 1;
+            }
+            // Let the writer thread take its first frame, then refill the slot.
+            thread::sleep(Duration::from_millis(20));
+        }
+        while session.write(1000 + queued, Request::Ping).is_ok() {
+            queued += 1;
+        }
+        assert!(queued >= MAX_IN_FLIGHT as u64);
+        let cancel = {
+            let session = session.clone();
+            thread::spawn(move || session.cancel(7, true))
+        };
+        thread::sleep(Duration::from_millis(50));
+        assert!(!cancel.is_finished(), "windowed Cancel waits for space");
+        writer.open();
+        cancel.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !writer
+            .frames()
+            .iter()
+            .any(|f| matches!(f.header.message, Request::Cancel { request_id: 7 }))
+        {
+            assert!(Instant::now() < deadline, "Cancel was dropped");
+            thread::sleep(Duration::from_millis(5));
+        }
+        session.close();
+        drop(peer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn photos_requests_racing_flow_negotiation_are_windowed_exactly_after_it() {
+        for _ in 0..20 {
+            let writer = GatedWriter::new(true);
+            let (reader, peer) = idle_reader();
+            let session = Session::start(reader, writer.clone(), None, Arc::default());
+            let requests = thread::scope(|scope| {
+                let workers: Vec<_> = (0..4)
+                    .map(|_| {
+                        let session = &session;
+                        scope.spawn(move || {
+                            (0..6)
+                                .map(|_| {
+                                    session
+                                        .start_request(
+                                            Request::Photos {
+                                                root: "r".into(),
+                                                since_revision: 0,
+                                            },
+                                            Duration::from_secs(30),
+                                        )
+                                        .unwrap()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                session.enable_flow().unwrap();
+                workers
+                    .into_iter()
+                    .flat_map(|w| w.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let frames = loop {
+                let frames = writer.frames();
+                if frames.len() > requests.len() {
+                    break frames;
+                }
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(1));
+            };
+            let flow_at = frames
+                .iter()
+                .position(|f| matches!(f.header.message, Request::FlowControl { .. }))
+                .unwrap();
+            for request in &requests {
+                let at = frames
+                    .iter()
+                    .position(|f| f.header.id == request.id)
+                    .unwrap();
+                assert_eq!(request.windowed, at > flow_at, "request {}", request.id);
+            }
+            drop(requests);
+            session.close();
+            drop(peer);
+        }
     }
 }
 
