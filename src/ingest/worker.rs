@@ -286,14 +286,20 @@ fn run(
                         .cloned()
                         .collect();
                     let count = catalog.ingest_mark_imported(&selected)?;
+                    let mut marked = Vec::new();
                     for group in &mut scan.groups {
                         if ids.contains(&group.id) {
                             group.seen = catalog.ingest_seen(group)?;
                             group.selected = false;
+                            if let Some(seen) = &group.seen {
+                                marked.push((group.id, seen.clone()));
+                            }
                         }
                     }
                     planned = None;
-                    emit(&events, Event::Scanned(Arc::new(scan.clone())));
+                    // Update only the marked groups. Re-sending the whole scan would
+                    // reset every other checkbox the user changed to scan defaults.
+                    emit(&events, Event::Committed(marked));
                     emit(&events, Event::Marked(count));
                 }
                 Command::Eject(path) => {

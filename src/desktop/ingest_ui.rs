@@ -480,6 +480,39 @@ impl ImportUi {
         self.select_position(target, false, range);
         Some(target)
     }
+    /// Groups recorded as imported, by a finished job or by Mark as imported.
+    /// Only those groups change; every other checkbox keeps the user's choice.
+    fn committed(&mut self, committed: Vec<(usize, ingest::store::SeenRecord)>) {
+        for (id, seen) in committed {
+            if let Some(&index) = self.lookup.get(&id) {
+                if self.items[index].seen.is_none() {
+                    self.new_count = self.new_count.saturating_sub(1);
+                }
+                if self.selected.remove(&id) {
+                    self.select_count(index, false);
+                }
+                self.items[index].seen = Some(seen);
+                self.cells[index] = IngestCell::new(&self.items[index], &self.previews[index]);
+            }
+        }
+        self.timeline_counts();
+        if self.new_only {
+            self.visible = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.seen.is_none())
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if self.active() {
+            self.plan = None;
+        } else {
+            // Marked as imported: the selection shrank, so replan it. The
+            // debounced tick never plans while an import is running.
+            self.changed();
+        }
+    }
     pub(super) fn invalidate_plan(&mut self) {
         self.changed();
     }
@@ -709,35 +742,7 @@ impl Workspace {
                 }
             }
             Event::History(history) => self.import_ui.history = Arc::new(history),
-            Event::Committed(committed) => {
-                for (id, seen) in committed {
-                    if let Some(&index) = self.import_ui.lookup.get(&id) {
-                        if self.import_ui.items[index].seen.is_none() {
-                            self.import_ui.new_count = self.import_ui.new_count.saturating_sub(1);
-                        }
-                        if self.import_ui.selected.remove(&id) {
-                            self.import_ui.select_count(index, false);
-                        }
-                        self.import_ui.items[index].seen = Some(seen);
-                        self.import_ui.cells[index] = IngestCell::new(
-                            &self.import_ui.items[index],
-                            &self.import_ui.previews[index],
-                        );
-                    }
-                }
-                self.import_ui.timeline_counts();
-                if self.import_ui.new_only {
-                    self.import_ui.visible = self
-                        .import_ui
-                        .items
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, g)| g.seen.is_none())
-                        .map(|(i, _)| i)
-                        .collect();
-                }
-                self.import_ui.plan = None;
-            }
+            Event::Committed(committed) => self.import_ui.committed(committed),
             Event::Marked(count) => {
                 self.status = format!("Marked {count} groups as imported; source unchanged")
             }
@@ -3075,6 +3080,39 @@ mod responsive_tests {
             before / frames,
             after / frames
         );
+    }
+
+    #[test]
+    fn marking_groups_keeps_other_choices_and_refreshes_only_marked_tiles() {
+        let mut state = import_fixture();
+        let ids: Vec<_> = state.items.iter().map(|g| g.id).collect();
+        // The user deselects everything, then checks three tiles.
+        for &id in &ids {
+            if state.selected.contains(&id) {
+                state.toggle(id);
+            }
+        }
+        for &id in &ids[3..6] {
+            state.toggle(id);
+        }
+        state.new_only = true;
+        let seen = ingest::store::SeenRecord {
+            record_id: 1,
+            imported_at: 0,
+            destination: None,
+            job_id: String::new(),
+            matched_by: String::new(),
+        };
+        let new_before = state.new_count;
+        state.committed(vec![(ids[4], seen)]);
+        assert_eq!(state.selected, [ids[3], ids[5]].into_iter().collect());
+        assert_eq!(state.photos, 2);
+        assert_eq!(state.timeline_selected.iter().sum::<usize>(), 2);
+        assert_eq!(state.new_count, new_before - 1);
+        assert!(state.cells[4].seen && state.cells[4].detail.contains("Imported"));
+        assert!(!state.cells[3].seen);
+        assert!(!state.visible.contains(&4));
+        assert!(state.dirty_at.is_some(), "a mark must trigger a replan");
     }
 
     #[test]
