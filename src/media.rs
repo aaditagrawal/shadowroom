@@ -239,20 +239,30 @@ enum Slot {
 /// A just-published preview stays until it is first displayed, or this long.
 const FRESH_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
-enum Retired {
-    Preview(Weak<Preview>, usize),
-    Source(Weak<Vec<u8>>, usize),
+/// An entry evicted while still referenced elsewhere; charged until released.
+struct Retired {
+    handle: RetiredHandle,
+    bytes: usize,
+    /// The waiting admission that retired it for its own shortfall, or
+    /// `NO_WAITER`. Only a waiter's own retirements count toward its shortfall:
+    /// entries retired for someone else may stay pinned (e.g. by a long-lived
+    /// display copy) and must not stop this waiter from retiring what it needs.
+    waiter: u64,
 }
+enum RetiredHandle {
+    Preview(Weak<Preview>),
+    Source(Weak<Vec<u8>>),
+}
+/// `Retired::waiter` for retirements that no admission is waiting on.
+const NO_WAITER: u64 = 0;
 impl Retired {
     fn bytes(&self) -> usize {
-        match self {
-            Self::Preview(_, b) | Self::Source(_, b) => *b,
-        }
+        self.bytes
     }
     fn alive(&self) -> bool {
-        match self {
-            Self::Preview(v, _) => v.strong_count() > 0,
-            Self::Source(v, _) => v.strong_count() > 0,
+        match &self.handle {
+            RetiredHandle::Preview(v) => v.strong_count() > 0,
+            RetiredHandle::Source(v) => v.strong_count() > 0,
         }
     }
 }
@@ -284,6 +294,9 @@ struct State {
     persist_bytes: usize,
     /// Set by the persister when it exits (after any shutdown drain).
     persister_done: bool,
+    /// No preview marked fresh at or before this instant is still within its
+    /// FRESH_GRACE, so waiters skip scanning the cache for one after it.
+    fresh_until: Option<std::time::Instant>,
 }
 
 /// How `State::evict` treats a shortfall that it cannot cover right now.
@@ -303,7 +316,7 @@ impl State {
 
     fn store_preview(&mut self, key: Key, value: Arc<Preview>, fresh: bool) {
         if let Some(old) = self.remove_preview(&key) {
-            self.release_preview(old);
+            self.release_preview(old, NO_WAITER);
         }
         let stamp = self.tick();
         let bytes = value.byte_len();
@@ -323,7 +336,7 @@ impl State {
     }
     fn store_source(&mut self, key: SourceKey, value: Arc<Vec<u8>>) {
         if let Some(old) = self.remove_source(&key) {
-            self.release_source(old);
+            self.release_source(old, NO_WAITER);
         }
         let stamp = self.tick();
         let bytes = value.len();
@@ -352,32 +365,38 @@ impl State {
         self.lru.remove(&entry.stamp);
         Some(entry)
     }
-    fn release_preview(&mut self, entry: Entry<Arc<Preview>>) {
+    fn release_preview(&mut self, entry: Entry<Arc<Preview>>, waiter: u64) {
         if Arc::strong_count(&entry.value) > 1 {
-            self.retired
-                .push(Retired::Preview(Arc::downgrade(&entry.value), entry.bytes));
+            self.retired.push(Retired {
+                handle: RetiredHandle::Preview(Arc::downgrade(&entry.value)),
+                bytes: entry.bytes,
+                waiter,
+            });
         } else {
             self.memory -= entry.bytes;
         }
     }
-    fn release_source(&mut self, entry: Entry<Arc<Vec<u8>>>) {
+    fn release_source(&mut self, entry: Entry<Arc<Vec<u8>>>, waiter: u64) {
         if Arc::strong_count(&entry.value) > 1 {
-            self.retired
-                .push(Retired::Source(Arc::downgrade(&entry.value), entry.bytes));
+            self.retired.push(Retired {
+                handle: RetiredHandle::Source(Arc::downgrade(&entry.value)),
+                bytes: entry.bytes,
+                waiter,
+            });
         } else {
             self.memory -= entry.bytes;
         }
     }
     /// Evicts the entry filed under `stamp`.
-    fn evict_stamp(&mut self, stamp: u64) {
+    fn evict_stamp(&mut self, stamp: u64, waiter: u64) {
         match self.lru.remove(&stamp) {
             Some(Slot::Preview(key)) => {
                 let entry = self.previews.remove(&key).expect("indexed preview");
-                self.release_preview(entry);
+                self.release_preview(entry, waiter);
             }
             Some(Slot::Source(key)) => {
                 let entry = self.sources.remove(&key).expect("indexed source");
-                self.release_source(entry);
+                self.release_source(entry, waiter);
             }
             None => {}
         }
@@ -401,13 +420,19 @@ impl State {
             .saturating_sub(self.budget)
     }
 
-    /// Admission without discarding queued disk writes.
+    /// Admission without discarding queued disk writes. It never waits, so it
+    /// never retires in-use entries that only a later release would free.
     fn evict_for(&mut self, bytes: usize) -> bool {
-        self.evict(bytes, false, Shortfall::Admit)
+        self.evict(bytes, false, Shortfall::Admit, NO_WAITER)
     }
     /// Admission that may also drop queued disk writes, as a last resort.
     fn evict_with_persistence(&mut self, bytes: usize) -> bool {
-        self.evict(bytes, true, Shortfall::Admit)
+        self.evict(bytes, true, Shortfall::Admit, NO_WAITER)
+    }
+    /// `evict_with_persistence` for an admission that waits for releases
+    /// (`reserve_while`); `waiter` is unique to that wait.
+    fn evict_waiting(&mut self, bytes: usize, waiter: u64) -> bool {
+        self.evict(bytes, true, Shortfall::Admit, waiter)
     }
 
     /// Makes room for `bytes` more, oldest use first. Admission first decides
@@ -415,7 +440,13 @@ impl State {
     /// keeps the cache and persistence queue intact: a request blocked by
     /// live display copies or other decodes is retried when those release
     /// (see `reserve_growth`), and emptying the cache would not help it.
-    fn evict(&mut self, bytes: usize, use_persist: bool, shortfall: Shortfall) -> bool {
+    fn evict(
+        &mut self,
+        bytes: usize,
+        use_persist: bool,
+        shortfall: Shortfall,
+        waiter: u64,
+    ) -> bool {
         self.reap();
         if bytes > self.budget && shortfall == Shortfall::Admit {
             return false;
@@ -513,7 +544,7 @@ impl State {
                 if self.excess(bytes) == 0 {
                     break;
                 }
-                self.evict_stamp(stamp);
+                self.evict_stamp(stamp, waiter);
             }
             return true;
         }
@@ -536,7 +567,7 @@ impl State {
         let reclaimable = free_now_bytes + orphan_bytes + queued_bytes;
         if reclaimable >= excess || shortfall == Shortfall::Shed {
             for stamp in free_now {
-                self.evict_stamp(stamp);
+                self.evict_stamp(stamp, waiter);
             }
             for orphan in orphans {
                 if self.excess(bytes) == 0 {
@@ -563,21 +594,29 @@ impl State {
                     self.drop_persist(index);
                 }
                 drop(preview);
-                self.evict_stamp(stamp);
+                self.evict_stamp(stamp, waiter);
             }
             if shortfall == Shortfall::Shed {
                 for stamp in held {
-                    self.evict_stamp(stamp);
+                    self.evict_stamp(stamp, waiter);
                 }
             }
             return self.excess(bytes) == 0;
         }
-        // Fits only once external holders release some entries: retire just
-        // those needed (oldest first) so their release frees memory, and let
-        // the caller wait for it. Everything else stays cached.
-        // Entries retired earlier are already waiting for release; count them
-        // so retries while waiting do not keep retiring more of the cache.
-        let pending: usize = self.retired.iter().map(Retired::bytes).sum();
+        // Fits only once external holders release some entries: for a caller
+        // that will wait, retire just those needed (oldest first) so their
+        // release frees memory. Everything else stays cached. Entries this
+        // waiter retired on earlier retries are already pending; count them,
+        // and only them, so retries do not keep retiring more of the cache.
+        if waiter == NO_WAITER {
+            return false;
+        }
+        let pending: usize = self
+            .retired
+            .iter()
+            .filter(|entry| entry.waiter == waiter)
+            .map(Retired::bytes)
+            .sum();
         let covered = reclaimable.saturating_add(pending);
         if covered < excess && covered + held_bytes >= excess {
             let mut needed = excess - covered;
@@ -589,11 +628,34 @@ impl State {
                     Slot::Preview(key) => self.previews[key].bytes,
                     Slot::Source(key) => self.sources[key].bytes,
                 };
-                self.evict_stamp(stamp);
+                self.evict_stamp(stamp, waiter);
                 needed = needed.saturating_sub(size);
             }
         }
         false
+    }
+    /// Protect a just-published preview until first displayed or FRESH_GRACE.
+    fn mark_fresh(&mut self, key: &Key) {
+        let Some(entry) = self.previews.get_mut(key) else {
+            return;
+        };
+        entry.fresh = true;
+        let until = entry.published + FRESH_GRACE;
+        self.fresh_until = Some(self.fresh_until.map_or(until, |t| t.max(until)));
+    }
+    /// Whether a fresh preview is still protected. Scans the cache only within
+    /// FRESH_GRACE of the last publication, not on every waiter retry.
+    fn fresh_pending(&mut self) -> bool {
+        match self.fresh_until {
+            Some(until) if std::time::Instant::now() < until => self
+                .previews
+                .values()
+                .any(|entry| entry.fresh && entry.published.elapsed() < FRESH_GRACE),
+            _ => {
+                self.fresh_until = None;
+                false
+            }
+        }
     }
     fn reap(&mut self) {
         let mut released = 0;
@@ -642,7 +704,7 @@ impl State {
     fn insert_preview(&mut self, key: Key, preview: Arc<Preview>) -> bool {
         let bytes = preview.byte_len();
         if let Some(old) = self.remove_preview(&key) {
-            self.release_preview(old);
+            self.release_preview(old, NO_WAITER);
         }
         if !self.evict_for(bytes) {
             return false;
@@ -774,6 +836,7 @@ impl MediaPipeline {
                 persist: VecDeque::new(),
                 persist_bytes: 0,
                 persister_done: false,
+                fresh_until: None,
             }),
             remote: OnceLock::new(),
             wake: Condvar::new(),
@@ -1090,7 +1153,7 @@ impl MediaPipeline {
         state
             .errors
             .retain(|_, error| !error.message.to_ascii_lowercase().contains("memory"));
-        state.evict(0, true, Shortfall::Shed);
+        state.evict(0, true, Shortfall::Shed, NO_WAITER);
         drop(state);
         self.shared.wake.notify_all();
         true
@@ -1292,6 +1355,8 @@ fn reserve_while(
 ) -> Result<MemoryPermit> {
     let release_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
     let mut state = shared.state.lock().unwrap();
+    // Growth of a held buffer never waits, so it retires nothing to wait for.
+    let waiter = if owned == 0 { state.tick() } else { NO_WAITER };
     if bytes.saturating_add(owned) > state.budget {
         bail!(
             "Image working memory requires approximately {} MiB; increase memory budget",
@@ -1306,7 +1371,7 @@ fn reserve_while(
         if !live() {
             bail!("Preview request superseded");
         }
-        if state.evict_with_persistence(bytes) {
+        if state.evict_waiting(bytes, waiter) {
             state.inflight += bytes;
             state.observe_peak();
             return Ok(MemoryPermit {
@@ -1320,10 +1385,7 @@ fn reserve_while(
         if state.inflight.saturating_sub(state.display) <= owned
             && ((state.retired.is_empty() && state.display == 0)
                 || std::time::Instant::now() > release_deadline)
-            && !state
-                .previews
-                .values()
-                .any(|entry| entry.fresh && entry.published.elapsed() < FRESH_GRACE)
+            && !state.fresh_pending()
         {
             bail!(
                 "Memory budget is occupied by live image buffers; increase memory budget or release other views"
@@ -1395,7 +1457,7 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
                 if !state.insert_preview(task.key.clone(), Arc::new(preview)) {
                     bail!("Cached preview exceeds available memory");
                 }
-                state.previews.get_mut(&task.key).unwrap().fresh = true;
+                state.mark_fresh(&task.key);
             }
             return Ok(());
         }
@@ -1471,7 +1533,9 @@ fn process_source_task(shared: &Arc<Shared>, task: &Task) -> Result<()> {
                 }
                 continue;
             }
-            state.previews.get_mut(&key).unwrap().fresh = key.kind == task.key.kind;
+            if key.kind == task.key.kind {
+                state.mark_fresh(&key);
+            }
             if key.kind != PreviewKind::Full {
                 enqueue_persist(&mut state, task, key, preview);
             }
@@ -1556,7 +1620,9 @@ fn process_remote_task(
             }
             continue;
         }
-        state.previews.get_mut(&key).unwrap().fresh = key.kind == task.key.kind;
+        if key.kind == task.key.kind {
+            state.mark_fresh(&key);
+        }
     }
     shared.wake.notify_all();
     Ok(())
@@ -4519,7 +4585,9 @@ mod tests {
             ColorStatus::AssumedSrgb,
             false,
         ));
-        assert!(state.insert_preview(first.clone(), preview.clone()));
+        // Distinct buffers: one Arc shared by two entries pins both, and a
+        // non-waiting publication never retires in-use entries.
+        assert!(state.insert_preview(first.clone(), Arc::new((*preview).clone())));
         assert!(state.insert_preview(second.clone(), preview));
         assert!(state.memory <= state.budget);
         assert!(state.previews.contains_key(&second));
@@ -4765,12 +4833,12 @@ mod tests {
         );
         // Fits only once `held` is released: retire it (charged until then),
         // but keep the unshared entry, whose eviction alone cannot help.
-        assert!(!state.evict_for(17_000));
+        assert!(!state.evict_waiting(17_000, 1));
         assert_eq!(state.memory, 2 * held.byte_len());
         assert_eq!(state.retired.len(), 1);
         assert_eq!(state.previews.len(), 1);
         drop(held);
-        assert!(state.evict_for(17_000));
+        assert!(state.evict_waiting(17_000, 1));
         assert_eq!(state.memory, 0);
     }
 
@@ -5607,15 +5675,138 @@ mod tests {
         // Short by 3 entries, all of them in use elsewhere: retire the three
         // oldest and wait; retrying while waiting retires nothing more.
         for _ in 0..3 {
-            assert!(!state.evict_for(entry));
+            assert!(!state.evict_waiting(entry, 1));
             assert_eq!(state.previews.len(), 3);
             assert_eq!(state.retired.len(), 3);
         }
         assert!(state.previews.contains_key(&tiny_key(5)));
         drop(held);
-        assert!(state.evict_for(entry));
+        assert!(state.evict_waiting(entry, 1));
         assert_eq!(state.previews.len(), 3);
         assert!(state.retired.is_empty());
+    }
+
+    #[test]
+    fn pinned_retirements_of_another_waiter_do_not_cover_a_new_shortfall() {
+        let entry = tiny_preview().byte_len();
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 10 * entry);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        let pinned: Vec<_> = (0..3).map(|_| tiny_preview()).collect();
+        let releasable: Vec<_> = (0..3).map(|_| tiny_preview()).collect();
+        for (index, preview) in pinned.iter().chain(&releasable).enumerate() {
+            assert!(state.insert_preview(tiny_key(index), preview.clone()));
+        }
+        state.inflight = 6 * entry;
+        // A non-waiting admission cannot use a later release: it retires nothing.
+        assert!(!state.evict_for(entry));
+        assert!(state.retired.is_empty());
+        // An earlier waiter retires the three oldest, which stay pinned (say,
+        // by long-lived display copies) after it gave up.
+        assert!(!state.evict_waiting(entry, 1));
+        assert_eq!(state.retired.len(), 3);
+        // A later waiter must not count those as covering its own shortfall:
+        // it retires what it needs itself, and only once across retries.
+        for _ in 0..3 {
+            assert!(!state.evict_waiting(entry, 2));
+            assert!(state.previews.is_empty());
+            assert_eq!(state.retired.len(), 6);
+        }
+        drop(releasable);
+        assert!(state.evict_waiting(entry, 2));
+        assert_eq!(state.retired.len(), 3);
+        drop(pinned);
+    }
+
+    #[test]
+    fn fresh_protection_is_tracked_without_scanning_after_its_grace() {
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), 1_000_000);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        assert!(state.insert_preview(tiny_key(0), tiny_preview()));
+        assert!(!state.fresh_pending());
+        state.mark_fresh(&tiny_key(0));
+        assert!(state.fresh_pending());
+        // First display clears it before the grace ends.
+        state.previews.get_mut(&tiny_key(0)).unwrap().fresh = false;
+        assert!(!state.fresh_pending());
+        state.mark_fresh(&tiny_key(0));
+        state.previews.get_mut(&tiny_key(0)).unwrap().published -= FRESH_GRACE;
+        state.fresh_until = Some(std::time::Instant::now());
+        assert!(!state.fresh_pending());
+        assert!(state.fresh_until.is_none());
+    }
+
+    /// `cargo test --lib remote_photo_key_benchmark -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: run explicitly with --ignored --nocapture"]
+    fn remote_photo_key_benchmark() {
+        use crate::model::{PhotoSource, RemoteSource};
+        let temp = tempfile::tempdir().unwrap();
+        let provider = Arc::new(RemotePreviewProvider::new(temp.path().join("remote")).unwrap());
+        let pipeline = MediaPipeline::new(temp.path().join("local"), 1_000_000);
+        pipeline.set_remote_provider(provider.clone());
+        let photo = crate::model::Photo {
+            source: PhotoSource::Remote(RemoteSource {
+                device_id: "device".into(),
+                root_id: "root".into(),
+                volume_id: "volume".into(),
+                relative_path: "folder/photo.jpg".into(),
+                size_bytes: 10,
+                modified_at: 20,
+                companion_path: None,
+                companion_size_bytes: 0,
+                companion_modified_at: 0,
+                available: true,
+            }),
+            ..Default::default()
+        };
+        provider
+            .cache
+            .remember_renderer("device", Some("renderer-a"));
+        const N: u32 = 100_000;
+        let started = std::time::Instant::now();
+        for _ in 0..N {
+            std::hint::black_box(photo_key(&photo, PreviewKind::Fit));
+        }
+        let bare = started.elapsed() / N;
+        let started = std::time::Instant::now();
+        for _ in 0..N {
+            std::hint::black_box(pipeline.photo_key(&photo, PreviewKind::Fit));
+        }
+        let with_namespace = started.elapsed() / N;
+        eprintln!("remote photo_key: {bare:?} without, {with_namespace:?} with namespace lookup");
+    }
+
+    /// `cargo test --lib reserve_retry_benchmark -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: run explicitly with --ignored --nocapture"]
+    fn reserve_retry_benchmark() {
+        const ENTRIES: usize = 20_000;
+        let entry = tiny_preview().byte_len();
+        let temp = tempfile::tempdir().unwrap();
+        let pipeline = MediaPipeline::new(temp.path().into(), ENTRIES * entry);
+        let mut state = pipeline.shared.state.lock().unwrap();
+        for index in 0..ENTRIES {
+            assert!(state.insert_preview(tiny_key(index), tiny_preview()));
+        }
+        // The protection check a failing reservation runs every 20 ms retry.
+        let started = std::time::Instant::now();
+        for _ in 0..25 {
+            assert!(!state.fresh_pending());
+        }
+        let idle = started.elapsed() / 25;
+        let started = std::time::Instant::now();
+        for _ in 0..25 {
+            assert!(
+                !state
+                    .previews
+                    .values()
+                    .any(|entry| entry.fresh && entry.published.elapsed() < FRESH_GRACE)
+            );
+        }
+        let scan = started.elapsed() / 25;
+        eprintln!("fresh check per retry ({ENTRIES} entries): {idle:?}, full scan {scan:?}");
     }
 
     #[test]
