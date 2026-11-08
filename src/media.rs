@@ -171,7 +171,7 @@ struct SourceKey {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct RemoteMediaSource {
     source: crate::model::RemoteSource,
-    rendering_namespace: Option<String>,
+    rendering_namespace: Option<Arc<str>>,
     width: u32,
     height: u32,
 }
@@ -2083,7 +2083,7 @@ impl RemotePreviewProvider {
             .remember_renderer(&device, host.hello().rendering_namespace());
         self.hosts.lock().unwrap().insert(device, host);
     }
-    fn rendering_namespace(&self, device: &str) -> Option<String> {
+    fn rendering_namespace(&self, device: &str) -> Option<Arc<str>> {
         self.cache.rendering_namespace(device)
     }
     pub fn disconnect(&self, device: &str) {

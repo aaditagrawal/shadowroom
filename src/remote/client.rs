@@ -555,7 +555,15 @@ pub struct PreviewCache {
     lru: Arc<super::cache::DiskLru>,
     // Hash device IDs so renderer metadata and preview paths use the same safe
     // filenames. Loaded once; UI-facing namespace lookups perform no disk I/O.
-    renderers: Arc<Mutex<HashMap<String, Option<String>>>>,
+    renderers: Arc<Mutex<Renderers>>,
+}
+/// Renderer namespaces by hashed device id (the on-disk identity), plus a
+/// memo by plain device id so per-frame lookups skip hashing. Both maps are
+/// written together under one mutex, so the memo can never go stale.
+#[derive(Debug, Default)]
+struct Renderers {
+    by_hash: HashMap<String, Option<Arc<str>>>,
+    by_device: HashMap<String, Option<Arc<str>>>,
 }
 #[derive(Serialize, Deserialize)]
 struct DeviceRenderer {
@@ -683,31 +691,46 @@ impl PreviewCache {
                     // potentially obsolete legacy rendering for this device.
                     _ => Some("invalid-renderer-metadata".into()),
                 };
-                renderers.insert(hash.to_owned(), namespace);
+                renderers.insert(hash.to_owned(), namespace.map(Arc::from));
             }
         }
         Ok(Self {
             dir,
             lru,
-            renderers: Arc::new(Mutex::new(renderers)),
+            renderers: Arc::new(Mutex::new(Renderers {
+                by_hash: renderers,
+                by_device: HashMap::new(),
+            })),
         })
     }
     pub fn set_budget(&self, bytes: u64) -> Result<()> {
         self.lru.set_budget(bytes)
     }
-    pub(crate) fn rendering_namespace(&self, device_id: &str) -> Option<String> {
-        self.renderers
-            .lock()
-            .unwrap()
+    /// A device's renderer namespace, shared rather than copied, with no
+    /// hashing after the first lookup of a device (called per tile per frame).
+    pub(crate) fn rendering_namespace(&self, device_id: &str) -> Option<Arc<str>> {
+        let mut renderers = self.renderers.lock().unwrap();
+        if let Some(namespace) = renderers.by_device.get(device_id) {
+            return namespace.clone();
+        }
+        let namespace = renderers
+            .by_hash
             .get(blake3::hash(device_id.as_bytes()).to_hex().as_str())
             .cloned()
-            .flatten()
+            .flatten();
+        renderers
+            .by_device
+            .insert(device_id.to_owned(), namespace.clone());
+        namespace
     }
     pub(crate) fn remember_renderer(&self, device_id: &str, namespace: Option<&str>) {
-        self.renderers.lock().unwrap().insert(
+        let namespace: Option<Arc<str>> = namespace.map(Arc::from);
+        let mut renderers = self.renderers.lock().unwrap();
+        renderers.by_hash.insert(
             blake3::hash(device_id.as_bytes()).to_hex().to_string(),
-            namespace.map(str::to_owned),
+            namespace.clone(),
         );
+        renderers.by_device.insert(device_id.to_owned(), namespace);
     }
     fn set_renderer(&self, device_id: &str, namespace: Option<&str>) -> Result<()> {
         ensure!(
@@ -1610,6 +1633,35 @@ mod rendering_tests {
             .unwrap()
             .jpeg,
             first.jpeg
+        );
+    }
+
+    #[test]
+    fn memoized_renderer_lookup_follows_changes_made_through_other_handles() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::new(temp.path().into()).unwrap();
+        let other = cache.clone();
+        // Memoize both a miss and a hit before changing them elsewhere.
+        assert_eq!(cache.rendering_namespace("device"), None);
+        other.remember_renderer("device", Some("renderer-a"));
+        assert_eq!(
+            cache.rendering_namespace("device").as_deref(),
+            Some("renderer-a")
+        );
+        other.set_renderer("device", Some("renderer-b")).unwrap();
+        assert_eq!(
+            cache.rendering_namespace("device").as_deref(),
+            Some("renderer-b")
+        );
+        other.remember_renderer("device", None);
+        assert_eq!(cache.rendering_namespace("device"), None);
+        // A restart reads the hashed on-disk identity without the memo.
+        assert_eq!(
+            PreviewCache::new(temp.path().into())
+                .unwrap()
+                .rendering_namespace("device")
+                .as_deref(),
+            Some("renderer-b")
         );
     }
 
