@@ -355,8 +355,12 @@ fn run_catalog(
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
         };
         // Drain a finite batch so indexing and settings debouncing still progress.
-        let batch = first.into_iter().chain(commands.try_iter()).take(128);
-        for command in batch {
+        let mut batch: VecDeque<_> = first
+            .into_iter()
+            .chain(commands.try_iter())
+            .take(128)
+            .collect();
+        while let Some(command) = batch.pop_front() {
             let command = match command {
                 IoCommand::ConnectRemote(host) => {
                     IoCommand::Remote(crate::network::RemoteCommand::Connect(host))
@@ -504,7 +508,17 @@ fn run_catalog(
                     }
                 }
                 IoCommand::Decisions(decisions) => {
-                    let result = catalog.set_decisions(&decisions);
+                    // Group commit: decisions queued behind one ~20 ms fsync share
+                    // the next one. Only an adjacent run is merged, so every other
+                    // command still observes exactly the decisions sent before it.
+                    let mut run = vec![decisions];
+                    while let Some(IoCommand::Decisions(_)) = batch.front() {
+                        let Some(IoCommand::Decisions(next)) = batch.pop_front() else {
+                            unreachable!()
+                        };
+                        run.push(next);
+                    }
+                    let results = save_decision_run(&catalog, &run);
                     // Invalidate before acknowledging: a queued pre-decision
                     // snapshot must never replace newly acknowledged UI state.
                     // The UI already applied these decisions, so only a discarded
@@ -514,12 +528,14 @@ fn run_catalog(
                     if take(&photos).is_some() {
                         refresh_needed = true;
                     }
-                    match result {
-                        Ok(()) => reliable(&events, IoEvent::Saved),
-                        Err(error) => reliable(
-                            &events,
-                            IoEvent::SaveFailed(format!("Decision was not saved: {error:#}")),
-                        ),
+                    for result in results {
+                        match result {
+                            Ok(()) => reliable(&events, IoEvent::Saved),
+                            Err(error) => reliable(
+                                &events,
+                                IoEvent::SaveFailed(format!("Decision was not saved: {error:#}")),
+                            ),
+                        }
                     }
                 }
                 IoCommand::DeleteFiles(plan) => {
@@ -928,6 +944,21 @@ fn run_catalog(
             IoEvent::Error(format!("Shutdown flush failed: {error:#}")),
         ),
     }
+}
+
+/// One result per Decisions command, in order. A run commits in one
+/// transaction; if that fails, each command is retried alone so one invalid
+/// command (e.g. a photo removed meanwhile) cannot fail its neighbours.
+fn save_decision_run(catalog: &Catalog, run: &[Vec<PhotoDecision>]) -> Vec<Result<()>> {
+    if run.len() > 1 {
+        let all: Vec<_> = run.iter().flatten().copied().collect();
+        if catalog.set_decisions(&all).is_ok() {
+            return run.iter().map(|_| Ok(())).collect();
+        }
+    }
+    run.iter()
+        .map(|decisions| catalog.set_decisions(decisions))
+        .collect()
 }
 
 fn flush_hashes(catalog: &Catalog, pending: &mut HashMap<i64, u64>) -> Result<()> {
@@ -2266,6 +2297,167 @@ mod tests {
             vec![JobState::Queued, JobState::Running, JobState::Completed]
         );
         assert_eq!(transitions[&3], vec![JobState::Failed]);
+        shutdown(&commands);
+    }
+
+    #[test]
+    fn decision_runs_share_a_commit_and_isolate_an_invalid_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&dir.path().join("catalog.sqlite3")).unwrap();
+        let photos: Vec<_> = (0..3)
+            .map(|i| Photo {
+                path: dir.path().join(format!("photo-{i}.jpg")),
+                ..Photo::default()
+            })
+            .collect();
+        catalog.upsert_photos(&photos).unwrap();
+        let ids: Vec<_> = catalog.photos().unwrap().iter().map(|p| p.id).collect();
+        let before = wal_commits(&catalog);
+        let run = vec![
+            vec![decision(ids[0], 1)],
+            vec![decision(ids[0], 3), decision(ids[1], 2)],
+            vec![decision(ids[2], 4)],
+        ];
+        assert!(save_decision_run(&catalog, &run).iter().all(Result::is_ok));
+        assert_eq!(wal_commits(&catalog) - before, 1);
+        let ratings = |catalog: &Catalog| -> Vec<u8> {
+            let mut photos = catalog.photos().unwrap();
+            photos.sort_by_key(|p| p.id);
+            photos.iter().map(|p| p.rating).collect()
+        };
+        // Later commands in a run win, exactly as sequential commits would.
+        assert_eq!(ratings(&catalog), vec![3, 2, 4]);
+        let run = vec![
+            vec![decision(ids[0], 5)],
+            vec![decision(ids[1], 5), decision(i64::MAX, 5)],
+            vec![decision(ids[2], 5)],
+        ];
+        let results = save_decision_run(&catalog, &run);
+        assert!(results[0].is_ok() && results[1].is_err() && results[2].is_ok());
+        // The failed command is atomic: its valid member was not applied.
+        assert_eq!(ratings(&catalog), vec![5, 2, 5]);
+    }
+    #[test]
+    #[ignore]
+    fn bench_service_50k() {
+        let dir = tempfile::tempdir_in(
+            std::env::var_os("SHADOWROOM_INDEX_BENCH_DIR").unwrap_or_else(|| "/tmp".into()),
+        )
+        .unwrap();
+        let catalog = Catalog::open(&dir.path().join("catalog.sqlite3")).unwrap();
+        let photos: Vec<_> = (0..50_000i64)
+            .map(|index| Photo {
+                path: format!("/bench/shoot/folder{:03}/frame{index:06}.nef", index / 100).into(),
+                filename: format!("frame{index:06}.nef"),
+                folder: format!("/bench/shoot/folder{:03}", index / 100),
+                camera: "Bench camera".into(),
+                lens: "Bench lens".into(),
+                width: 6000,
+                height: 4000,
+                modified_at: 1704067200000 + index,
+                captured_at: Some(1704067200000 + (index / 8) * 15_000 + (index % 8) * 120),
+                capture_time_kind: "offset".into(),
+                size_bytes: 60 * 1024 * 1024,
+                metadata_version: 2,
+                dhash: Some(index as u64 / 8),
+                ..Default::default()
+            })
+            .collect();
+        for batch in photos.chunks(1024) {
+            catalog.upsert_photos(batch).unwrap();
+        }
+        let groups_tx: GroupSlot = Arc::new(Mutex::new(None));
+        let worker = GroupWorker::start(
+            groups_tx.clone(),
+            GroupingOptions {
+                mode: GroupingMode::Burst,
+                ..Default::default()
+            },
+        );
+        let photo_slot: PhotoSlot = Arc::new(Mutex::new(None));
+        let (events, _rx) = unbounded();
+        for pass in 0..3 {
+            let started = Instant::now();
+            publish(&catalog, &photo_slot, &worker, &events);
+            eprintln!("BENCH publish 50k pass={pass}: {:?}", started.elapsed());
+        }
+        let started = Instant::now();
+        std::hint::black_box(catalog.photos().unwrap());
+        eprintln!("BENCH photos() 50k: {:?}", started.elapsed());
+        let started = Instant::now();
+        for i in 0..100 {
+            catalog
+                .set_decisions(&[decision(1 + i, (i % 5) as u8)])
+                .unwrap();
+        }
+        eprintln!("BENCH 100 single-decision commits: {:?}", started.elapsed());
+        let started = Instant::now();
+        let all: Vec<_> = (0..100)
+            .map(|i| decision(1 + i, (i % 5) as u8 + 1))
+            .collect();
+        catalog.set_decisions(&all).unwrap();
+        eprintln!("BENCH 1 commit of 100 decisions: {:?}", started.elapsed());
+        let started = Instant::now();
+        for i in 0..1000 {
+            catalog.set_dhashes(&[(1 + i, 7)]).unwrap();
+        }
+        eprintln!("BENCH 1000 single dhash commits: {:?}", started.elapsed());
+        let hashes: Vec<_> = (0..5000).map(|i| (1 + i, 9u64)).collect();
+        let started = Instant::now();
+        for chunk in hashes.chunks(32) {
+            catalog.set_dhashes(chunk).unwrap();
+        }
+        eprintln!(
+            "BENCH 5000 dhashes in batches of 32: {:?}",
+            started.elapsed()
+        );
+        let started = Instant::now();
+        catalog.flush().unwrap();
+        eprintln!("BENCH checkpoint: {:?}", started.elapsed());
+        let started = Instant::now();
+        std::hint::black_box(
+            catalog
+                .prepare_export(
+                    std::path::Path::new("/unused"),
+                    false,
+                    &(1..=5000).collect::<Vec<_>>(),
+                )
+                .unwrap(),
+        );
+        eprintln!("BENCH export plan 5000 ids: {:?}", started.elapsed());
+        drop(worker);
+        drop(catalog);
+        let (commands, events, _, _) = start_io_with_exporter(
+            dir.path().into(),
+            Settings {
+                auto_discover_drives: false,
+                ..Settings::default()
+            },
+            None,
+            Arc::new(ExportPlan::execute),
+            Arc::new(|_| Ok(())),
+        );
+        flush(&commands);
+        while events.try_recv().is_ok() {}
+        let started = Instant::now();
+        for i in 0..200 {
+            commands
+                .send(IoCommand::Decisions(vec![decision(
+                    1 + i % 50,
+                    (i % 5) as u8,
+                )]))
+                .unwrap();
+        }
+        let mut saved = 0;
+        while saved < 200 {
+            if let IoEvent::Saved = events.recv_timeout(Duration::from_secs(30)).unwrap() {
+                saved += 1;
+            }
+        }
+        eprintln!(
+            "BENCH actor: 200 queued Decisions commands acknowledged in {:?}",
+            started.elapsed()
+        );
         shutdown(&commands);
     }
 }
