@@ -125,14 +125,14 @@ impl Catalog {
             })
         };
         if let Some(hash) = &group.content_hash {
-            let mut found = connection.query_row("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE content_hash=?1 ORDER BY imported_at DESC LIMIT 1", [hash], read).optional()?;
+            let mut found = connection.prepare_cached("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE content_hash=?1 ORDER BY imported_at DESC LIMIT 1")?.query_row([hash], read).optional()?;
             if let Some(found) = &mut found {
                 found.matched_by = "hash".into();
             }
             return Ok(found);
         }
         if group.capture_kind != "mtime" {
-            let mut found = connection.query_row("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE original_filename=?1 AND size=?2 AND capture_ms=?3 AND capture_kind<>'mtime' ORDER BY imported_at DESC LIMIT 1", params![group.photo.filename, group.primary.size, group.capture_ms], read).optional()?;
+            let mut found = connection.prepare_cached("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE original_filename=?1 AND size=?2 AND capture_ms=?3 AND capture_kind<>'mtime' ORDER BY imported_at DESC LIMIT 1")?.query_row(params![group.photo.filename, group.primary.size, group.capture_ms], read).optional()?;
             if let Some(found) = &mut found {
                 found.matched_by = "capture".into();
             }
@@ -142,7 +142,7 @@ impl Catalog {
         }
         const DAY: i64 = 86_400_000_000_000;
         const QUARTER: i64 = 900_000_000_000;
-        let mut found = connection.query_row("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE original_filename=?1 AND size=?2 AND mtime_ns BETWEEN ?3 AND ?4 AND ((mtime_ns-?5) % ?6)=0 ORDER BY imported_at DESC LIMIT 1", params![group.photo.filename, group.primary.size, group.primary.mtime_ns.saturating_sub(DAY), group.primary.mtime_ns.saturating_add(DAY), group.primary.mtime_ns, QUARTER], read).optional()?;
+        let mut found = connection.prepare_cached("SELECT imported_at,destinations,job_id,id FROM ingest_log WHERE original_filename=?1 AND size=?2 AND mtime_ns BETWEEN ?3 AND ?4 AND ((mtime_ns-?5) % ?6)=0 ORDER BY imported_at DESC LIMIT 1")?.query_row(params![group.photo.filename, group.primary.size, group.primary.mtime_ns.saturating_sub(DAY), group.primary.mtime_ns.saturating_add(DAY), group.primary.mtime_ns, QUARTER], read).optional()?;
         if let Some(found) = &mut found {
             found.matched_by = "mtime_timezone".into();
         }

@@ -1184,3 +1184,54 @@ fn worker_pause_without_a_job_is_rejected_not_faked() {
     worker.stop().unwrap();
     assert!(matches!(event, Event::Error(e) if e.contains("No active import")));
 }
+
+#[test]
+#[ignore]
+fn bench_history_lookup_per_scanned_group() {
+    let fixture = Fixture::new();
+    {
+        let mut connection = fixture.catalog.connection.lock().unwrap();
+        let tx = connection.transaction().unwrap();
+        for i in 0..20_000i64 {
+            tx.execute("INSERT INTO ingest_log(source_volume,source_relative,original_filename,size,mtime_ns,capture_ms,capture_kind,content_hash,destinations,backups,job_id,imported_at,data) VALUES('v',?1,?1,?2,?3,?3,'offset',NULL,'[]','[]','job',?3,'{}')", rusqlite::params![format!("IMG_{i:05}.CR3"), 25_000_000 + i, 1_700_000_000_000 + i]).unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let groups: Vec<_> = (0..5_000i64)
+        .map(|i| IngestGroup {
+            id: i as usize,
+            primary: SourceFile {
+                path: format!("/card/DCIM/NEW_{i:05}.CR3").into(),
+                size: 30_000_000 + i as u64,
+                mtime_ns: 1_800_000_000_000_000_000 + i,
+            },
+            companion: None,
+            sidecars: Vec::new(),
+            kind: "photo".into(),
+            capture_ms: 1_800_000_000_000 + i,
+            capture_kind: "offset".into(),
+            photo: Photo {
+                filename: format!("NEW_{i:05}.CR3"),
+                ..Default::default()
+            },
+            make: String::new(),
+            serial: String::new(),
+            volume: "v".into(),
+            relative_path: format!("DCIM/NEW_{i:05}.CR3").into(),
+            content_hash: None,
+            seen: None,
+            selected: true,
+            warning: None,
+        })
+        .collect();
+    for pass in 0..3 {
+        let started = std::time::Instant::now();
+        for group in &groups {
+            assert!(fixture.catalog.ingest_seen(group).unwrap().is_none());
+        }
+        eprintln!(
+            "BENCH ingest_seen 5000 new groups pass={pass}: {:?}",
+            started.elapsed()
+        );
+    }
+}
