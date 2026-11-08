@@ -293,6 +293,17 @@ fn start_server_at(path: PathBuf) -> Result<AutomationServer> {
                             }
                         }
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) if accept_error_is_transient(&error) => {
+                            // A client aborting before accept, or a momentary
+                            // descriptor shortage, must not end automation for
+                            // the rest of the session. Back off instead of spinning.
+                            bridge_diagnostic(
+                                &diagnostics,
+                                "listener accept deferred",
+                                Some(error.kind()),
+                            );
+                            thread::sleep(Duration::from_millis(50));
+                        }
                         Err(error) => {
                             bridge_diagnostic(
                                 &diagnostics,
@@ -308,6 +319,28 @@ fn start_server_at(path: PathBuf) -> Result<AutomationServer> {
     Ok(server)
 }
 
+/// accept(2) failures that concern one pending connection or a temporary
+/// resource limit, rather than the listening socket itself.
+fn accept_error_is_transient(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let Some(code) = error.raw_os_error() {
+        return [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::EPROTO,
+        ]
+        .contains(&code);
+    }
+    false
+}
 fn check_private_file(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .context("Shadowroom is not running; open the desktop app first")?;
@@ -641,9 +674,27 @@ fn run_stdio(
             Err(_) => Some(rpc_error(Value::Null, -32700, "Invalid JSON")),
         };
         if let Some(response) = response {
-            write_json(&mut output, &response, RESPONSE_LIMIT * 2)?;
+            write_stdio_response(&mut output, response, RESPONSE_LIMIT * 2)?;
         }
     }
+}
+/// A tool result is wrapped twice (escaped text plus structured content), so a
+/// desktop reply within RESPONSE_LIMIT can still exceed the stdio frame limit.
+/// That is one failed request, not a reason to end the client's MCP session.
+fn write_stdio_response(output: &mut impl Write, response: Value, maximum: usize) -> Result<()> {
+    let mut bytes = serde_json::to_vec(&response)?;
+    if bytes.len() + 1 > maximum {
+        let id = response.get("id").cloned().unwrap_or(Value::Null);
+        bytes = serde_json::to_vec(&rpc_error(
+            id,
+            -32603,
+            &format!("Tool response exceeds {maximum} bytes; use smaller library pages"),
+        ))?;
+    }
+    bytes.push(b'\n');
+    output.write_all(&bytes)?;
+    output.flush()?;
+    Ok(())
 }
 #[derive(Default)]
 struct McpSession {
@@ -1384,6 +1435,52 @@ mod tests {
         assert_eq!(lines[0]["error"]["code"], -32700);
         assert_eq!(lines[1]["result"]["protocolVersion"], PROTOCOLS[0]);
         assert_eq!(lines[2]["result"]["tools"].as_array().unwrap().len(), 46);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn accept_errors_for_one_connection_or_descriptor_pressure_are_retried() {
+        for code in [
+            libc::ECONNABORTED,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+        ] {
+            assert!(accept_error_is_transient(&io::Error::from_raw_os_error(
+                code
+            )));
+        }
+        for code in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK] {
+            assert!(!accept_error_is_transient(&io::Error::from_raw_os_error(
+                code
+            )));
+        }
+    }
+    #[test]
+    fn oversized_tool_result_fails_one_request_and_keeps_the_session() {
+        let input = format!(
+            "{}\n{}\n{}\n",
+            initialize(PROTOCOLS[0]),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"library_list","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"ping"})
+        );
+        // A desktop reply near RESPONSE_LIMIT whose escaped text copy pushes the
+        // wrapped MCP frame past twice the limit.
+        let quotes = "\"".repeat(RESPONSE_LIMIT - 64);
+        let mut output = Vec::new();
+        run_stdio(io::Cursor::new(input), &mut output, |_, _| {
+            Ok(json!({ "q": quotes }))
+        })
+        .unwrap();
+        let lines: Vec<Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1]["id"], 2);
+        assert_eq!(lines[1]["error"]["code"], -32603);
+        assert_eq!(lines[2]["id"], 3);
+        assert!(lines[2]["result"].is_object());
     }
     #[test]
     fn argument_limits_and_unknown_commands_are_enforced() {
