@@ -828,6 +828,10 @@ fn run_host(
 const SYNC_DEADLINE: Duration = Duration::from_secs(3600);
 /// Staging rows older than this belong to no live sync (see SYNC_DEADLINE).
 const STALE_STAGE: Duration = Duration::from_secs(24 * 3600);
+/// Records per staging transaction. Each commit is FULL-synchronous; 512
+/// cut a 20k-record sync from 3.2-5.3 s to 2.2-2.4 s against 128 (debug
+/// build, XFS), while holding only ~1 MB of records.
+const STAGE_BATCH: usize = 512;
 #[allow(clippy::too_many_arguments)]
 fn sync_root(
     catalog: &Catalog,
@@ -879,8 +883,8 @@ fn sync_root_once(
             },
             SYNC_DEADLINE,
         )?;
-        let mut records: Vec<PhotoRecord> = Vec::with_capacity(128);
-        let mut deleted = Vec::with_capacity(128);
+        let mut records: Vec<PhotoRecord> = Vec::with_capacity(STAGE_BATCH);
+        let mut deleted = Vec::with_capacity(STAGE_BATCH);
         loop {
             match pending
                 .recv_cancellable(|| {
@@ -898,7 +902,7 @@ fn sync_root_once(
                 }
                 _ => bail!("Unexpected metadata sync response"),
             }
-            if records.len() + deleted.len() >= 128 {
+            if records.len() + deleted.len() >= STAGE_BATCH {
                 catalog.stage_remote(&token, device, root, &records, &deleted)?;
                 records.clear();
                 deleted.clear();
@@ -1054,7 +1058,7 @@ mod tests {
                     ..
                 }
             ));
-            for i in 0..130 {
+            for i in 0..STAGE_BATCH + 2 {
                 let mut changed = record.clone();
                 changed.key.relative_path = format!("new-{i}.jpg").into();
                 write_frame(

@@ -994,7 +994,11 @@ impl State {
                 }
                 // Publish the media pipeline hash through the existing catalog API.
                 // The next index revision exports it; no extra source read is needed.
-                root.catalog.set_dhash(record.metadata.id, preview.dhash)?;
+                // Skip the FULL-synchronous write when the indexed record already
+                // carries this hash (every repeat Fit/Full decode of a photo).
+                if record.metadata.dhash != Some(preview.dhash) {
+                    root.catalog.set_dhash(record.metadata.id, preview.dhash)?;
+                }
                 let mut payload = JpegPayload::default();
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut payload, 85)
                     .encode_image(&rgb)?;

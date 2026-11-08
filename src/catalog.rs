@@ -2451,6 +2451,35 @@ mod tests {
         }));
     }
 
+    /// Remote metadata sync cost per staging batch size (FULL-synchronous
+    /// commits). Set SHADOWROOM_INDEX_BENCH_DIR to a real disk, not tmpfs.
+    #[test]
+    #[ignore]
+    fn remote_sync_staging_harness() {
+        use std::time::Instant;
+        let base = std::env::var_os("SHADOWROOM_INDEX_BENCH_DIR").unwrap_or_else(|| "/tmp".into());
+        let records: Vec<_> = (0..20_000)
+            .map(|i| remote_record(&format!("shoot/f{:03}/p{i:06}.jpg", i / 500), 1, Some(i)))
+            .collect();
+        for batch in [128, 512, 2048] {
+            let dir = tempfile::tempdir_in(&base).unwrap();
+            let c = Catalog::open(&dir.path().join("c.db")).unwrap();
+            let started = Instant::now();
+            let token = Catalog::remote_stage_token();
+            for chunk in records.chunks(batch) {
+                c.stage_remote(&token, "device", "root", chunk, &[])
+                    .unwrap();
+            }
+            let staged = started.elapsed();
+            c.finish_remote_sync(&token, "device", "root", 1, true)
+                .unwrap();
+            eprintln!(
+                "batch {batch}: stage {staged:?}, total {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
     #[test]
     fn abandoned_remote_staging_is_pruned_without_touching_live_batches() {
         let dir = tempfile::tempdir().unwrap();
