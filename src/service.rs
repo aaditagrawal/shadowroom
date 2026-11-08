@@ -2337,6 +2337,99 @@ mod tests {
         // The failed command is atomic: its valid member was not applied.
         assert_eq!(ratings(&catalog), vec![5, 2, 5]);
     }
+    /// Realistic metadata so JSON parsing cost matches an indexed library.
+    fn bench_photo(index: i64) -> Photo {
+        Photo {
+            path: format!("/bench/shoot/folder{:03}/frame{index:06}.nef", index / 100).into(),
+            filename: format!("frame{index:06}.nef"),
+            folder: format!("/bench/shoot/folder{:03}", index / 100),
+            camera: "NIKON Z 8".into(),
+            lens: "NIKKOR Z 24-120mm f/4 S".into(),
+            width: 8256,
+            height: 5504,
+            iso: Some(400),
+            aperture: Some(4.0),
+            shutter: "1/500".into(),
+            focal_length: Some(70.0),
+            orientation: 1,
+            modified_at: 1704067200000 + index,
+            captured_at: Some(1704067200000 + (index / 8) * 15_000 + (index % 8) * 120),
+            captured_offset: Some("+05:30".into()),
+            capture_time_kind: "offset".into(),
+            size_bytes: 60 * 1024 * 1024,
+            metadata_version: 2,
+            companion_path: Some(
+                format!("/bench/shoot/folder{:03}/frame{index:06}.jpg", index / 100).into(),
+            ),
+            companion_size_bytes: 12 * 1024 * 1024,
+            companion_modified_at: 1704067200000 + index,
+            dhash: (index % 3 != 0).then_some(index as u64 / 8),
+            ..Default::default()
+        }
+    }
+
+    /// Actor-side snapshot refresh cost (catalog read, sort, grouping input,
+    /// slot hand-off) for the refresh shapes seen in practice. Run with
+    /// `--release -- --ignored --nocapture bench_snapshot_refresh`.
+    #[test]
+    #[ignore]
+    fn bench_snapshot_refresh() {
+        fn best(mut run: impl FnMut() -> Duration) -> Duration {
+            (0..5).map(|_| run()).min().unwrap()
+        }
+        for n in [10_000i64, 50_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let catalog = Catalog::open(&dir.path().join("catalog.sqlite3")).unwrap();
+            let photos: Vec<_> = (0..n).map(bench_photo).collect();
+            let started = Instant::now();
+            for batch in photos.chunks(1024) {
+                catalog.upsert_photos(batch).unwrap();
+            }
+            eprintln!("BENCH {n}: upsert all {:?}", started.elapsed());
+            let worker = GroupWorker::start(
+                Arc::new(Mutex::new(None)),
+                GroupingOptions {
+                    mode: GroupingMode::Burst,
+                    ..Default::default()
+                },
+            );
+            let slot: PhotoSlot = Arc::new(Mutex::new(None));
+            let (events, _rx) = unbounded();
+            let mut refresh = || {
+                let started = Instant::now();
+                publish(&catalog, &slot, &worker, &events);
+                let elapsed = started.elapsed();
+                std::hint::black_box(take(&slot));
+                elapsed
+            };
+            eprintln!("BENCH {n}: cold refresh {:?}", refresh());
+            eprintln!("BENCH {n}: unchanged refresh {:?}", best(&mut refresh));
+            let mut next = n;
+            let indexing = best(|| {
+                let batch: Vec<_> = (next..next + 500).map(bench_photo).collect();
+                next += 500;
+                catalog.upsert_photos(&batch).unwrap();
+                refresh()
+            });
+            eprintln!("BENCH {n}: refresh after 500 indexed {indexing:?}");
+            let mut round = 0u8;
+            let decided = best(|| {
+                round += 1;
+                let decisions: Vec<_> = (1..=100).map(|id| decision(id, round % 6)).collect();
+                catalog.set_decisions(&decisions).unwrap();
+                refresh()
+            });
+            eprintln!("BENCH {n}: refresh after 100 decisions {decided:?}");
+            let hashed = best(|| {
+                round += 1;
+                let hashes: Vec<_> = (1..=32).map(|id| (id * 7, u64::from(round))).collect();
+                catalog.set_dhashes(&hashes).unwrap();
+                refresh()
+            });
+            eprintln!("BENCH {n}: refresh after 32 hashes {hashed:?}");
+        }
+    }
+
     #[test]
     #[ignore]
     fn bench_service_50k() {
