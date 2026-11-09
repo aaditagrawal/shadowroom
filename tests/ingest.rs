@@ -1006,3 +1006,62 @@ fn database_commit_failure_rolls_back_outputs_and_never_advances_counters() {
     assert!(!plan.options.library_root.join("A.jpg").exists());
     no_parts(f.temp.path());
 }
+
+/// Throughput benchmark, run on demand (with a release build for real numbers):
+/// `SHADOWROOM_INGEST_BENCH_DIR=/abs/dir SHADOWROOM_INGEST_BENCH=5000x200000 \
+///  cargo test --release --test ingest ingest_throughput -- --ignored --nocapture`
+/// The directory must be on the filesystem being measured: tmpfs hides fsync cost.
+#[test]
+#[ignore]
+fn ingest_throughput_benchmark() {
+    let spec = std::env::var("SHADOWROOM_INGEST_BENCH").unwrap_or_else(|_| "2000x200000".into());
+    let (count, size) = spec.split_once('x').expect("COUNTxBYTES");
+    let (count, size): (usize, usize) = (count.parse().unwrap(), size.parse().unwrap());
+    let base = std::env::var("SHADOWROOM_INGEST_BENCH_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
+    let source = temp.path().join("card");
+    fs::create_dir(&source).unwrap();
+    let mut bytes = vec![0u8; size];
+    for n in 0..count {
+        for (i, b) in bytes.iter_mut().enumerate().take(64) {
+            *b = (n.wrapping_mul(31) + i) as u8;
+        }
+        fs::write(source.join(format!("IMG_{n:05}.jpg")), &bytes).unwrap();
+    }
+    let catalog = Catalog::open(&temp.path().join("catalog.sqlite3")).unwrap();
+    let started = std::time::Instant::now();
+    let scan = ingest::scan(&source, &catalog, |_| {}, &Control::default()).unwrap();
+    let scanned = started.elapsed();
+    let options = IngestOptions {
+        library_root: temp.path().join("library"),
+        backup_roots: vec![temp.path().join("backup")],
+        folder_template: "".into(),
+        file_template: "{original}".into(),
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    let plan = ingest::plan(&scan, options, catalog.ingest_sequences().unwrap()).unwrap();
+    let planned = started.elapsed();
+    assert_eq!(plan.groups.len(), count);
+    let mut updates = 0usize;
+    let started = std::time::Instant::now();
+    let report = execute(&plan, &catalog, &Control::default(), |_| updates += 1).unwrap();
+    let copied = started.elapsed();
+    assert_eq!(
+        report.progress.phase,
+        Phase::Completed,
+        "{:?}",
+        report.progress.errors
+    );
+    assert_eq!(report.progress.completed, count);
+    let total = (count * size) as f64 / 1e6;
+    println!(
+        "ingest bench {count}x{size} (+1 backup): scan {scanned:?}, plan {planned:?}, \
+         execute {copied:?} ({:.1} MB/s source, {:.1} files/s, {updates} progress callbacks)",
+        total / copied.as_secs_f64(),
+        count as f64 / copied.as_secs_f64()
+    );
+}
