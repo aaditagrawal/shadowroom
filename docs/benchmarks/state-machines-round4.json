@@ -1,0 +1,243 @@
+{
+  "date": "2026-11-09",
+  "platform": "Linux-7.2.11-300.fc45.x86_64-x86_64-with-glibc2.44",
+  "cpu": "Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "profile": "release, default features, LCMS2_STATIC=1",
+  "baseline_commit": "7e03044",
+  "after_commit": "491561e5d9aaf54e15801c73e50f9f35877d2fcc",
+  "method": {
+    "snapshot": "Synthetic realistic photo metadata, 10k and 50k; each warm result is the minimum of five refreshes. Three independent process runs per revision; summaries are medians of those minima. Cold refresh and upsert have one sample per process. Catalog on the same persistent filesystem as the checkout; warm page cache. Includes actor publication, excludes UI and end-to-end frame presentation.",
+    "ingest": "128 distinct generated 200000-byte files plus one backup on the same persistent filesystem. Fresh fixture per process, source creation before timing. Includes copy, BLAKE3 verification, fsync, catalog commit, and manifest finalization. Three independent process runs per revision. Excludes camera media, real RAW decoding, and separate backup devices.",
+    "grid": "36 visible cells over a 5k plan, 2000 iterations per path. Former clone/format work is emulated alongside the shared-cell model in the final binary. Data preparation only, excludes GPUI layout, GPU upload, and presentation.",
+    "host": "Ordinary desktop processes remained running. No compiler or other Shadowroom test process ran during measurements. Host was not CPU-isolated.",
+    "memory": "Peak RSS is for the entire benchmark process and includes fixture vectors and grouping workers. It is not steady-state application RSS."
+  },
+  "binary_sha256": {
+    "snapshot_before": "d6bfe65ba31d688d7156203ad92fb88ad2e1893a588ba8e4fda499e3e34d50e8",
+    "snapshot_after": "eebb6861f4afd61dd66b5edabaf40d8d3b2d17f2ee3540839070fbcea1918216",
+    "ingest_before": "8952fc9b8ea4ceef225fc730390619e11367c26fc3912c03b541e9da70da01c3",
+    "ingest_after": "add4b0f1c7328a704e3ba909bf56844106cbd3a5a8546881bb3d6acf8fcbbcf9",
+    "desktop_after": "79060ba76e57bb9f4463acb10e9a19d759716bccf678274fdcb033a27df445f7"
+  },
+  "snapshot": {
+    "before": [
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 308 filtered out; finished in 4.40s\n\nBENCH 10000: upsert all 132.453171ms\nBENCH 10000: cold refresh 22.72365ms\nBENCH 10000: unchanged refresh 18.91648ms\nBENCH 10000: refresh after 500 indexed 19.605707ms\nBENCH 10000: refresh after 100 decisions 22.041122ms\nBENCH 10000: refresh after 32 hashes 22.125979ms\nBENCH 50000: upsert all 678.064656ms\nBENCH 50000: cold refresh 110.411838ms\nBENCH 50000: unchanged refresh 97.151536ms\nBENCH 50000: refresh after 500 indexed 104.825899ms\nBENCH 50000: refresh after 100 decisions 107.989866ms\nBENCH 50000: refresh after 32 hashes 109.616242ms\nPEAK_RSS_KIB 273388\n",
+        "peak_rss_kib": 273388,
+        "timings_ms": {
+          "10000/upsert all": 132.453171,
+          "10000/cold refresh": 22.72365,
+          "10000/unchanged refresh": 18.91648,
+          "10000/refresh after 500 indexed": 19.605707,
+          "10000/refresh after 100 decisions": 22.041122,
+          "10000/refresh after 32 hashes": 22.125979,
+          "50000/upsert all": 678.064656,
+          "50000/cold refresh": 110.411838,
+          "50000/unchanged refresh": 97.151536,
+          "50000/refresh after 500 indexed": 104.825899,
+          "50000/refresh after 100 decisions": 107.989866,
+          "50000/refresh after 32 hashes": 109.616242
+        }
+      },
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 308 filtered out; finished in 4.56s\n\nBENCH 10000: upsert all 134.596969ms\nBENCH 10000: cold refresh 23.217286ms\nBENCH 10000: unchanged refresh 19.889694ms\nBENCH 10000: refresh after 500 indexed 20.555203ms\nBENCH 10000: refresh after 100 decisions 23.633231ms\nBENCH 10000: refresh after 32 hashes 23.466846ms\nBENCH 50000: upsert all 679.692039ms\nBENCH 50000: cold refresh 104.878779ms\nBENCH 50000: unchanged refresh 99.940284ms\nBENCH 50000: refresh after 500 indexed 104.156214ms\nBENCH 50000: refresh after 100 decisions 114.356836ms\nBENCH 50000: refresh after 32 hashes 110.117929ms\nPEAK_RSS_KIB 260812\n",
+        "peak_rss_kib": 260812,
+        "timings_ms": {
+          "10000/upsert all": 134.596969,
+          "10000/cold refresh": 23.217286,
+          "10000/unchanged refresh": 19.889694,
+          "10000/refresh after 500 indexed": 20.555203,
+          "10000/refresh after 100 decisions": 23.633231,
+          "10000/refresh after 32 hashes": 23.466846,
+          "50000/upsert all": 679.692039,
+          "50000/cold refresh": 104.878779,
+          "50000/unchanged refresh": 99.940284,
+          "50000/refresh after 500 indexed": 104.156214,
+          "50000/refresh after 100 decisions": 114.356836,
+          "50000/refresh after 32 hashes": 110.117929
+        }
+      },
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 308 filtered out; finished in 4.73s\n\nBENCH 10000: upsert all 147.84735ms\nBENCH 10000: cold refresh 23.76541ms\nBENCH 10000: unchanged refresh 21.424227ms\nBENCH 10000: refresh after 500 indexed 22.658086ms\nBENCH 10000: refresh after 100 decisions 25.741546ms\nBENCH 10000: refresh after 32 hashes 24.471204ms\nBENCH 50000: upsert all 755.29698ms\nBENCH 50000: cold refresh 114.174562ms\nBENCH 50000: unchanged refresh 111.506465ms\nBENCH 50000: refresh after 500 indexed 116.076861ms\nBENCH 50000: refresh after 100 decisions 121.517521ms\nBENCH 50000: refresh after 32 hashes 118.048828ms\nPEAK_RSS_KIB 269412\n",
+        "peak_rss_kib": 269412,
+        "timings_ms": {
+          "10000/upsert all": 147.84735,
+          "10000/cold refresh": 23.76541,
+          "10000/unchanged refresh": 21.424227,
+          "10000/refresh after 500 indexed": 22.658086,
+          "10000/refresh after 100 decisions": 25.741546,
+          "10000/refresh after 32 hashes": 24.471204,
+          "50000/upsert all": 755.29698,
+          "50000/cold refresh": 114.174562,
+          "50000/unchanged refresh": 111.506465,
+          "50000/refresh after 500 indexed": 116.076861,
+          "50000/refresh after 100 decisions": 121.517521,
+          "50000/refresh after 32 hashes": 118.048828
+        }
+      }
+    ],
+    "after": [
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 315 filtered out; finished in 3.20s\n\nBENCH 10000: upsert all 160.876727ms\nBENCH 10000: cold refresh 34.527376ms\nBENCH 10000: unchanged refresh 4.968411ms\nBENCH 10000: refresh after 500 indexed 9.783544ms\nBENCH 10000: refresh after 100 decisions 7.210968ms\nBENCH 10000: refresh after 32 hashes 10.074312ms\nBENCH 50000: upsert all 1.030028264s\nBENCH 50000: cold refresh 174.559928ms\nBENCH 50000: unchanged refresh 36.999718ms\nBENCH 50000: refresh after 500 indexed 59.131737ms\nBENCH 50000: refresh after 100 decisions 44.121996ms\nBENCH 50000: refresh after 32 hashes 59.215585ms\nPEAK_RSS_KIB 285116\n",
+        "peak_rss_kib": 285116,
+        "timings_ms": {
+          "10000/upsert all": 160.876727,
+          "10000/cold refresh": 34.527376,
+          "10000/unchanged refresh": 4.968411,
+          "10000/refresh after 500 indexed": 9.783544,
+          "10000/refresh after 100 decisions": 7.210968,
+          "10000/refresh after 32 hashes": 10.074312,
+          "50000/upsert all": 1030.028264,
+          "50000/cold refresh": 174.559928,
+          "50000/unchanged refresh": 36.999718,
+          "50000/refresh after 500 indexed": 59.131737,
+          "50000/refresh after 100 decisions": 44.121996,
+          "50000/refresh after 32 hashes": 59.215585
+        }
+      },
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 315 filtered out; finished in 3.26s\n\nBENCH 10000: upsert all 165.122655ms\nBENCH 10000: cold refresh 34.796923ms\nBENCH 10000: unchanged refresh 5.155579ms\nBENCH 10000: refresh after 500 indexed 10.508421ms\nBENCH 10000: refresh after 100 decisions 7.777244ms\nBENCH 10000: refresh after 32 hashes 10.635296ms\nBENCH 50000: upsert all 1.069344245s\nBENCH 50000: cold refresh 179.7795ms\nBENCH 50000: unchanged refresh 40.395342ms\nBENCH 50000: refresh after 500 indexed 63.528292ms\nBENCH 50000: refresh after 100 decisions 45.307813ms\nBENCH 50000: refresh after 32 hashes 59.712953ms\nPEAK_RSS_KIB 284920\n",
+        "peak_rss_kib": 284920,
+        "timings_ms": {
+          "10000/upsert all": 165.122655,
+          "10000/cold refresh": 34.796923,
+          "10000/unchanged refresh": 5.155579,
+          "10000/refresh after 500 indexed": 10.508421,
+          "10000/refresh after 100 decisions": 7.777244,
+          "10000/refresh after 32 hashes": 10.635296,
+          "50000/upsert all": 1069.344245,
+          "50000/cold refresh": 179.7795,
+          "50000/unchanged refresh": 40.395342,
+          "50000/refresh after 500 indexed": 63.528292,
+          "50000/refresh after 100 decisions": 45.307813,
+          "50000/refresh after 32 hashes": 59.712953
+        }
+      },
+      {
+        "raw_output": "\nrunning 1 test\ntest service::tests::bench_snapshot_refresh ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 315 filtered out; finished in 3.25s\n\nBENCH 10000: upsert all 166.491281ms\nBENCH 10000: cold refresh 34.48587ms\nBENCH 10000: unchanged refresh 4.997316ms\nBENCH 10000: refresh after 500 indexed 10.777931ms\nBENCH 10000: refresh after 100 decisions 7.901141ms\nBENCH 10000: refresh after 32 hashes 9.904637ms\nBENCH 50000: upsert all 1.077340282s\nBENCH 50000: cold refresh 175.07235ms\nBENCH 50000: unchanged refresh 38.60768ms\nBENCH 50000: refresh after 500 indexed 63.720275ms\nBENCH 50000: refresh after 100 decisions 44.455674ms\nBENCH 50000: refresh after 32 hashes 58.895853ms\nPEAK_RSS_KIB 285152\n",
+        "peak_rss_kib": 285152,
+        "timings_ms": {
+          "10000/upsert all": 166.491281,
+          "10000/cold refresh": 34.48587,
+          "10000/unchanged refresh": 4.997316,
+          "10000/refresh after 500 indexed": 10.777931,
+          "10000/refresh after 100 decisions": 7.901141,
+          "10000/refresh after 32 hashes": 9.904637,
+          "50000/upsert all": 1077.340282,
+          "50000/cold refresh": 175.07235,
+          "50000/unchanged refresh": 38.60768,
+          "50000/refresh after 500 indexed": 63.720275,
+          "50000/refresh after 100 decisions": 44.455674,
+          "50000/refresh after 32 hashes": 58.895853
+        }
+      }
+    ]
+  },
+  "ingest": {
+    "before": [
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.590354ms, plan 373.915\u00b5s, execute 1.705408593s (15.0 MB/s source, 75.1 files/s, 386 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 1.78s\n\nPEAK_RSS_KIB 10792\n",
+        "peak_rss_kib": 10792,
+        "execute_ms": 1705.408593,
+        "progress_callbacks": 386
+      },
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.361458ms, plan 364.529\u00b5s, execute 2.039089376s (12.6 MB/s source, 62.8 files/s, 386 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 2.11s\n\nPEAK_RSS_KIB 10900\n",
+        "peak_rss_kib": 10900,
+        "execute_ms": 2039.0893760000001,
+        "progress_callbacks": 386
+      },
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.46739ms, plan 345.815\u00b5s, execute 2.013371167s (12.7 MB/s source, 63.6 files/s, 386 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 2.09s\n\nPEAK_RSS_KIB 10784\n",
+        "peak_rss_kib": 10784,
+        "execute_ms": 2013.3711669999998,
+        "progress_callbacks": 386
+      }
+    ],
+    "after": [
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.670272ms, plan 373.533\u00b5s, execute 210.749065ms (121.5 MB/s source, 607.4 files/s, 258 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.30s\n\nPEAK_RSS_KIB 16132\n",
+        "peak_rss_kib": 16132,
+        "execute_ms": 210.749065,
+        "progress_callbacks": 258
+      },
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.422101ms, plan 372.809\u00b5s, execute 224.49159ms (114.0 MB/s source, 570.2 files/s, 258 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.32s\n\nPEAK_RSS_KIB 16000\n",
+        "peak_rss_kib": 16000,
+        "execute_ms": 224.49159,
+        "progress_callbacks": 258
+      },
+      {
+        "raw_output": "\nrunning 1 test\ningest bench 128x200000 (+1 backup): scan 2.559245ms, plan 368.539\u00b5s, execute 202.816772ms (126.2 MB/s source, 631.1 files/s, 258 progress callbacks)\ntest ingest_throughput_benchmark ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.29s\n\nPEAK_RSS_KIB 17064\n",
+        "peak_rss_kib": 17064,
+        "execute_ms": 202.816772,
+        "progress_callbacks": 258
+      }
+    ]
+  },
+  "grid": [
+    {
+      "raw_output": "\nrunning 1 test\ngrid cell data per frame (36 tiles, 5k plan): before 9.761\u00b5s, after 1.305\u00b5s\ntest desktop::ingest_ui::responsive_tests::grid_cell_frame_cost ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.10s\n\nPEAK_RSS_KIB 19704\n",
+      "peak_rss_kib": 19704,
+      "before_ms": 0.009760999999999999,
+      "after_ms": 0.001305
+    },
+    {
+      "raw_output": "\nrunning 1 test\ngrid cell data per frame (36 tiles, 5k plan): before 9.733\u00b5s, after 1.308\u00b5s\ntest desktop::ingest_ui::responsive_tests::grid_cell_frame_cost ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.11s\n\nPEAK_RSS_KIB 19468\n",
+      "peak_rss_kib": 19468,
+      "before_ms": 0.009733,
+      "after_ms": 0.0013080000000000001
+    },
+    {
+      "raw_output": "\nrunning 1 test\ngrid cell data per frame (36 tiles, 5k plan): before 10.032\u00b5s, after 1.327\u00b5s\ntest desktop::ingest_ui::responsive_tests::grid_cell_frame_cost ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.11s\n\nPEAK_RSS_KIB 19648\n",
+      "peak_rss_kib": 19648,
+      "before_ms": 0.010032000000000001,
+      "after_ms": 0.001327
+    }
+  ],
+  "summary": {
+    "snapshot_median_ms": {
+      "before": {
+        "10000/upsert all": 134.596969,
+        "10000/cold refresh": 23.217286,
+        "10000/unchanged refresh": 19.889694,
+        "10000/refresh after 500 indexed": 20.555203,
+        "10000/refresh after 100 decisions": 23.633231,
+        "10000/refresh after 32 hashes": 23.466846,
+        "50000/upsert all": 679.692039,
+        "50000/cold refresh": 110.411838,
+        "50000/unchanged refresh": 99.940284,
+        "50000/refresh after 500 indexed": 104.825899,
+        "50000/refresh after 100 decisions": 114.356836,
+        "50000/refresh after 32 hashes": 110.117929
+      },
+      "after": {
+        "10000/upsert all": 165.122655,
+        "10000/cold refresh": 34.527376,
+        "10000/unchanged refresh": 4.997316,
+        "10000/refresh after 500 indexed": 10.508421,
+        "10000/refresh after 100 decisions": 7.777244,
+        "10000/refresh after 32 hashes": 10.074312,
+        "50000/upsert all": 1069.344245,
+        "50000/cold refresh": 175.07235,
+        "50000/unchanged refresh": 38.60768,
+        "50000/refresh after 500 indexed": 63.528292,
+        "50000/refresh after 100 decisions": 44.455674,
+        "50000/refresh after 32 hashes": 59.215585
+      }
+    },
+    "snapshot_peak_rss_median_kib": {
+      "before": 269412,
+      "after": 285116
+    },
+    "ingest_execute_median_ms": {
+      "before": 2013.3711669999998,
+      "after": 210.749065
+    },
+    "grid_frame_data_median_ms": {
+      "before": 0.009760999999999999,
+      "after": 0.0013080000000000001
+    }
+  }
+}

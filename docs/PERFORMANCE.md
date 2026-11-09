@@ -82,6 +82,74 @@ checks. The portable published JSON excludes private session paths while retaini
 all latency samples and RSS traces. It identifies executable SHA-256
 `df443580aa94f5dc3c89d137fb23987eedb2d20927eb52eb797da68e5c031802`.
 
+## State-machine review, 2026-11-09
+
+The separate [round-4 results](benchmarks/state-machines-round4.json) compare
+`7e03044` with `491561e` using optimized builds with default features. The host
+was an Intel Core i5-10300H, Rust 1.99.1, and Linux; exact toolchain/platform,
+binary hashes and all outputs are retained in the JSON. No compiler or other
+Shadowroom test process ran during measurement. Ordinary desktop processes
+remained running and the host was not CPU-isolated.
+
+The catalog fixture starts with 50,000 synthetic photos containing realistic
+metadata. Each warm result is the minimum of five refreshes; the table reports
+the median of three independent process runs. Cold refresh and initial writes
+have one sample per process. Catalogs used the persistent filesystem containing
+the checkout, with a warm page cache. The five indexing samples add 500 photos
+each, so subsequent decision/hash cases include those additions. Refresh costs
+include actor-side reading, sorting/group input and publication, excluding UI
+layout, presentation and source decoding.
+
+| Catalog operation | Before | After |
+| --- | ---: | ---: |
+| Unchanged refresh | 99.94 ms | 38.61 ms |
+| Refresh after 500 indexed photos | 104.83 ms | 63.53 ms |
+| Refresh after 100 decisions | 114.36 ms | 44.46 ms |
+| Refresh after 32 hashes | 110.12 ms | 59.22 ms |
+| First refresh | 110.41 ms | 175.07 ms |
+| Initial 50k metadata writes | 679.69 ms | 1069.34 ms |
+
+The parsed snapshot baseline avoids repeated JSON parsing and sends only
+changed rows to the UI. Equal rows, such as already-applied decisions, skip UI
+rebuilds. This has costs: the first refresh creates the baseline, metadata
+revision triggers add write work, and the baseline remains in memory. Median
+peak RSS for the entire catalog benchmark process increased from 263.1 MiB to
+278.4 MiB. These peaks include fixture vectors and grouping workers; they do
+not establish steady-state application memory use. First-load and write costs
+remain candidates for a later optimization pass.
+
+The import fixture contains 128 distinct generated 200,000-byte files and one
+backup, all on the same persistent filesystem. Three fresh runs per revision
+measure copy, BLAKE3 verification, syncs, catalog commits and manifest
+finalization; source creation and planning are outside the execution timer.
+Median execution fell from **2013.37 ms to 210.75 ms**. This small-file workload
+exposes commit/sync overhead; it does not measure RAW decoding, a camera card,
+or backups on separate physical devices. Every output still verifies and syncs
+before its batch's catalog transaction commits.
+
+The Import grid microbenchmark emulates the former per-cell clones/formatting
+beside the shared-cell model: 36 visible cells over a 5k plan, 2,000 frames per
+path, with three process runs. Median data preparation per frame fell from
+**9.76 µs to 1.31 µs**. This excludes GPUI layout, texture upload and presentation
+and does not establish a frame-rate improvement.
+
+Reproduce the final paths after one release build, keeping builds and other
+Shadowroom instances idle during measurement:
+
+```sh
+LCMS2_STATIC=1 scripts/check-linux-local.sh test --locked --release \
+  --lib --bins --test ingest --no-run
+TMPDIR=/absolute/persistent/benchmark-directory LCMS2_STATIC=1 \
+  scripts/check-linux-local.sh test --locked --release --lib \
+  bench_snapshot_refresh -- --ignored --nocapture
+SHADOWROOM_INGEST_BENCH_DIR=/absolute/persistent/benchmark-directory \
+  SHADOWROOM_INGEST_BENCH=128x200000 LCMS2_STATIC=1 \
+  scripts/check-linux-local.sh test --locked --release --test ingest \
+  ingest_throughput_benchmark -- --ignored --nocapture
+LCMS2_STATIC=1 scripts/check-linux-local.sh test --locked --release --bins \
+  grid_cell_frame_cost -- --ignored --nocapture
+```
+
 ## CPU histogram workload
 
 The separate example isolates histogram computation on synthetic, memory-resident
