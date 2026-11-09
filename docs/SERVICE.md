@@ -6,7 +6,7 @@
 (
     crossbeam_channel::Sender<IoCommand>,
     crossbeam_channel::Receiver<IoEvent>,
-    PhotoSlot, // Arc<Mutex<Option<Vec<Photo>>>>
+    PhotoSlot, // Arc<Mutex<Option<PhotoDelta>>>
     GroupSlot, // Arc<Mutex<Option<Vec<Vec<i64>>>>>
 )
 ```
@@ -17,9 +17,11 @@ The module has no GPUI dependency. The desktop owns optimistic local interaction
 
 Drain lightweight events first. `Saved` resolves one successful `Decisions` command, independent of how many photographs it contained. `SaveFailed(message)` resolves one failed command and carries the error. Both are reliable; decrement the pending-save count for either. Acknowledged commits use the catalog's durable decision policy.
 
-Consume at most one photo slot and one grouping slot each UI poll using `try_lock`, taking the owned value only if the lock is available. A new publication **replaces** an unconsumed snapshot; the service never queues full-library vectors in events. Photographs are already sorted by capture timestamp (mtime fallback), path and ID. The sort comparator borrows paths instead of cloning keys. Do not sort again on the UI thread.
+Consume at most one photo slot and one grouping slot each UI poll using `try_lock`, taking the owned value only if the lock is available. A photo publication contains complete changed rows in `PhotoDelta.upserts` and removed IDs in `removed`. The service **merges** new deltas into an unconsumed hand-off, with the newest change winning for each ID; it never queues full-library vectors in events. Apply the delta with `snapshot::apply_delta` and the current ID-to-position index, rebuilding that index when the function reports a change. It preserves capture timestamp (mtime fallback), path and ID order, sorting only when a new or moved row requires it. Equal upserts do not trigger UI index/filter/folder rebuilds.
 
-While optimistic decisions remain pending, defer photo-slot consumption. A photograph snapshot can have been produced before a UI decision reached the writer. The writer invalidates any outstanding snapshot before emitting the corresponding acknowledgement; draining acknowledgements before consuming a snapshot therefore avoids reverting a local decision. On a failed decision, the next catalog publication restores persisted state and the UI should display the failure.
+`SnapshotBuilder` retains parsed metadata and its catalog revisions. Each refresh still reads the catalog's ID/revision/decision rows, but only changed metadata is parsed again. Grouping inputs are rebuilt only when membership, ordering or a field used by grouping changes. The publication states are initial, current and withdrawn. The initial hand-off is published even for an empty catalog, and withdrawing a hand-off forces another publication even when it is empty.
+
+While optimistic decisions remain pending, defer photo-slot consumption. A delta can have been produced before a UI decision reached the writer. The writer withdraws any outstanding hand-off before emitting the corresponding acknowledgement and resends its affected rows from the committed catalog; draining acknowledgements before consuming a delta therefore avoids reverting a local decision or losing unrelated indexing changes. On a failed decision, the next catalog publication restores persisted state and the UI should display the failure.
 
 Index progress publishes at most once per second, plus one final publication after each finished/cancelled import. Explicit refresh requests are coalesced. Decision updates invalidate stale snapshots and request a later fresh publication instead of immediately issuing a full-library query for every keypress.
 
