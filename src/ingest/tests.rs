@@ -591,7 +591,8 @@ struct FailCommittedCleanup {
 impl CopyHooks for FailCommittedCleanup {
     fn before_committed_cleanup(&self, _: &Path) -> Result<()> {
         if self.first.swap(false, Ordering::SeqCst) {
-            assert_eq!(self.catalog.ingest_sequences()?.stored, 1);
+            // Cleanup runs only after the group's (batched) commit.
+            assert!(self.catalog.ingest_sequences()?.stored >= 1);
             anyhow::bail!("injected postcommit cleanup failure");
         }
         Ok(())

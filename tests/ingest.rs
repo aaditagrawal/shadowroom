@@ -850,11 +850,27 @@ fn cancel_keeps_committed_groups_and_retry_skips_them_without_counter_gaps() {
     f.jpeg("B.jpg");
     let plan = f.plan();
     let control = Control::default();
-    let report = execute(&plan, &f.catalog, &control, |progress| {
-        if progress.completed == 1 {
-            control.cancel();
+    // Cancel while the second group copies: the first is already verified and
+    // published (awaiting its commit batch) and must still be committed.
+    struct CancelSecond(Control, std::sync::Mutex<Option<PathBuf>>);
+    impl CopyHooks for CancelSecond {
+        fn write_chunk(&self, path: &Path, output: &mut File, bytes: &[u8]) -> anyhow::Result<()> {
+            let mut first = self.1.lock().unwrap();
+            if first.get_or_insert_with(|| path.to_path_buf()) != path {
+                self.0.cancel();
+            }
+            output.write_all(bytes)?;
+            Ok(())
         }
-    })
+    }
+    let report = execute_with(
+        &plan,
+        &f.catalog,
+        &control,
+        &Capacity(u64::MAX),
+        &CancelSecond(control.clone(), Default::default()),
+        |_| {},
+    )
     .unwrap();
     assert_eq!(report.progress.completed, 1);
     assert_eq!(report.progress.phase, Phase::Cancelled);
@@ -1005,6 +1021,122 @@ fn database_commit_failure_rolls_back_outputs_and_never_advances_counters() {
     assert!(f.catalog.photos().unwrap().is_empty());
     assert!(!plan.options.library_root.join("A.jpg").exists());
     no_parts(f.temp.path());
+}
+#[test]
+fn failed_commit_batch_rolls_back_every_group_and_retry_names_without_gaps() {
+    let f = Fixture::new();
+    for name in ["A.jpg", "B.jpg", "C.jpg"] {
+        f.jpeg(name);
+    }
+    let mut plan = f.plan();
+    plan.options.file_template = "{seq_stored:3}".into();
+    let plan = ingest::plan(
+        &f.scan(),
+        plan.options,
+        f.catalog.ingest_sequences().unwrap(),
+    )
+    .unwrap();
+    // The second record of the shared transaction is rejected: none may survive.
+    let db = rusqlite::Connection::open(f.catalog.path()).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_second BEFORE INSERT ON ingest_log WHEN (SELECT count(*) FROM ingest_log) >= 1 BEGIN SELECT RAISE(ABORT,'injected batch failure'); END;").unwrap();
+    let report = execute(&plan, &f.catalog, &Control::default(), |_| {}).unwrap();
+    assert_eq!(report.progress.failed, 3);
+    assert_eq!(report.progress.completed, 0);
+    assert_eq!(report.progress.phase, Phase::Failed);
+    assert!(report.records.is_empty());
+    assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 0);
+    assert!(
+        f.all_files("library")
+            .iter()
+            .all(|p| p.extension().is_some_and(|e| e == "json"))
+    );
+    no_parts(f.temp.path());
+    db.execute_batch("DROP TRIGGER reject_second;").unwrap();
+    drop(db);
+    let report = execute(&plan, &f.catalog, &Control::default(), |_| {}).unwrap();
+    assert_eq!(report.progress.completed, 3, "{:?}", report.progress.errors);
+    let mut names: Vec<_> = f
+        .all_files("library")
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "jpg"))
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["001.jpg", "002.jpg", "003.jpg"]);
+}
+#[test]
+fn pausing_commits_verified_groups_before_waiting() {
+    let f = Fixture::new();
+    f.jpeg("A.jpg");
+    f.jpeg("B.jpg");
+    let plan = f.plan();
+    let control = Control::default();
+    let (signal, paused) = crossbeam_channel::bounded(1);
+    struct PauseSecond {
+        control: Control,
+        prefix: String,
+        fired: AtomicBool,
+        signal: crossbeam_channel::Sender<()>,
+    }
+    impl CopyHooks for PauseSecond {
+        fn write_chunk(&self, path: &Path, output: &mut File, bytes: &[u8]) -> anyhow::Result<()> {
+            output.write_all(bytes)?;
+            if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&self.prefix)
+                && !self.fired.swap(true, Ordering::SeqCst)
+            {
+                self.control.pause();
+                let _ = self.signal.send(());
+            }
+            Ok(())
+        }
+    }
+    let hooks = PauseSecond {
+        control: control.clone(),
+        prefix: format!(
+            ".{}.",
+            plan.groups[1].files[0]
+                .relative
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ),
+        fired: AtomicBool::new(false),
+        signal,
+    };
+    let catalog = f.catalog.clone();
+    let resume = control.clone();
+    let watcher = std::thread::spawn(move || {
+        if paused.recv_timeout(Duration::from_secs(10)).is_err() {
+            resume.cancel();
+            panic!("second group never paused");
+        }
+        // While paused, the first (fully verified) group must be in the catalog.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while catalog.ingest_sequences().unwrap().stored < 1 {
+            if std::time::Instant::now() >= deadline {
+                resume.cancel();
+                panic!("paused job kept uncommitted groups");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        resume.resume();
+    });
+    let report = execute_with(
+        &plan,
+        &f.catalog,
+        &control,
+        &Capacity(u64::MAX),
+        &hooks,
+        |_| {},
+    )
+    .unwrap();
+    watcher.join().unwrap();
+    assert_eq!(report.progress.completed, 2);
+    assert_eq!(report.progress.phase, Phase::Completed);
 }
 
 /// Throughput benchmark, run on demand (with a release build for real numbers):

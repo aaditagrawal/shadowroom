@@ -842,6 +842,9 @@ impl Control {
             self.0.1.notify_all();
         }
     }
+    pub(crate) fn is_paused(&self) -> bool {
+        self.0.0.lock().is_ok_and(|s| s.paused)
+    }
     pub fn is_cancelled(&self) -> bool {
         self.0.0.lock().map_or(true, |s| s.cancelled)
     }

@@ -283,21 +283,22 @@ impl Catalog {
         connection.execute("UPDATE ingest_jobs SET finished=?2,counts=?3,bytes=?4,errors=?5,verification=?6 WHERE id=?1", params![progress.job_id, finished, serde_json::to_string(progress)?, progress.bytes, serde_json::to_string(&progress.errors)?, progress.phase.as_str()])?;
         Ok(())
     }
-    /// Files are verified/published before this transaction. A failed commit causes
-    /// the caller to roll back its new filesystem entries. Counters and photo
-    /// decisions are committed with the import record, never during planning.
-    pub(crate) fn ingest_commit(
+    /// Files are verified, published and synced before this transaction. A failed
+    /// commit causes the caller to roll back the batch's new filesystem entries.
+    /// Counters and photo decisions are committed with the import records, never
+    /// during planning. One transaction (one WAL sync) covers the whole batch.
+    pub(crate) fn ingest_commit_batch(
         &self,
-        record: &ImportRecord,
-        group: Option<&IngestGroup>,
-        day: Option<&str>,
+        items: &[(&ImportRecord, Option<&IngestGroup>, Option<&str>)],
     ) -> Result<()> {
         let mut connection = self
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let tx = connection.transaction()?;
-        insert_record(&tx, record, group, day)?;
+        for &(record, group, day) in items {
+            insert_record(&tx, record, group, day)?;
+        }
         tx.commit()?;
         Ok(())
     }
