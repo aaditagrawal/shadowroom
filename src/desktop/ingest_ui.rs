@@ -513,6 +513,27 @@ impl ImportUi {
             self.changed();
         }
     }
+    /// Finish a streamed scan without resetting choices made on early batches.
+    /// Batches can be omitted under backpressure, so unseen groups still use
+    /// the scanner's default selection.
+    fn scanned(&mut self, scan: Arc<Scan>, time_group_minutes: u32) {
+        let shown = std::mem::take(&mut self.lookup);
+        let selected = std::mem::take(&mut self.selected);
+        self.clear_items();
+        for group in &scan.groups {
+            let mut group = group.clone();
+            if shown.contains_key(&group.id) {
+                group.selected = selected.contains(&group.id);
+            }
+            self.append(group);
+        }
+        self.timeline = ingest::timeline(&scan, time_group_minutes);
+        self.timeline_counts();
+        self.source = scan.source.clone();
+        self.scan = Some(scan);
+        self.scan_state = ScanState::Ready;
+        self.changed();
+    }
     pub(super) fn invalidate_plan(&mut self) {
         self.changed();
     }
@@ -651,17 +672,8 @@ impl Workspace {
                 }
             }
             Event::Scanned(scan) => {
-                self.import_ui.clear_items();
-                for group in &scan.groups {
-                    self.import_ui.append(group.clone());
-                }
-                self.import_ui.timeline =
-                    ingest::timeline(&scan, self.settings.ingest_time_group_minutes);
-                self.import_ui.timeline_counts();
-                self.import_ui.source = scan.source.clone();
-                self.import_ui.scan = Some(scan);
-                self.import_ui.scan_state = ScanState::Ready;
-                self.import_ui.changed();
+                self.import_ui
+                    .scanned(scan, self.settings.ingest_time_group_minutes);
             }
             Event::Plan(plan) => {
                 if self.import_ui.expected_plan.as_ref() == Some(&plan.plan.options)
@@ -3113,6 +3125,39 @@ mod responsive_tests {
         assert!(!state.cells[3].seen);
         assert!(!state.visible.contains(&4));
         assert!(state.dirty_at.is_some(), "a mark must trigger a replan");
+    }
+
+    #[test]
+    fn completing_a_scan_preserves_choices_from_batches_and_defaults_unseen_groups() {
+        let fixture = import_fixture();
+        let mut groups = fixture.items;
+        groups[0].selected = false;
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        state.append(groups[0].clone());
+        state.append(groups[1].clone());
+        state.toggle(groups[0].id); // explicitly select a default-unselected group
+        state.toggle(groups[1].id); // explicitly deselect a default-selected group
+        state.scanned(
+            std::sync::Arc::new(ingest::Scan {
+                groups: groups.clone(),
+                ..Default::default()
+            }),
+            60,
+        );
+        let expected: std::collections::HashSet<_> = groups
+            .iter()
+            .filter(|g| g.id == groups[0].id || (g.id != groups[1].id && g.selected))
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(state.selected, expected);
+        assert_eq!(state.photos, expected.len());
+        assert_eq!(
+            state.timeline_selected.iter().sum::<usize>(),
+            expected.len()
+        );
+        assert_eq!(state.cells.len(), state.items.len());
+        assert!(!state.scanning());
+        assert!(state.dirty_at.is_some());
     }
 
     #[test]
