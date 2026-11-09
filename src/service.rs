@@ -6,6 +6,7 @@ use crate::{
     indexer::{Drive, IndexEvent, IndexJob, IndexOptions, Indexer, discover_drives},
     model::{Photo, PhotoDecision},
     settings::Settings,
+    snapshot::{PhotoDelta, SnapshotBuilder},
 };
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
@@ -17,7 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub type PhotoSlot = Arc<Mutex<Option<Vec<Photo>>>>;
+/// Pending photo changes for the UI; see [`crate::snapshot`].
+pub type PhotoSlot = Arc<Mutex<Option<PhotoDelta>>>;
 pub type GroupSlot = Arc<Mutex<Option<Vec<Vec<i64>>>>>;
 
 #[derive(Debug)]
@@ -303,7 +305,8 @@ fn run_catalog(
         })
         .expect("Start drive discovery worker");
 
-    publish(&catalog, &photos, &grouping, &events);
+    let mut snapshots = SnapshotBuilder::default();
+    publish(&mut snapshots, &catalog, &photos, &grouping, &events);
     let mut last_snapshot = Instant::now();
     let mut pending_settings = None;
     let mut settings_at = Instant::now();
@@ -524,8 +527,10 @@ fn run_catalog(
                     // The UI already applied these decisions, so only a discarded
                     // snapshot (which may carry other changes) needs republishing;
                     // otherwise a full catalog reload and regroup per keystroke
-                    // would only confirm what the UI shows.
-                    if take(&photos).is_some() {
+                    // would only confirm what the UI shows. The discarded delta's
+                    // rows are resent from the committed catalog.
+                    if let Some(delta) = take(&photos) {
+                        snapshots.withdraw(&delta);
                         refresh_needed = true;
                     }
                     for result in results {
@@ -579,7 +584,9 @@ fn run_catalog(
                         }
                         // An old pre-delete snapshot must not resurrect a removed
                         // file or companion while the current snapshot publishes.
-                        let _ = take(&photos);
+                        if let Some(delta) = take(&photos) {
+                            snapshots.withdraw(&delta);
+                        }
                         refresh_needed = true;
                         last_snapshot = Instant::now() - SNAPSHOT_INTERVAL;
                     }
@@ -857,14 +864,28 @@ fn run_catalog(
             // initial snapshot is already published; avoid another full load,
             // sort and regroup solely because a read-only scan completed.
             if !terminal_progress || index_dirty || refresh_needed {
-                publish_with_hashes(&catalog, &photos, &grouping, &events, &pending_hashes);
+                publish_with_hashes(
+                    &mut snapshots,
+                    &catalog,
+                    &photos,
+                    &grouping,
+                    &events,
+                    &pending_hashes,
+                );
             }
             last_snapshot = Instant::now();
             index_dirty = false;
             refresh_needed = false;
             busy = Some(false);
         } else if (index_dirty || refresh_needed) && last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
-            publish_with_hashes(&catalog, &photos, &grouping, &events, &pending_hashes);
+            publish_with_hashes(
+                &mut snapshots,
+                &catalog,
+                &photos,
+                &grouping,
+                &events,
+                &pending_hashes,
+            );
             last_snapshot = Instant::now();
             index_dirty = false;
             refresh_needed = false;
@@ -1084,53 +1105,48 @@ fn take<T>(slot: &Arc<Mutex<Option<T>>>) -> Option<T> {
 }
 
 fn publish(
+    snapshots: &mut SnapshotBuilder,
     catalog: &Catalog,
     output: &PhotoSlot,
     grouping: &GroupWorker,
     events: &Sender<IoEvent>,
 ) {
-    publish_with_hashes(catalog, output, grouping, events, &HashMap::new());
+    publish_with_hashes(
+        snapshots,
+        catalog,
+        output,
+        grouping,
+        events,
+        &HashMap::new(),
+    );
 }
 
+/// Publish only what changed since the previous snapshot. Unchanged rows are
+/// neither reparsed nor resent, and the grouping input is rebuilt only when a
+/// field it reads changed.
 fn publish_with_hashes(
+    snapshots: &mut SnapshotBuilder,
     catalog: &Catalog,
     output: &PhotoSlot,
     grouping: &GroupWorker,
     events: &Sender<IoEvent>,
     hashes: &HashMap<i64, u64>,
 ) {
-    match catalog.photos() {
-        Ok(mut photos) => {
-            for photo in &mut photos {
-                if let Some(&hash) = hashes.get(&photo.id) {
-                    photo.dhash = Some(hash);
-                }
+    match snapshots.refresh(catalog, hashes) {
+        Ok(refresh) => {
+            if refresh.regroup {
+                grouping.photos(snapshots.samples());
             }
-            photos.sort_unstable_by(|a, b| {
-                a.captured_at
-                    .unwrap_or(a.modified_at)
-                    .cmp(&b.captured_at.unwrap_or(b.modified_at))
-                    .then_with(|| a.path.cmp(&b.path))
-                    .then_with(|| a.id.cmp(&b.id))
-            });
-            // Grouping receives only fields that its comparator/partitioner uses.
-            let samples = photos
-                .iter()
-                .filter(|p| !p.trashed)
-                .map(|p| Photo {
-                    source: p.source.clone(),
-                    id: p.id,
-                    captured_at: p.captured_at,
-                    capture_time_kind: p.capture_time_kind.clone(),
-                    modified_at: p.modified_at,
-                    folder: p.folder.clone(),
-                    camera: p.camera.clone(),
-                    dhash: p.dhash,
-                    ..Photo::default()
-                })
-                .collect();
-            grouping.photos(samples);
-            replace(output, photos);
+            // An unconsumed delta is still the UI's to apply: fold this one
+            // into it rather than replacing it.
+            let mut delta = refresh.delta;
+            if let Some(mut pending) = take(output) {
+                pending.merge(delta);
+                delta = pending;
+            }
+            if refresh.required || !delta.is_empty() {
+                replace(output, delta);
+            }
         }
         Err(error) => reliable(events, IoEvent::Error(format!("Read catalog: {error:#}"))),
     }
@@ -1628,7 +1644,7 @@ mod tests {
             Arc::new(|_| Ok(())),
         );
         flush(&commands); // initial publication precedes command processing
-        assert_eq!(take(&photos).unwrap().len(), 1);
+        assert_eq!(take(&photos).unwrap().upserts.len(), 1);
         commands.send(IoCommand::Import(root.clone())).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -1642,12 +1658,18 @@ mod tests {
             }
         }
         assert!(take(&photos).is_none());
+        // An explicit refresh rereads the catalog and publishes changes made
+        // by another writer (an unchanged catalog publishes nothing).
+        let id = catalog.photos().unwrap()[0].id;
+        catalog.set_decisions(&[decision(id, 4)]).unwrap();
         commands.send(IoCommand::Refresh).unwrap();
         flush(&commands);
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             if let Some(snapshot) = take(&photos) {
-                assert_eq!(snapshot.len(), 1);
+                assert_eq!(snapshot.upserts.len(), 1);
+                assert_eq!(snapshot.upserts[0].rating, 4);
+                assert!(snapshot.removed.is_empty());
                 break;
             }
             assert!(Instant::now() < deadline);
@@ -1670,7 +1692,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(take(&photos).unwrap()[0].width, 5);
+        assert_eq!(take(&photos).unwrap().upserts[0].width, 5);
         shutdown(&commands);
     }
     #[test]
@@ -1679,13 +1701,16 @@ mod tests {
         for revision in 0..1000 {
             replace(
                 &slot,
-                vec![Photo {
-                    id: revision,
-                    ..Photo::default()
-                }],
+                PhotoDelta {
+                    upserts: vec![Photo {
+                        id: revision,
+                        ..Photo::default()
+                    }],
+                    removed: Vec::new(),
+                },
             );
         }
-        assert_eq!(take(&slot).unwrap()[0].id, 999);
+        assert_eq!(take(&slot).unwrap().upserts[0].id, 999);
         assert!(take(&slot).is_none());
         let dir = tempfile::tempdir().unwrap();
         let catalog = Catalog::open(&dir.path().join("catalog.sqlite3")).unwrap();
@@ -1701,8 +1726,10 @@ mod tests {
         let output: GroupSlot = Arc::new(Mutex::new(None));
         let grouping = GroupWorker::start(output, GroupingOptions::default());
         let (events, _) = unbounded();
-        publish(&catalog, &slot, &grouping, &events);
-        let photos = take(&slot).unwrap();
+        let mut snapshots = SnapshotBuilder::default();
+        publish(&mut snapshots, &catalog, &slot, &grouping, &events);
+        let mut photos = Vec::new();
+        crate::snapshot::apply_delta(&mut photos, &HashMap::new(), take(&slot).unwrap());
         assert_eq!(
             photos
                 .iter()
@@ -2125,8 +2152,9 @@ mod tests {
             let grouping = GroupWorker::start(output.clone(), options);
             let photos: PhotoSlot = Arc::new(Mutex::new(None));
             let (events, _) = unbounded();
-            publish_with_hashes(&catalog, &photos, &grouping, &events, &HashMap::new());
-            let expected = crate::grouping::group_photos(&take(&photos).unwrap(), options);
+            let mut snapshots = SnapshotBuilder::default();
+            publish(&mut snapshots, &catalog, &photos, &grouping, &events);
+            let expected = crate::grouping::group_photos(snapshots.photos(), options);
             assert_eq!(expected.len(), 7);
             assert!(expected.iter().all(|group| group.len() == 2));
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -2395,9 +2423,10 @@ mod tests {
             );
             let slot: PhotoSlot = Arc::new(Mutex::new(None));
             let (events, _rx) = unbounded();
+            let mut snapshots = SnapshotBuilder::default();
             let mut refresh = || {
                 let started = Instant::now();
-                publish(&catalog, &slot, &worker, &events);
+                publish(&mut snapshots, &catalog, &slot, &worker, &events);
                 let elapsed = started.elapsed();
                 std::hint::black_box(take(&slot));
                 elapsed
@@ -2471,7 +2500,13 @@ mod tests {
         let (events, _rx) = unbounded();
         for pass in 0..3 {
             let started = Instant::now();
-            publish(&catalog, &photo_slot, &worker, &events);
+            publish(
+                &mut SnapshotBuilder::default(),
+                &catalog,
+                &photo_slot,
+                &worker,
+                &events,
+            );
             eprintln!("BENCH publish 50k pass={pass}: {:?}", started.elapsed());
         }
         let started = Instant::now();

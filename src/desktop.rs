@@ -461,6 +461,17 @@ fn index_filtered_positions(positions: &mut Vec<usize>, photo_count: usize, filt
     }
 }
 
+/// Sorted (folder key, visible photo count) pairs for the sidebar.
+fn folder_counts(photos: &[Photo]) -> Vec<(String, usize)> {
+    let mut folders = HashMap::new();
+    for p in photos.iter().filter(|p| !p.trashed) {
+        *folders.entry(p.folder_key()).or_insert(0) += 1;
+    }
+    let mut folders: Vec<_> = folders.into_iter().collect();
+    folders.sort_by(|a, b| a.0.cmp(&b.0));
+    folders
+}
+
 fn adjust_folder(folders: &mut Vec<(String, usize)>, folder: &str, add: bool) {
     match folders.binary_search_by(|(path, _)| path.as_str().cmp(folder)) {
         Ok(i) => {
@@ -1967,48 +1978,27 @@ impl Workspace {
                 .try_lock()
                 .ok()
                 .and_then(|mut slot| slot.take());
-            if let Some(photos) = photos {
-                if self.status == "Opening local catalog…" {
-                    self.status = format!("{} photos", photos.len());
-                }
+            if let Some(delta) = photos {
                 let selected = self.selected_id().or(self.settings.last_photo_id);
-                self.analysis_cursor = 0;
-                self.photos = photos;
-                self.photo_index = self
-                    .photos
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| (p.id, i))
-                    .collect();
-                self.counts = CollectionCounts::from_photos(&self.photos);
-                self.bursts = BurstIndex::new(&self.groups, &self.photos, &self.photo_index);
-                self.rebuild(selected);
-                self.refresh_folders();
-                self.ingest_scope_arrived();
-                self.invalidate_duplicate_results();
-                dirty = true;
-                let mut revisions: HashMap<_, _> = self
-                    .photos
-                    .iter()
-                    .map(|p| (p.id, (preview_mtime(p), preview_size(p))))
-                    .collect();
-                revisions.extend(
-                    self.import_ui
-                        .previews
-                        .iter()
-                        .map(|p| (p.id, (preview_mtime(p), preview_size(p)))),
-                );
-                let obsolete: Vec<_> = self
-                    .textures
-                    .keys()
-                    .filter(|key| revisions.get(&key.0) != Some(&(key.2, key.3)))
-                    .copied()
-                    .collect();
-                for key in obsolete {
-                    if let Some(t) = self.textures.remove(&key) {
-                        self.texture_bytes -= t.bytes;
-                        self.retired.push(t);
-                    }
+                // Rows equal to what the UI already shows (typically its own
+                // acknowledged decisions) change nothing and skip every rebuild.
+                let changed =
+                    shadowroom::snapshot::apply_delta(&mut self.photos, &self.photo_index, delta);
+                if self.status == "Opening local catalog…" {
+                    self.status = format!("{} photos", self.photos.len());
+                    dirty = true;
+                }
+                if changed {
+                    self.analysis_cursor = 0;
+                    self.photo_index = shadowroom::snapshot::positions(&self.photos);
+                    self.counts = CollectionCounts::from_photos(&self.photos);
+                    self.bursts = BurstIndex::new(&self.groups, &self.photos, &self.photo_index);
+                    self.rebuild(selected);
+                    self.refresh_folders();
+                    self.ingest_scope_arrived();
+                    self.invalidate_duplicate_results();
+                    self.retire_obsolete_textures();
+                    dirty = true;
                 }
             }
         }
@@ -2146,12 +2136,36 @@ impl Workspace {
     }
 
     fn refresh_folders(&mut self) {
-        let mut folders = HashMap::new();
-        for p in self.photos.iter().filter(|p| !p.trashed) {
-            *folders.entry(p.folder_key()).or_insert(0) += 1;
+        self.folders = folder_counts(&self.photos);
+    }
+    /// Retire textures whose photo is gone or whose display identity changed.
+    /// Looks up only the resident textures, not every catalog photo.
+    fn retire_obsolete_textures(&mut self) {
+        // Import previews take precedence over a catalog row with the same ID.
+        let obsolete: Vec<_> = self
+            .textures
+            .keys()
+            .filter(|key| {
+                let photo = self
+                    .import_ui
+                    .photo_lookup
+                    .get(&key.0)
+                    .map(|&index| &self.import_ui.previews[index])
+                    .or_else(|| {
+                        self.photo_index
+                            .get(&key.0)
+                            .map(|&index| &self.photos[index])
+                    });
+                photo.is_none_or(|p| (preview_mtime(p), preview_size(p)) != (key.2, key.3))
+            })
+            .copied()
+            .collect();
+        for key in obsolete {
+            if let Some(t) = self.textures.remove(&key) {
+                self.texture_bytes -= t.bytes;
+                self.retired.push(t);
+            }
         }
-        self.folders = folders.into_iter().collect();
-        self.folders.sort_by(|a, b| a.0.cmp(&b.0));
     }
     fn accepts_photo(&self, p: &Photo) -> bool {
         self.filter.accepts(p)
@@ -10928,5 +10942,125 @@ mod ui_tests {
         let repeat = time("stars via repeat", &|p| "★".repeat(p.rating as usize).len());
         let table = time("stars via table", &|p| super::stars(p.rating).len());
         println!("star string saved {:.1} ns/cell", repeat - table);
+    }
+
+    /// UI-thread cost of receiving a catalog snapshot: the list update plus
+    /// the catalog-wide indices `poll` rebuilds (positions, counts, bursts,
+    /// the filtered list, folders, texture retirement). Run with
+    /// `--release --bins -- --ignored --nocapture bench_snapshot_apply`.
+    #[test]
+    #[ignore]
+    fn bench_snapshot_apply() {
+        use shadowroom::snapshot::{PhotoDelta, apply_delta, positions, snapshot_order};
+        use std::hint::black_box;
+        fn photo(id: i64) -> Photo {
+            Photo {
+                id,
+                path: format!("/bench/folder{:03}/frame{id:06}.nef", id / 100).into(),
+                filename: format!("frame{id:06}.nef"),
+                folder: format!("/bench/folder{:03}", id / 100),
+                captured_at: Some(1_704_067_200_000 + id * 120),
+                modified_at: 1_704_067_200_000 + id,
+                camera: "NIKON Z 8".into(),
+                lens: "NIKKOR Z 24-120mm f/4 S".into(),
+                shutter: "1/500".into(),
+                companion_path: Some(
+                    format!("/bench/folder{:03}/frame{id:06}.jpg", id / 100).into(),
+                ),
+                rating: (id % 6) as u8,
+                ..Photo::default()
+            }
+        }
+        // Everything poll derives from the list once it changed.
+        fn rebuild(photos: &[Photo], groups: &[Vec<i64>]) -> usize {
+            let index = positions(photos);
+            let counts = CollectionCounts::from_photos(photos);
+            let bursts = BurstIndex::new(groups, photos, &index);
+            let filtered: Vec<usize> = photos
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| Filter::All.accepts(p) && p.matches_scope("/bench/folder001"))
+                .map(|(i, _)| i)
+                .collect();
+            let mut filtered_positions = Vec::new();
+            index_filtered_positions(&mut filtered_positions, photos.len(), &filtered);
+            let folders = super::folder_counts(photos);
+            // Resident textures (a few hundred) look up their photo by ID.
+            let textures = (0..400)
+                .filter_map(|id| index.get(&(id * 37)).map(|&i| &photos[i]))
+                .map(|p| (super::preview_mtime(p), super::preview_size(p)))
+                .count();
+            counts.all + bursts.slots.len() + filtered.len() + folders.len() + textures
+        }
+        fn best(mut run: impl FnMut() -> Duration) -> Duration {
+            (0..7).map(|_| run()).min().unwrap()
+        }
+        for n in [10_000i64, 50_000] {
+            let mut base: Vec<Photo> = (0..n).map(photo).collect();
+            base.sort_by(snapshot_order);
+            let groups: Vec<Vec<i64>> = (0..n)
+                .collect::<Vec<_>>()
+                .chunks(8)
+                .map(<[i64]>::to_vec)
+                .collect();
+            // Previous behaviour: a full replacement list, every index rebuilt,
+            // and a revision map over every photo for texture retirement.
+            let full = best(|| {
+                let snapshot = base.clone();
+                let started = Instant::now();
+                let photos = snapshot;
+                let revisions: HashMap<_, _> = photos
+                    .iter()
+                    .map(|p| (p.id, (super::preview_mtime(p), super::preview_size(p))))
+                    .collect();
+                black_box((rebuild(&photos, &groups), revisions.len()));
+                let elapsed = started.elapsed();
+                drop(photos);
+                elapsed
+            });
+            println!("BENCH {n}: full snapshot apply {full:?}");
+            let index = positions(&base);
+            let unchanged = best(|| {
+                let mut photos = base.clone();
+                let delta = PhotoDelta {
+                    upserts: (0..100).map(|i| base[i * 7].clone()).collect(),
+                    removed: Vec::new(),
+                };
+                let started = Instant::now();
+                let changed = apply_delta(&mut photos, &index, delta);
+                assert!(!changed);
+                started.elapsed()
+            });
+            println!("BENCH {n}: delta of 100 already-applied decisions {unchanged:?}");
+            let indexed = best(|| {
+                let mut photos = base.clone();
+                let delta = PhotoDelta {
+                    upserts: (n..n + 500).map(photo).collect(),
+                    removed: Vec::new(),
+                };
+                let started = Instant::now();
+                assert!(apply_delta(&mut photos, &index, delta));
+                black_box(rebuild(&photos, &groups));
+                started.elapsed()
+            });
+            println!("BENCH {n}: delta of 500 indexed photos + rebuild {indexed:?}");
+            let decided = best(|| {
+                let mut photos = base.clone();
+                let delta = PhotoDelta {
+                    upserts: (0..100)
+                        .map(|i| Photo {
+                            rating: 5 - base[i * 7].rating,
+                            ..base[i * 7].clone()
+                        })
+                        .collect(),
+                    removed: Vec::new(),
+                };
+                let started = Instant::now();
+                assert!(apply_delta(&mut photos, &index, delta));
+                black_box(rebuild(&photos, &groups));
+                started.elapsed()
+            });
+            println!("BENCH {n}: delta of 100 external decisions + rebuild {decided:?}");
+        }
     }
 }

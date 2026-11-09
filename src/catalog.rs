@@ -65,6 +65,14 @@ pub(crate) struct IndexedFile {
     pub companion_size_bytes: u64,
     pub metadata_version: u32,
 }
+/// One row of [`Catalog::photo_revisions`].
+pub struct PhotoRevision {
+    /// Changes whenever `data` is written; never reused within a catalog.
+    pub revision: i64,
+    pub decision: PhotoDecision,
+    /// Parsed only when requested; carries the same decisions.
+    pub photo: Option<Photo>,
+}
 #[derive(Clone)]
 pub struct Catalog {
     pub(crate) connection: Arc<Mutex<Connection>>,
@@ -115,6 +123,26 @@ impl Catalog {
                 CREATE UNIQUE INDEX photos_remote_identity ON photos(source_device,source_root,source_volume,source_relative) WHERE source_device IS NOT NULL;
                 COMMIT;")?;
         }
+        // A catalog-wide counter stamps every metadata write, so snapshots
+        // reparse only rows whose `data` changed. Triggers live in the file:
+        // older builds that write `data` keep the stamps current, and they
+        // never read the extra column. Existing rows keep revision 0, which
+        // no write after this migration produces.
+        if !columns.iter().any(|c| c == "data_rev") {
+            connection.execute_batch(
+                "ALTER TABLE photos ADD COLUMN data_rev INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS photo_revision(id INTEGER PRIMARY KEY CHECK(id=1),value INTEGER NOT NULL);
+            INSERT OR IGNORE INTO photo_revision(id,value) VALUES(1,0);
+            CREATE TRIGGER IF NOT EXISTS photos_data_rev_insert AFTER INSERT ON photos BEGIN
+              UPDATE photo_revision SET value=value+1 WHERE id=1;
+              UPDATE photos SET data_rev=(SELECT value FROM photo_revision WHERE id=1) WHERE id=NEW.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS photos_data_rev_update AFTER UPDATE OF data ON photos BEGIN
+              UPDATE photo_revision SET value=value+1 WHERE id=1;
+              UPDATE photos SET data_rev=(SELECT value FROM photo_revision WHERE id=1) WHERE id=NEW.id;
+            END;")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS remote_cursors(device TEXT,root TEXT,revision INTEGER NOT NULL,PRIMARY KEY(device,root));
             CREATE TABLE IF NOT EXISTS remote_stage(token TEXT,path TEXT,data TEXT,PRIMARY KEY(token,path));")?;
         // Nullable and ignored by older versions, which update only revision.
@@ -273,6 +301,45 @@ impl Catalog {
             photos.push(photo_from_row(row)?);
         }
         Ok(photos)
+    }
+    /// Every photo in ID order with its metadata revision and decisions;
+    /// `data` is parsed only for rows where `reparse(id, revision)` holds.
+    /// Parsed rows equal the corresponding [`Catalog::photos`] rows.
+    pub fn photo_revisions(
+        &self,
+        mut reparse: impl FnMut(i64, i64) -> bool,
+    ) -> Result<Vec<PhotoRevision>> {
+        let conn = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT id,data,rating,flag,label,trashed,data_rev FROM photos ORDER BY id",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id = row.get(0)?;
+            let revision = row.get(6)?;
+            let decision = PhotoDecision {
+                id,
+                rating: row.get(2)?,
+                flag: Flag::from(row.get_ref(3)?.as_str()?),
+                label: ColorLabel::from(row.get_ref(4)?.as_str()?),
+                trashed: row.get(5)?,
+            };
+            let photo = if reparse(id, revision) {
+                Some(photo_from_row(row)?)
+            } else {
+                None
+            };
+            result.push(PhotoRevision {
+                revision,
+                decision,
+                photo,
+            });
+        }
+        Ok(result)
     }
     pub fn set_rating(&self, id: i64, rating: u8) -> Result<()> {
         if rating > 5 {
@@ -2361,6 +2428,99 @@ mod tests {
         reopened.set_decisions(&[before]).unwrap();
         assert!(!reopened.photos().unwrap()[0].trashed);
         assert_eq!(fs::read(source).unwrap(), b"unchanged original");
+    }
+    /// A catalog written before metadata revisions opens, keeps its rows at
+    /// revision 0, and stamps every later write; statements of the previous
+    /// release still work on the migrated file and keep revisions current.
+    #[test]
+    fn catalog_without_revisions_migrates_and_stays_writable_by_older_statements() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("previous-release.sqlite3");
+        let old = Connection::open(&database).unwrap();
+        // The previous release's schema (trash and source columns, no data_rev).
+        old.execute_batch("CREATE TABLE photos(id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,modified_at INTEGER NOT NULL,size_bytes INTEGER NOT NULL,rating INTEGER NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),flag TEXT NOT NULL DEFAULT 'none',label TEXT NOT NULL DEFAULT '',data TEXT NOT NULL,trashed INTEGER NOT NULL DEFAULT 0 CHECK(trashed IN (0,1)),source_device TEXT,source_root TEXT,source_volume TEXT,source_relative TEXT);").unwrap();
+        for (id, name) in [(3, "a.jpg"), (9, "b.jpg")] {
+            let photo = Photo {
+                path: format!("/old/{name}").into(),
+                filename: name.into(),
+                camera: "Old".into(),
+                ..Default::default()
+            };
+            old.execute(
+                "INSERT INTO photos(id,path,modified_at,size_bytes,data,rating) VALUES(?1,?2,0,1,?3,4)",
+                params![id, format!("/old/{name}"), serde_json::to_string(&photo).unwrap()],
+            )
+            .unwrap();
+        }
+        drop(old);
+
+        let catalog = Catalog::open(&database).unwrap();
+        let revisions = |catalog: &Catalog| -> Vec<(i64, i64)> {
+            catalog
+                .photo_revisions(|_, _| false)
+                .unwrap()
+                .iter()
+                .map(|row| (row.decision.id, row.revision))
+                .collect()
+        };
+        assert_eq!(revisions(&catalog), vec![(3, 0), (9, 0)]);
+        let full = catalog.photos().unwrap();
+        let parsed: Vec<Photo> = catalog
+            .photo_revisions(|_, _| true)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.photo.unwrap())
+            .collect();
+        assert_eq!(parsed, full);
+        assert_eq!(full[0].rating, 4);
+        assert_eq!(full[1].camera, "Old");
+
+        // Decisions are not metadata; hash and metadata writes are.
+        catalog
+            .set_decisions(&[PhotoDecision {
+                rating: 1,
+                ..PhotoDecision::from(&full[0])
+            }])
+            .unwrap();
+        assert_eq!(revisions(&catalog), vec![(3, 0), (9, 0)]);
+        catalog.set_dhashes(&[(9, 5)]).unwrap();
+        let after_hash = revisions(&catalog);
+        assert_eq!(after_hash[0], (3, 0));
+        assert!(after_hash[1].1 > 0);
+        drop(catalog);
+
+        // The previous release's own statements on the migrated file.
+        let old = Connection::open(&database).unwrap();
+        old.execute(
+            "INSERT INTO photos(path,modified_at,size_bytes,data) VALUES('/old/c.jpg',0,1,'{}')",
+            [],
+        )
+        .unwrap();
+        old.execute(
+            "UPDATE photos SET data='{\"camera\":\"New\"}' WHERE id=3",
+            [],
+        )
+        .unwrap();
+        let rows: Vec<(i64, String)> = old
+            .prepare("SELECT id,data FROM photos ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        drop(old);
+
+        // Reopening is idempotent and every write got a distinct new revision.
+        let reopened = Catalog::open(&database).unwrap();
+        let stamped = revisions(&reopened);
+        assert_eq!(stamped.len(), 3);
+        assert!(stamped.iter().all(|&(_, revision)| revision > 0));
+        let mut distinct: Vec<_> = stamped.iter().map(|&(_, revision)| revision).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 3);
+        assert_eq!(reopened.photos().unwrap()[0].camera, "New");
     }
     #[test]
     fn distinct_raw_and_jpeg_ids_are_never_deleted_or_decision_merged() {

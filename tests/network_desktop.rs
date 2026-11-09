@@ -580,12 +580,19 @@ fn wait_host(
         }
     }
 }
-fn wait_photos(slot: &PhotoSlot, predicate: impl Fn(&[Photo]) -> bool) -> Vec<Photo> {
+/// Apply published deltas to `view` (the UI's photo list) until it matches.
+fn wait_photos(
+    slot: &PhotoSlot,
+    view: &mut Vec<Photo>,
+    predicate: impl Fn(&[Photo]) -> bool,
+) -> Vec<Photo> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if let Some(photos) = slot.lock().unwrap().take() {
-            if predicate(&photos) {
-                return photos;
+        if let Some(delta) = slot.lock().unwrap().take() {
+            let index = shadowroom::snapshot::positions(view);
+            shadowroom::snapshot::apply_delta(view, &index, delta);
+            if predicate(view) {
+                return view.clone();
             }
         }
         assert!(Instant::now() < deadline, "catalog snapshot timeout");
@@ -630,7 +637,8 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
         h.state() == HostState::Connected && h.revisions.contains_key(&root_id)
     });
     assert!(indexed.revisions[&root_id] > 0);
-    let photo = wait_photos(&photos, |p| p.len() == 1).remove(0);
+    let mut view = Vec::new();
+    let photo = wait_photos(&photos, &mut view, |p| p.len() == 1).remove(0);
     assert!(photo.is_remote());
     let decision = PhotoDecision {
         id: photo.id,
@@ -661,7 +669,7 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
                 .get(&root_id)
                 .is_some_and(|r| *r > indexed.revisions[&root_id])
     });
-    let photo = wait_photos(&photos, |p| {
+    let photo = wait_photos(&photos, &mut view, |p| {
         p.len() == 1 && !p[0].remote_source().unwrap().available
     })
     .remove(0);
@@ -706,7 +714,11 @@ fn catalog_actor_local_child_host_lifecycle_sync_tombstones_and_offline_decision
     );
     let persisted = wait_host(&events, |h| h.state() == HostState::Offline);
     assert_eq!(persisted.roots[0].id, root_id);
-    assert_eq!(wait_photos(&photos, |p| p.len() == 1)[0].rating, 5);
+    let mut view = Vec::new();
+    assert_eq!(
+        wait_photos(&photos, &mut view, |p| p.len() == 1)[0].rating,
+        5
+    );
     commands
         .send(IoCommand::Remote(RemoteCommand::Remove("test-host".into())))
         .unwrap();

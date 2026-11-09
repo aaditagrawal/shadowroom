@@ -111,7 +111,7 @@ pub fn remote_root_scope(device: &str, root: &str) -> String {
     )
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Photo {
     pub source: PhotoSource,

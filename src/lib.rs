@@ -10,6 +10,7 @@ pub mod model;
 pub mod path_picker;
 pub mod peaking;
 pub mod settings;
+pub mod snapshot;
 pub mod theme;
 pub mod workspace;
 
