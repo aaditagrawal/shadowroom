@@ -167,9 +167,10 @@ def exercise(args, root, report):
             hover(1)
             key(shortcut)
             expect_full(
-                ids[1], f"{shortcut} did not review hovered image with full context"
+                ids[0],
+                f"{shortcut} followed the hovered image instead of the selected one",
             )
-        record("Enter and L open the hovered singleton with the full collection")
+        record("Enter and L open the selected singleton, not the hovered one")
 
         grid()
         c.call("select", {"id": ids[0]})
