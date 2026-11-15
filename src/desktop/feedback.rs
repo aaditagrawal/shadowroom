@@ -120,6 +120,44 @@ pub(super) struct Feedback {
     pub quit_prompt: Option<QuitPrompt>,
     /// The error text whose raw details are expanded in the toast.
     pub details_for: Option<String>,
+    /// Decisions the on-photo chip last showed, per photo, so a change made
+    /// in place (not a change of photo) can settle in.
+    pub chips: RefCell<Vec<ChipMemory>>,
+}
+
+/// What a photo's decision chip last showed and when that changed in place.
+pub(super) struct ChipMemory {
+    id: i64,
+    decision: (Flag, u8, ColorLabel),
+    changed: Option<Instant>,
+}
+
+impl Feedback {
+    /// When `photo`'s decision last changed while it stayed on screen. A photo
+    /// seen for the first time records its decision without a change, so
+    /// navigation never animates the chip.
+    fn chip_changed(&self, photo: &Photo) -> Option<Instant> {
+        let decision = (photo.flag, photo.rating, photo.label);
+        let mut chips = self.chips.borrow_mut();
+        if let Some(memory) = chips.iter_mut().find(|memory| memory.id == photo.id) {
+            if memory.decision != decision {
+                memory.decision = decision;
+                memory.changed = Some(Instant::now());
+            }
+            return memory.changed;
+        }
+        // Compare shows two photos; a few entries cover both panes and the
+        // photo just left.
+        if chips.len() >= 4 {
+            chips.remove(0);
+        }
+        chips.push(ChipMemory {
+            id: photo.id,
+            decision,
+            changed: None,
+        });
+        None
+    }
 }
 impl Feedback {
     /// Retires notices whose time is up; true when anything visible changed.
@@ -273,37 +311,41 @@ impl Workspace {
             Tone::Warning => Some(("warning", self.c("warning", "#e0b341"))),
         };
         Some(
-            div()
-                .id("status-notice")
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .gap(px(space::SM))
-                .text_color(self.text())
-                .children(glyph.map(|(glyph, color)| icon(glyph, color).size(px(14.))))
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_normal()
-                        .line_clamp(1)
-                        .child(flash.text.clone()),
-                )
-                .children(flash.action.as_ref().map(|action| {
-                    self.compact_button(
-                        "status-notice-action",
-                        action.label,
-                        "",
-                        action.cmd.clone(),
-                        false,
-                        cx,
+            self.fade_in(
+                motion::occurrence("status-notice-in", flash.until),
+                motion::NOTICE,
+                0.,
+                div()
+                    .id("status-notice")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .text_color(self.text())
+                    .children(glyph.map(|(glyph, color)| icon(glyph, color).size(px(14.))))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .child(flash.text.clone()),
                     )
-                    .border_color(self.c("border.variant", "#333333"))
-                    .tooltip(self.tip(action.label, action.keys))
-                }))
-                .into_any_element(),
+                    .children(flash.action.as_ref().map(|action| {
+                        self.compact_button(
+                            "status-notice-action",
+                            action.label,
+                            "",
+                            action.cmd.clone(),
+                            false,
+                            cx,
+                        )
+                        .border_color(self.c("border.variant", "#333333"))
+                        .tooltip(self.tip(action.label, action.keys))
+                    })),
+            ),
         )
     }
 
@@ -364,43 +406,62 @@ impl Workspace {
     }
 
     /// The current photo's decision over the image: flag, stars and label.
-    pub(super) fn decision_chip(&self, photo: &Photo) -> Option<Div> {
+    /// A decision made on the photo while it stays on screen settles in over
+    /// 120 ms from 60% opacity, readable on its first frame; a photo arriving
+    /// by navigation shows its chip at once.
+    pub(super) fn decision_chip(&self, photo: &Photo) -> Option<AnyElement> {
+        let changed = self.feedback.chip_changed(photo);
         if photo.flag == Flag::None && photo.rating == 0 && photo.label == ColorLabel::None {
             return None;
         }
-        Some(
-            self.photo_chip()
-                .when(photo.flag != Flag::None, |s| {
-                    s.child(self.flag_glyph(photo.flag))
-                })
-                .when(photo.rating > 0, |s| {
-                    s.child(
-                        div()
-                            .text_color(self.scrim_rating())
-                            .child(stars(photo.rating)),
-                    )
-                })
-                .children(self.label_badge(photo.label)),
-        )
+        let chip = self
+            .photo_chip()
+            .flex_shrink_0()
+            .when(photo.flag != Flag::None, |s| {
+                s.child(self.flag_glyph(photo.flag))
+            })
+            .when(photo.rating > 0, |s| {
+                s.child(
+                    div()
+                        .text_color(self.scrim_rating())
+                        .child(stars(photo.rating)),
+                )
+            })
+            .children(self.label_badge(photo.label));
+        Some(match changed {
+            Some(at) if at.elapsed() < motion::CHIP * 4 => self.fade_in(
+                motion::occurrence("decision-chip-in", (photo.id, at)),
+                motion::CHIP,
+                0.6,
+                chip,
+            ),
+            _ => chip.into_any_element(),
+        })
     }
     /// The trailing "Pick · ★★★★★ · 02-lakeside.jpg" note after auto-advance.
-    pub(super) fn decision_note_chip(&self) -> Option<Div> {
+    pub(super) fn decision_note_chip(&self) -> Option<AnyElement> {
         let note = self.feedback.decision_note.as_ref()?;
-        Some(
-            self.photo_chip()
-                .when(note.flag != Flag::None, |s| {
-                    s.child(self.flag_glyph(note.flag))
-                })
-                .child(note.summary.clone())
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(self.scrim_muted())
-                        .child(format!("· {}", note.subject)),
-                ),
-        )
+        let chip = self
+            .photo_chip()
+            .max_w_full()
+            .when(note.flag != Flag::None, |s| {
+                s.child(self.flag_glyph(note.flag))
+            })
+            .child(note.summary.clone())
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(self.scrim_muted())
+                    .child(format!("· {}", note.subject)),
+            );
+        Some(self.fade_in(
+            motion::occurrence("decision-note-in", note.until),
+            motion::NOTICE,
+            0.3,
+            chip,
+        ))
     }
     /// The on-photo chip: scrim plate, 22 px tall, label-size text in the
     /// theme-independent photo-overlay ink, because it sits on photographs
@@ -624,15 +685,19 @@ impl Workspace {
                     .tooltip(self.tip("Dismiss", "Esc")),
             );
         Some(
-            div()
-                .absolute()
-                .left(px(left + space::LG))
-                .right(px(right + space::LG))
-                .bottom(px(bottom))
-                .flex()
-                .justify_center()
-                .child(card)
-                .into_any_element(),
+            self.fade_in(
+                motion::occurrence("error-toast-in", &notice.text),
+                motion::NOTICE,
+                0.,
+                div()
+                    .absolute()
+                    .left(px(left + space::LG))
+                    .right(px(right + space::LG))
+                    .bottom(px(bottom))
+                    .flex()
+                    .justify_center()
+                    .child(card),
+            ),
         )
     }
 

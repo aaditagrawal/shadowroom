@@ -62,6 +62,8 @@ impl Workspace {
     pub(super) fn open_preferences(&mut self) {
         if self.preferences_draft.is_none() {
             self.preferences_draft = Some(Draft::new(&self.settings, &self.themes));
+            // The Reduce motion row reports the platform setting; re-read it.
+            super::motion::refresh_system_preference();
         }
         self.preferences = true;
     }
@@ -355,6 +357,9 @@ impl Draft {
         let s = &mut self.settings;
         match cmd {
             Cmd::SetAutoAdvance(enabled) => s.auto_advance = *enabled,
+            Cmd::ReduceMotion(enabled) => {
+                s.extra.insert("reduce_motion".into(), json!(enabled));
+            }
             Cmd::SetAutoDrives(enabled) => s.auto_discover_drives = *enabled,
             Cmd::Font(font) => s.interface_font = font.clone(),
             Cmd::Group(mode) => s.grouping_mode = mode.clone(),
@@ -423,6 +428,7 @@ mod tests {
         let mut draft = Draft::new(&active, &[Theme::dark(), Theme::light()]);
         for cmd in [
             Cmd::SetAutoAdvance(false),
+            Cmd::ReduceMotion(true),
             Cmd::SetAutoDrives(false),
             Cmd::Font("DM Sans".into()),
             Cmd::Theme("Shadowroom Light".into()),

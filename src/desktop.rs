@@ -7,6 +7,7 @@ mod frame_trace;
 mod help;
 mod ingest_ui;
 mod layout;
+mod motion;
 mod preferences;
 mod prefetch;
 mod review_actions;
@@ -228,6 +229,7 @@ enum Cmd {
     SetMinRating(u8),
     AutoAdvance,
     SetAutoAdvance(bool),
+    ReduceMotion(bool),
     SetAutoDrives(bool),
     Font(String),
     Theme(String),
@@ -1218,6 +1220,7 @@ impl Workspace {
             async {}
         });
         let trace = frame_trace::Trace::from_env();
+        motion::refresh_system_preference();
         // Interceptors run before any key dispatch; the deferred effect runs
         // once every handler for the keystroke has returned.
         let trace_keys = trace.enabled().then(|| {
@@ -3378,6 +3381,12 @@ impl Workspace {
             }
             Cmd::SetAutoAdvance(enabled) => {
                 self.settings.auto_advance = enabled;
+                self.save_settings();
+            }
+            Cmd::ReduceMotion(enabled) => {
+                self.settings
+                    .extra
+                    .insert("reduce_motion".into(), json!(enabled));
                 self.save_settings();
             }
             Cmd::SetAutoDrives(enabled) => {
@@ -6787,7 +6796,7 @@ impl Workspace {
                                 .child(photo.filename.clone()),
                         )
                     })
-                    .children(chip.map(|chip| chip.flex_shrink_0())),
+                    .children(chip),
             )
         });
         // What the previous frame now carries, briefly, after auto-advance.
@@ -6799,7 +6808,7 @@ impl Workspace {
                     .left(px(8.))
                     .right(px(8.))
                     .flex()
-                    .child(chip.max_w_full())
+                    .child(chip)
             }))
         });
         let details = match quality_note {
@@ -9598,6 +9607,26 @@ impl Workspace {
             window,
             cx,
         );
+        let reduce_motion = s
+            .extra
+            .get("reduce_motion")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let motion = self.pref_choices(
+            "pref-motion",
+            [
+                ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
+                ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
+            ],
+            false,
+            window,
+            cx,
+        );
+        let motion_description = if motion::system_reduces_motion() {
+            "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
+        } else {
+            "Menus, dialogs and notices appear without fading. Also on when the system asks for reduced motion."
+        };
         let drives = self.pref_choices(
             "pref-drives",
             [
@@ -9902,6 +9931,7 @@ impl Workspace {
             .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
             .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Font", "Interface typeface", fonts))
+            .child(self.preference_row("Reduce motion", motion_description, motion))
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
             .child(div().pt(px(space::XS)).text_size(px(11.)).text_color(self.muted()).child(source_description))
@@ -10848,33 +10878,38 @@ impl Workspace {
             .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
             .child(body)
             .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
+        // Overlays fade in over 120 ms (`motion`); closing is instant.
         if self.add_host.is_some() {
-            root = root.child(self.add_host_view(cx));
+            root = root.child(self.overlay_in("add-host-in", self.add_host_view(cx)));
         }
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
-            root = root.child(self.rating_filter_menu(cx));
+            root = root.child(self.overlay_in("rating-filter-in", self.rating_filter_menu(cx)));
         }
         if self.preferences {
-            root = root.child(self.preferences_view(window, cx));
+            root = root.child(self.overlay_in("preferences-in", self.preferences_view(window, cx)));
         }
         if self.palette {
-            root = root.child(self.palette_view(cx));
+            root = root.child(self.overlay_in("palette-in", self.palette_view(cx)));
         }
         if self.getting_started {
-            root = root.child(self.getting_started_view(cx));
+            root = root.child(self.overlay_in("getting-started-in", self.getting_started_view(cx)));
         }
         if self.image_context.is_some() {
-            root = root.child(self.image_context_view(cx));
+            root = root.child(self.overlay_in("image-context-in", self.image_context_view(cx)));
         }
         if self.deletion.open() {
-            root = root.child(self.deletion_view(cx));
+            let deletion = self.deletion_view(cx);
+            root = root.child(self.overlay_in("deletion-in", deletion));
         }
         if self.folder_picker.is_some() {
-            root = root.child(self.picker_view(cx));
+            root = root.child(self.overlay_in("picker-in", self.picker_view(cx)));
         }
         // System feedback paints above every overlay so no scrim dims it.
+        let quit_prompt = self
+            .quit_prompt_view(cx)
+            .map(|prompt| self.overlay_in("quit-prompt-in", prompt));
         root = root
-            .children(self.quit_prompt_view(cx))
+            .children(quit_prompt)
             .children(self.error_toast(cx))
             .children(self.trace.probe());
         // A focused dialog control that is no longer drawn (its dialog closed
