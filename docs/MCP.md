@@ -49,7 +49,7 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `import` | `path` | Enqueue read-only folder/whole-drive indexing |
 | `cancel_import` | `{}` | Cancel active/queued imports, preserving indexed records |
 | `export_xmp` | `destination`, `ids?` | Enqueue selected-photo sidecar export |
-| `export_picks` | `destination` | Enqueue copying picked originals and companions |
+| `export_picks` | `destination`, optional `ids` | Enqueue copying picked originals and companions: every catalog pick, or the picks among `ids` |
 | `theme_import` | `path` | Import compatible Zed theme JSON |
 | `cache_stats` | `{}` | Read queue, cache, decode, and preview-source file-read counters |
 | `command` | `name` | Run one allowlisted workspace action below |
