@@ -56,6 +56,11 @@ pub struct HistogramOptions {
     pub luminance: bool,
     /// Tone-axis tick labels and the source/clip footer.
     pub labels: bool,
+    /// Label text, drawn on the surrounding panel (not the plot), so callers
+    /// pass the theme's muted text; the plot itself stays a neutral dark plate.
+    pub label: Rgba,
+    /// Clip readout while a channel is clipped.
+    pub label_strong: Rgba,
 }
 
 impl Default for HistogramOptions {
@@ -66,6 +71,8 @@ impl Default for HistogramOptions {
             smooth: true,
             luminance: false,
             labels: true,
+            label: rgb(LABEL),
+            label_strong: rgb(LABEL_STRONG),
         }
     }
 }
@@ -73,10 +80,13 @@ impl Default for HistogramOptions {
 const PLOT_BG: u32 = 0x0f0f0f;
 const PLOT_BORDER: u32 = 0x262626;
 const GRID: u32 = 0x1c1c1c;
-const LABEL: u32 = 0x6e6e6e;
-const LABEL_STRONG: u32 = 0xa0a0a0;
-const AXIS_ROW: f32 = 13.;
-const NOTE_ROW: f32 = 13.;
+/// Standalone defaults (dark panel); the inspector passes theme colours.
+const LABEL: u32 = 0x9a9a9a;
+const LABEL_STRONG: u32 = 0xe6e6e6;
+/// "No histogram data" sits on the dark plot plate in every theme.
+const EMPTY_LABEL: u32 = 0x9a9a9a;
+const AXIS_ROW: f32 = 14.;
+const NOTE_ROW: f32 = 14.;
 /// Share of samples in an end bin before that channel counts as clipped.
 const CLIP_THRESHOLD: f64 = 0.001;
 
@@ -100,7 +110,7 @@ pub fn histogram(hist: &Histogram, width: f32, height: f32) -> AnyElement {
 }
 
 /// `width`/`height` are the whole element, including the label rows when
-/// `options.labels` is set (26 px). Below 72 px tall the labels are dropped.
+/// `options.labels` is set (28 px). Below 72 px tall the labels are dropped.
 pub fn histogram_with(
     hist: &Histogram,
     width: f32,
@@ -144,7 +154,7 @@ pub fn histogram_with(
                 .items_center()
                 .justify_center()
                 .text_size(px(10.))
-                .text_color(rgb(LABEL))
+                .text_color(rgb(EMPTY_LABEL))
                 .child("No histogram data"),
         );
     }
@@ -168,8 +178,8 @@ pub fn histogram_with(
             .relative()
             .w(px(width))
             .h(px(AXIS_ROW))
-            .text_size(px(9.))
-            .text_color(rgb(LABEL));
+            .text_size(px(10.))
+            .text_color(options.label);
         for (value, text) in ticks {
             let x = value as f32 / 255. * width;
             let tick = div().absolute().top(px(1.)).w(px(28.)).child(text);
@@ -186,8 +196,8 @@ pub fn histogram_with(
                 .flex()
                 .justify_between()
                 .gap(px(6.))
-                .text_size(px(9.))
-                .text_color(rgb(LABEL))
+                .text_size(px(10.))
+                .text_color(options.label)
                 .child(
                     div()
                         .overflow_hidden()
@@ -198,11 +208,11 @@ pub fn histogram_with(
                 .child(
                     div()
                         .flex_none()
-                        .text_color(rgb(if data.any_clipped() {
-                            LABEL_STRONG
+                        .text_color(if data.any_clipped() {
+                            options.label_strong
                         } else {
-                            LABEL
-                        }))
+                            options.label
+                        })
                         .child(footer_right),
                 ),
         );

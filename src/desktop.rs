@@ -111,6 +111,10 @@ impl AssetSource for Assets {
             "external" => Some(include_bytes!("../assets/icons/link-external.svg")),
             "eject" => Some(include_bytes!("../assets/icons/shadowroom/eject.svg")),
             "focus" => Some(include_bytes!("../assets/icons/screen-full.svg")),
+            "peaking" => Some(include_bytes!("../assets/icons/shadowroom/peaking.svg")),
+            "reset" => Some(include_bytes!(
+                "../assets/icons/shadowroom/reset-decision.svg"
+            )),
             "loupe" => Some(include_bytes!("../assets/icons/shadowroom/view-loupe.svg")),
             "save" => Some(include_bytes!("../assets/icons/save.svg")),
             "refresh" => Some(include_bytes!("../assets/icons/refresh.svg")),
@@ -228,6 +232,8 @@ enum Cmd {
     Quit,
     CancelImport,
     HistogramLog,
+    /// Segmented LIN/LOG control: select a scale; never toggles.
+    SetHistogramLog(bool),
     Memory(usize),
     Disk(usize),
     ThemeMode(String),
@@ -1397,26 +1403,7 @@ impl Workspace {
         if let Some(color) = self.theme_colors.borrow().get(&(key, fallback)) {
             return *color;
         }
-        let value = self
-            .theme
-            .colors
-            .get(key)
-            .or_else(|| self.fallback_theme.colors.get(key))
-            .map(String::as_str)
-            .unwrap_or(fallback);
-        let c = shadowroom::theme::Rgba::parse(value)
-            .or_else(|| {
-                self.fallback_theme
-                    .colors
-                    .get(key)
-                    .and_then(|s| shadowroom::theme::Rgba::parse(s))
-            })
-            .unwrap_or(shadowroom::theme::Rgba {
-                r: 128,
-                g: 128,
-                b: 128,
-                a: 255,
-            });
+        let c = shadowroom::theme::resolve_role(&self.theme, &self.fallback_theme, key, fallback);
         let color = rgba(
             (u32::from(c.r) << 24)
                 | (u32::from(c.g) << 16)
@@ -3367,12 +3354,18 @@ impl Workspace {
                 self.regroup();
                 self.save_settings();
             }
-            Cmd::HistogramLog => {
-                self.histogram_log = !self.histogram_log;
-                self.settings
-                    .extra
-                    .insert("histogram_log".into(), json!(self.histogram_log));
-                self.save_settings();
+            Cmd::HistogramLog | Cmd::SetHistogramLog(_) => {
+                let log = match cmd {
+                    Cmd::SetHistogramLog(log) => log,
+                    _ => !self.histogram_log,
+                };
+                if log != self.histogram_log {
+                    self.histogram_log = log;
+                    self.settings
+                        .extra
+                        .insert("histogram_log".into(), json!(self.histogram_log));
+                    self.save_settings();
+                }
             }
             Cmd::Memory(mb) => {
                 self.settings.memory_budget_mb = mb;
@@ -3505,7 +3498,7 @@ impl Workspace {
                 "Reset Rating and Flag",
                 "Review · clear stars and pick/reject without advancing; keep color label",
                 "R",
-                "unflagged",
+                "reset",
                 Cmd::ResetDecision,
             ),
             item(
@@ -3613,7 +3606,7 @@ impl Workspace {
                 "Focus Peaking",
                 "View · cyan fine-detail highlights",
                 "F",
-                "focus",
+                "peaking",
                 Cmd::FocusPeaking,
             ),
             item(
@@ -4343,16 +4336,63 @@ fn item(
     }
 }
 
-/// Swatch colour shared by the inspector, filmstrip and grid.
-fn label_rgb(label: ColorLabel) -> Option<u32> {
+/// Theme roles for a colour label: (chrome swatch, on-photo badge, fallback).
+/// Chrome swatches follow the theme; thumbnail badges sit on the photo scrim.
+fn label_roles(label: ColorLabel) -> Option<(&'static str, &'static str, &'static str)> {
     match label {
         ColorLabel::None => None,
-        ColorLabel::Red => Some(0xd58b85),
-        ColorLabel::Yellow => Some(0xd6bb7e),
-        ColorLabel::Green => Some(0x9cbb95),
-        ColorLabel::Blue => Some(0x8caed1),
-        ColorLabel::Purple => Some(0xb39acb),
+        ColorLabel::Red => Some((
+            "shadowroom.label.red",
+            "shadowroom.scrim.label.red",
+            "#e0918a",
+        )),
+        ColorLabel::Yellow => Some((
+            "shadowroom.label.yellow",
+            "shadowroom.scrim.label.yellow",
+            "#d9bd72",
+        )),
+        ColorLabel::Green => Some((
+            "shadowroom.label.green",
+            "shadowroom.scrim.label.green",
+            "#86bfa8",
+        )),
+        ColorLabel::Blue => Some((
+            "shadowroom.label.blue",
+            "shadowroom.scrim.label.blue",
+            "#82abe0",
+        )),
+        ColorLabel::Purple => Some((
+            "shadowroom.label.purple",
+            "shadowroom.scrim.label.purple",
+            "#c497d0",
+        )),
     }
+}
+
+/// Initial drawn on label swatches and badges, so labels never rely on hue
+/// alone (no five-hue palette survives deuteranopia).
+fn label_initial(label: ColorLabel) -> &'static str {
+    match label {
+        ColorLabel::None => "",
+        ColorLabel::Red => "R",
+        ColorLabel::Yellow => "Y",
+        ColorLabel::Green => "G",
+        ColorLabel::Blue => "B",
+        ColorLabel::Purple => "P",
+    }
+}
+
+/// Size of a photo drawn with `ObjectFit::Contain` inside a well, so overlays
+/// can be pinned to the picture instead of the letterboxed slot.
+fn contained(well_w: f32, well_h: f32, width: u32, height: u32) -> (f32, f32) {
+    if width == 0 || height == 0 {
+        return (well_w, well_h);
+    }
+    let scale = (well_w / width as f32).min(well_h / height as f32);
+    (
+        (width as f32 * scale).round().clamp(1., well_w.max(1.)),
+        (height as f32 * scale).round().clamp(1., well_h.max(1.)),
+    )
 }
 
 fn label_key(label: ColorLabel) -> &'static str {
@@ -4664,6 +4704,58 @@ impl Workspace {
     fn rating_color(&self) -> Hsla {
         self.c("shadowroom.rating", "#e0b341")
     }
+    /// Thumbnail image well: a step between the grid background and panels.
+    fn well_bg(&self) -> Hsla {
+        self.c("shadowroom.well", "#161616")
+    }
+    /// Outline of an input or choice group (3:1 class), unlike decorative
+    /// `border` hairlines between panels.
+    fn control_border(&self) -> Hsla {
+        self.c("shadowroom.control_border", "#707070")
+    }
+    /// Plate under every on-photo badge. Theme-independent: it sits on pixels.
+    fn scrim(&self) -> Hsla {
+        self.c("shadowroom.scrim", "#0f0f0fd0")
+    }
+    fn scrim_text(&self) -> Hsla {
+        self.c("shadowroom.scrim.text", "#e6e6e6")
+    }
+    fn scrim_muted(&self) -> Hsla {
+        self.c("shadowroom.scrim.muted", "#b8b8b8")
+    }
+    fn scrim_flag(&self, flag: Flag) -> Hsla {
+        if flag == Flag::Pick {
+            self.c("shadowroom.scrim.pick", "#7fbf7f")
+        } else {
+            self.c("shadowroom.scrim.reject", "#e07a7a")
+        }
+    }
+    fn scrim_rating(&self) -> Hsla {
+        self.c("shadowroom.scrim.rating", "#e0b341")
+    }
+    fn scrim_accent(&self) -> Hsla {
+        self.c("shadowroom.scrim.accent", "#7fb3e6")
+    }
+    /// Chrome swatch colour for a label (inspector, sidebar).
+    fn label_color(&self, label: ColorLabel) -> Option<Hsla> {
+        label_roles(label).map(|(key, _, fallback)| self.c(key, fallback))
+    }
+    /// Badge colour for a label drawn on a photo's scrim plate.
+    fn photo_label_color(&self, label: ColorLabel) -> Option<Hsla> {
+        label_roles(label).map(|(_, key, fallback)| self.c(key, fallback))
+    }
+    /// Rejected frames recede in grid and filmstrip (Survey uses the same
+    /// rule) unless the Rejects collection is the subject; the badge stays
+    /// at full strength. The active frame is dimmed less so it stays legible.
+    fn reject_opacity(&self, flag: Flag, active: bool) -> f32 {
+        if flag != Flag::Reject || self.filter == Filter::Rejects {
+            1.
+        } else if active {
+            0.75
+        } else {
+            0.45
+        }
+    }
     fn tip(&self, label: &str, keys: &str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         let tip = Tip {
             label: label.to_owned().into(),
@@ -4709,9 +4801,9 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .border_1()
-                    .border_color(self.border())
+                    .border_color(self.control_border())
                     .bg(self.canvas_bg())
-                    .text_size(px(10.))
+                    .text_size(px(ui::text::MICRO))
                     .text_color(self.muted())
                     .child(cap),
             );
@@ -4778,6 +4870,63 @@ impl Workspace {
             .h(px(ui::COMPACT_CONTROL_HEIGHT))
             .when(label.is_empty(), |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)))
     }
+    /// Two-state control (panels, histogram, zoom, peaking, grouping, …).
+    /// On is a quiet filled state with a full-strength icon, as Zed draws dock
+    /// toggles; the accent stays reserved for "where you are" (view tab,
+    /// collection, current photo) and keyboard focus. Same box as `button`.
+    fn toggle_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        let hover = self.hover_bg();
+        let icon_only = label.is_empty();
+        div()
+            .id(id)
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .gap(px(space::SM))
+            .h(px(ui::CONTROL_HEIGHT))
+            .when(icon_only, |s| s.w(px(ui::CONTROL_HEIGHT)))
+            .when(!icon_only, |s| s.px(px(space::SM)))
+            .cursor_pointer()
+            .occlude()
+            .border_1()
+            .border_color(transparent_black())
+            .when(on, |s| s.bg(self.selected_bg()).text_color(self.text()))
+            .when(!on, |s| s.hover(move |s| s.bg(hover)))
+            .when(!glyph.is_empty(), |s| {
+                s.child(icon(
+                    glyph,
+                    if on {
+                        self.c("icon", "#b8b8b8")
+                    } else {
+                        self.icon_muted()
+                    },
+                ))
+            })
+            .when(!icon_only, |s| s.child(label.to_owned()))
+            .on_click(cx.listener(move |this, _, window, cx| this.execute(cmd.clone(), window, cx)))
+    }
+    fn compact_toggle(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.toggle_button(id, label, glyph, cmd, on, cx)
+            .h(px(ui::COMPACT_CONTROL_HEIGHT))
+            .when(label.is_empty(), |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)))
+    }
     fn control_divider(&self) -> Div {
         div()
             .w(px(1.))
@@ -4785,6 +4934,48 @@ impl Workspace {
             .h(px(space::LG))
             .mx(px(space::XS))
             .bg(self.border())
+    }
+    /// Tab in a bar: the title-bar view-tab idiom (no box; muted to text and
+    /// a 2 px accent underline flush with the bar's hairline when active).
+    fn panel_tab(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        glyph: &'static str,
+        cmd: Cmd,
+        active: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        let hover = self.hover_bg();
+        div()
+            .id(id)
+            .flex_1()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(space::SM))
+            .border_b_2()
+            .border_color(if active {
+                self.accent()
+            } else {
+                transparent_black()
+            })
+            .text_color(if active { self.text() } else { self.muted() })
+            .when(active, |s| s.font_weight(FontWeight::MEDIUM))
+            .cursor_pointer()
+            .occlude()
+            .when(!active, |s| s.hover(move |s| s.bg(hover)))
+            .child(icon(
+                glyph,
+                if active {
+                    self.c("icon", "#b8b8b8")
+                } else {
+                    self.icon_muted()
+                },
+            ))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| this.execute(cmd.clone(), window, cx)))
     }
     /// Text-only segment used for view tabs and preference choices.
     fn segment(
@@ -4810,7 +5001,18 @@ impl Workspace {
             .cursor_pointer()
             .occlude()
             .text_color(if active { self.text() } else { self.muted() })
-            .when(active, |s| s.bg(self.selected_bg()))
+            // A 2 px bar in the text colour marks the chosen option (not the
+            // accent: a choice is state, not location); reserved on every
+            // segment so selection never shifts the label.
+            .border_b_2()
+            .border_color(if active {
+                self.text()
+            } else {
+                transparent_black()
+            })
+            .when(active, |s| {
+                s.bg(self.selected_bg()).font_weight(FontWeight::MEDIUM)
+            })
             .when(!active, |s| s.hover(move |s| s.bg(hover)))
             .child(label.to_owned())
             .on_click(cx.listener(move |this, _, window, cx| this.execute(cmd.clone(), window, cx)))
@@ -4949,13 +5151,14 @@ impl Workspace {
                         transparent_black()
                     })
                     .text_color(if active { self.text() } else { self.muted() })
+                    .when(active, |s| s.font_weight(FontWeight::MEDIUM))
                     .cursor_pointer()
                     .occlude()
-                    .hover(move |s| s.bg(hover))
+                    .when(!active, |s| s.hover(move |s| s.bg(hover)))
                     .child(icon(
                         glyph,
                         if active {
-                            self.accent()
+                            self.c("icon", "#b8b8b8")
                         } else {
                             self.icon_muted()
                         },
@@ -4999,7 +5202,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::SM))
                     .child(
-                        self.button(
+                        self.toggle_button(
                             "title-library",
                             "",
                             "panel-left",
@@ -5034,7 +5237,7 @@ impl Workspace {
                             .tooltip(self.tip("Search commands", palette_keys)),
                     )
                     .child(
-                        self.button(
+                        self.toggle_button(
                             "getting-started-trigger",
                             "?",
                             "",
@@ -5152,7 +5355,7 @@ impl Workspace {
                 .child(icon(
                     glyph,
                     if active {
-                        self.accent()
+                        self.c("icon", "#b8b8b8")
                     } else {
                         self.icon_muted()
                     },
@@ -5165,6 +5368,7 @@ impl Workspace {
                         .text_ellipsis()
                         .whitespace_normal()
                         .line_clamp(1)
+                        .when(active, |s| s.font_weight(FontWeight::MEDIUM))
                         .child(label),
                 )
                 .when_some(count, |s, n| {
@@ -5340,10 +5544,15 @@ impl Workspace {
                             .child(
                                 div()
                                     .size(px(10.))
-                                    .bg(rgb(label_rgb(label).unwrap_or(0x737b86))),
+                                    .when_some(self.label_color(label), |s, c| s.bg(c)),
                             ),
                     )
-                    .child(div().flex_1().child(format!("{label:?}")))
+                    .child(
+                        div()
+                            .flex_1()
+                            .when(active, |s| s.font_weight(FontWeight::MEDIUM))
+                            .child(format!("{label:?}")),
+                    )
                     .child(
                         div()
                             .text_size(px(11.))
@@ -5579,7 +5788,7 @@ impl Workspace {
             );
         if self.mode != ViewMode::Grid && self.review_folder == self.scope {
             if let Some(ids) = &self.review_subset {
-                crumb = crumb.child(self.button(
+                crumb = crumb.child(self.toggle_button(
                     "clear-review-subset",
                     &format!("{} selected · Show full folder", ids.len()),
                     "",
@@ -5618,7 +5827,7 @@ impl Workspace {
         }
         let filtering = self.min_rating > 0;
         let ratings = self
-            .button(
+            .toggle_button(
                 "rating-filter-menu",
                 if self.compact {
                     ""
@@ -5661,7 +5870,7 @@ impl Workspace {
             .when(!self.review_extras_fit() && self.multi.len() > 1, |toolbar| {
                 toolbar.child(
                     div().id("compact-selection-count").flex_shrink_0()
-                        .text_size(px(10.)).text_color(self.accent())
+                        .text_size(px(ui::text::LABEL)).text_color(self.text())
                         .child(format!("{} selected", self.multi.len()))
                         .tooltip(self.tip("Decisions apply to every selected photo, including those outside the viewport", "")),
                 )
@@ -5672,7 +5881,7 @@ impl Workspace {
                     .as_ref()
                     .is_some_and(|s| s.phase.is_active());
                 row.child(
-                    self.button(
+                    self.toggle_button(
                         "duplicate-scan",
                         if running { "Stop scan" } else { "Scan" },
                         if running { "stop" } else { "duplicates" },
@@ -5691,7 +5900,7 @@ impl Workspace {
                 )
             })
             .child(
-                self.button(
+                self.toggle_button(
                     "header-group",
                     if grouped && !self.compact {
                         grouping.as_str()
@@ -5719,7 +5928,7 @@ impl Workspace {
             .child(self.control_divider())
             .child(ratings)
             .child(
-                self.button(
+                self.toggle_button(
                     "toolbar-info",
                     "",
                     "panel-right",
@@ -5799,7 +6008,7 @@ impl Workspace {
         for r in 0..=5u8 {
             let active = self.min_rating == r;
             options = options.child(
-                self.button(
+                self.toggle_button(
                     ("filter-option", r as usize),
                     &if r == 0 {
                         "All ratings".into()
@@ -6370,12 +6579,12 @@ impl Workspace {
                     .py(px(space::TINY))
                     .flex()
                     .gap(px(space::SM))
-                    .bg(rgba(0x0f0f0fd0))
-                    .text_size(px(11.))
-                    .text_color(rgb(0xe6e6e6))
+                    .bg(self.scrim())
+                    .text_size(px(ui::text::LABEL))
+                    .text_color(self.scrim_text())
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .child(div().text_color(rgb(0x9a9a9a)).child(if reference {
+                    .child(div().text_color(self.scrim_muted()).child(if reference {
                         "Reference"
                     } else {
                         "Candidate"
@@ -6409,7 +6618,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(space::SM))
-                        .text_size(px(10.))
+                        .text_size(px(ui::text::LABEL))
                         .text_color(if requested_error.is_some() {
                             self.c("warning", "#e0b341")
                         } else {
@@ -6461,6 +6670,14 @@ impl Workspace {
         let cols = self.grid_cols();
         let rows = self.filtered.len().div_ceil(cols);
         let handle = self.grid_scroll.clone();
+        // Equal cells (placeholders share the box), so the well width is known
+        // and badges can be pinned to each photo's contained rectangle.
+        let cell_w = (self.center_size.0
+            - scrollbar::WIDTH
+            - 2. * ui::PANEL_INSET
+            - ui::GRID_GAP * (cols as f32 - 1.))
+            / cols as f32;
+        let well_w = (cell_w - 2. * space::XS - 2. * ui::HAIRLINE).max(1.);
         let list = uniform_list(
             "photo-grid",
             rows,
@@ -6487,89 +6704,90 @@ impl Workspace {
                                 this.request_preview(photo, PreviewKind::Thumbnail);
                                 let selected =
                                     position == this.selected || this.multi.contains(&photo.id);
+                                // Hover follows the pointer state the app tracks, so
+                                // keyboard navigation (which clears it) hides it.
+                                let hovered = !selected && this.catalog_hover == Some(photo.id);
+                                let dim =
+                                    this.reject_opacity(photo.flag, position == this.selected);
                                 let texture = this.texture(index, PreviewKind::Thumbnail, cx);
                                 let photo = &this.photos[index];
                                 let photo_id = photo.id;
-                                let mut image = div()
-                                    .h(px(ui::GRID_IMAGE_HEIGHT))
-                                    .w_full()
-                                    .relative()
-                                    .bg(this.canvas_bg())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .overflow_hidden();
-                                if let Some((texture, _, _, _, _, _)) = texture {
-                                    image = image.child(
-                                        img(texture)
-                                            .absolute()
-                                            .inset_0()
-                                            .size_full()
-                                            .object_fit(ObjectFit::Contain),
+                                // Badges anchor to the picture itself, so a portrait
+                                // frame's badges sit on the photo, not in the letterbox.
+                                let mut frame = div().relative().flex_shrink_0();
+                                if let Some((texture, width, height, _, _, _)) = texture {
+                                    let (w, h) =
+                                        contained(well_w, ui::GRID_IMAGE_HEIGHT, width, height);
+                                    frame = frame.w(px(w)).h(px(h)).child(
+                                        div().size_full().opacity(dim).child(
+                                            img(texture).size_full().object_fit(ObjectFit::Contain),
+                                        ),
                                     );
                                 } else {
-                                    image = image.child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .gap(px(space::SM))
-                                            .child(icon("camera", this.icon_muted()))
-                                            .when_some(
-                                                this.media
-                                                    .photo_error(photo, PreviewKind::Thumbnail),
-                                                |s, error| {
-                                                    s.child(
-                                                        div()
-                                                            .text_size(px(10.))
-                                                            .text_color(this.muted())
-                                                            .child(
-                                                                if error
-                                                                    .message
-                                                                    .contains("Unavailable offline")
-                                                                {
-                                                                    "Unavailable offline"
-                                                                } else {
-                                                                    "Preview unavailable"
-                                                                },
-                                                            ),
-                                                    )
-                                                },
-                                            ),
-                                    );
+                                    frame = frame
+                                        .size_full()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(space::SM))
+                                        .child(icon("camera", this.icon_muted()))
+                                        .when_some(
+                                            this.media.photo_error(photo, PreviewKind::Thumbnail),
+                                            |s, error| {
+                                                s.child(
+                                                    div()
+                                                        .text_size(px(ui::text::LABEL))
+                                                        .text_color(this.muted())
+                                                        .child(
+                                                            if error
+                                                                .message
+                                                                .contains("Unavailable offline")
+                                                            {
+                                                                "Unavailable offline"
+                                                            } else {
+                                                                "Preview unavailable"
+                                                            },
+                                                        ),
+                                                )
+                                            },
+                                        );
                                 }
-                                if photo.flag != Flag::None {
-                                    image = image.child(this.flag_badge(photo.flag));
+                                if let Some(badges) = this.decision_badges(photo.flag, photo.label)
+                                {
+                                    frame = frame.child(badges);
                                 }
-                                if this.multi.contains(&photo.id) {
-                                    image = image.child(
+                                // A check only when it means something: part of a
+                                // deliberate multi-selection, never a lone selection.
+                                if this.multi.len() > 1 && this.multi.contains(&photo.id) {
+                                    frame = frame.child(
                                         div()
                                             .absolute()
-                                            .top(px(4.))
-                                            .right(px(4.))
+                                            .top(px(space::XS))
+                                            .right(px(space::XS))
                                             .size(px(18.))
-                                            .bg(rgba(0x0f0f0fd0))
+                                            .bg(this.scrim())
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(icon("selected", this.accent())),
+                                            .child(icon("selected", this.scrim_accent())),
                                     );
                                 }
                                 let burst = this.burst_slot(photo.id);
-                                if let Some((_, frame, count)) = burst {
-                                    image = image.child(
+                                if let Some((_, frame_no, count)) = burst {
+                                    frame = frame.child(
                                         div()
                                             .absolute()
-                                            .bottom(px(7.))
-                                            .right(px(4.))
+                                            .bottom(px(space::XS))
+                                            .right(px(space::XS))
                                             .px(px(space::XS))
                                             .h(px(18.))
                                             .flex()
                                             .items_center()
                                             .gap(px(space::XS))
-                                            .bg(rgba(0x0f0f0fd0))
-                                            .text_color(rgb(0xe6e6e6))
-                                            .text_size(px(10.))
+                                            .bg(this.scrim())
+                                            .text_color(this.scrim_text())
+                                            .text_size(px(ui::text::MICRO))
                                             .child(
                                                 svg()
                                                     .path(if this.duplicates_only {
@@ -6582,18 +6800,29 @@ impl Workspace {
                                                     } else {
                                                         12.
                                                     }))
-                                                    .text_color(rgb(0xb8b8b8)),
+                                                    .text_color(this.scrim_muted()),
                                             )
-                                            .child(format!("{}/{count}", frame + 1)),
+                                            .child(format!("{}/{count}", frame_no + 1)),
                                     );
                                 }
-                                if let Some(bar) = this.label_bar(photo.label) {
-                                    image = image.child(bar.h(px(4.)));
-                                }
-                                // Adjacent bursts alternate intensity so boundaries read at a glance.
+                                let image = div()
+                                    .h(px(ui::GRID_IMAGE_HEIGHT))
+                                    .w_full()
+                                    .relative()
+                                    .bg(this.well_bg())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .overflow_hidden()
+                                    .child(frame);
+                                // Adjacent bursts alternate intensity so boundaries read
+                                // at a glance; neutral, since blue means "current".
                                 let burst_bar = burst.map(|(group, ..)| {
-                                    this.accent()
-                                        .opacity(if group % 2 == 0 { 0.6 } else { 0.3 })
+                                    this.icon_muted().opacity(if group % 2 == 0 {
+                                        0.9
+                                    } else {
+                                        0.45
+                                    })
                                 });
                                 line = line.child(
                                     div()
@@ -6610,6 +6839,7 @@ impl Workspace {
                                             transparent_black()
                                         })
                                         .when(selected, |s| s.bg(this.selected_bg()))
+                                        .when(hovered, |s| s.bg(this.hover_bg()))
                                         .cursor_pointer()
                                         .child(
                                             div()
@@ -6626,7 +6856,7 @@ impl Workspace {
                                                 .items_center()
                                                 .justify_between()
                                                 .gap(px(space::SM))
-                                                .text_size(px(11.))
+                                                .text_size(px(ui::text::LABEL))
                                                 .child(
                                                     div()
                                                         .flex_1()
@@ -6635,7 +6865,7 @@ impl Workspace {
                                                         .text_ellipsis()
                                                         .whitespace_normal()
                                                         .line_clamp(1)
-                                                        .text_color(if selected {
+                                                        .text_color(if selected || hovered {
                                                             this.text()
                                                         } else {
                                                             this.muted()
@@ -6687,7 +6917,16 @@ impl Workspace {
                                         )),
                                 );
                             } else {
-                                line = line.child(div().flex_1());
+                                // Same box as a real cell, so partial rows keep
+                                // the columns of the rows above them.
+                                line = line.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .p(px(space::XS))
+                                        .border_1()
+                                        .border_color(transparent_black()),
+                                );
                             }
                         }
                         line
@@ -6848,7 +7087,7 @@ impl Workspace {
                         .inset_0()
                         .size_full()
                         .object_fit(ObjectFit::Contain)
-                        .when(p.flag == Flag::Reject, |s| s.opacity(0.4)),
+                        .opacity(self.reject_opacity(p.flag, active)),
                 );
             } else {
                 photo_box = photo_box.child(
@@ -6862,7 +7101,7 @@ impl Workspace {
                         .justify_center()
                         .child(icon("camera", self.icon_muted()))
                         .when_some(self.media.photo_error(p, kind), |s, error| {
-                            s.child(div().text_size(px(10.)).child(
+                            s.child(div().text_size(px(ui::text::LABEL)).child(
                                 if error.message.contains("Unavailable offline") {
                                     "Unavailable offline"
                                 } else {
@@ -6872,38 +7111,39 @@ impl Workspace {
                         }),
                 );
             }
-            if p.flag != Flag::None {
-                photo_box = photo_box.child(self.flag_badge(p.flag));
+            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+                photo_box = photo_box.child(badges);
             }
             photo_box = photo_box.child(
                 div()
                     .absolute()
-                    .top(px(4.))
-                    .right(px(4.))
+                    .top(px(space::XS))
+                    .right(px(space::XS))
                     .px(px(space::XS))
                     .h(px(18.))
                     .flex()
                     .items_center()
-                    .bg(rgba(0x0f0f0fd0))
-                    .text_size(px(11.))
-                    .text_color(if active { rgb(0xffffff) } else { rgb(0xb8b8b8) })
+                    .bg(self.scrim())
+                    .text_size(px(ui::text::LABEL))
+                    .text_color(if active {
+                        self.scrim_text()
+                    } else {
+                        self.scrim_muted()
+                    })
                     .child((first + i + 1).to_string()),
             );
             if p.rating > 0 {
                 photo_box = photo_box.child(
                     div()
                         .absolute()
-                        .bottom(px(7.))
-                        .right(px(4.))
+                        .bottom(px(space::XS))
+                        .right(px(space::XS))
                         .px(px(space::XS))
-                        .bg(rgba(0x0f0f0fd0))
-                        .text_size(px(11.))
-                        .text_color(self.rating_color())
+                        .bg(self.scrim())
+                        .text_size(px(ui::text::LABEL))
+                        .text_color(self.scrim_rating())
                         .child(stars(p.rating)),
                 );
-            }
-            if let Some(bar) = self.label_bar(p.label) {
-                photo_box = photo_box.child(bar.h(px(4.)));
             }
             let cell = div()
                 .id(("survey", position))
@@ -6993,16 +7233,15 @@ impl Workspace {
             .child(grid)
             .into_any_element()
     }
+    /// 18 px scrim plate with the pick/reject glyph, in photo-overlay colours.
     fn flag_badge(&self, flag: Flag) -> Div {
         div()
-            .absolute()
-            .top(px(4.))
-            .left(px(4.))
             .size(px(18.))
             .flex()
+            .flex_shrink_0()
             .items_center()
             .justify_center()
-            .bg(rgba(0x0f0f0fd0))
+            .bg(self.scrim())
             .child(
                 svg()
                     .path(if flag == Flag::Pick {
@@ -7011,12 +7250,45 @@ impl Workspace {
                         "reject-badge"
                     })
                     .size(px(12.))
-                    .text_color(if flag == Flag::Pick {
-                        self.pick_color()
-                    } else {
-                        self.reject_color()
-                    }),
+                    .text_color(self.scrim_flag(flag)),
             )
+    }
+    /// Label badge: the label's initial in its colour, so the label survives
+    /// colour-vision deficiency and any photo underneath.
+    fn label_badge(&self, label: ColorLabel) -> Option<Div> {
+        self.photo_label_color(label).map(|color| {
+            div()
+                .h(px(18.))
+                .min_w(px(18.))
+                .px(px(space::XS))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .bg(self.scrim())
+                .text_size(px(ui::text::MICRO))
+                .line_height(px(ui::text::MICRO))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(color)
+                .child(label_initial(label))
+        })
+    }
+    /// Decisions cluster at the photo's top-left: flag, then label.
+    fn decision_badges(&self, flag: Flag, label: ColorLabel) -> Option<Div> {
+        let label = self.label_badge(label);
+        if flag == Flag::None && label.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .top(px(space::XS))
+                .left(px(space::XS))
+                .flex()
+                .gap(px(space::TINY))
+                .when(flag != Flag::None, |s| s.child(self.flag_badge(flag)))
+                .children(label),
+        )
     }
     /// (group index, frame position, frame count) for photos in a burst or
     /// duplicate set of two or more.
@@ -7028,30 +7300,19 @@ impl Workspace {
         }
     }
 
-    fn label_bar(&self, label: ColorLabel) -> Option<Div> {
-        label_rgb(label).map(|color| {
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(3.))
-                .bg(rgb(color))
-        })
-    }
     fn group_count_badge(&self, count: usize) -> Div {
         div()
             .absolute()
-            .bottom(px(5.))
-            .left(px(3.))
+            .bottom(px(space::XS))
+            .left(px(space::XS))
             .px(px(space::XS))
             .h(px(14.))
             .flex()
             .items_center()
             .gap(px(space::TINY))
-            .bg(rgba(0x0f0f0fd0))
-            .text_color(rgb(0xe6e6e6))
-            .text_size(px(9.))
+            .bg(self.scrim())
+            .text_color(self.scrim_text())
+            .text_size(px(ui::text::MICRO))
             .child(
                 svg()
                     .path(if self.duplicates_only {
@@ -7060,7 +7321,7 @@ impl Workspace {
                         "group-badge"
                     })
                     .size(px(10.))
-                    .text_color(rgb(0xb8b8b8)),
+                    .text_color(self.scrim_muted()),
             )
             .child(count.to_string())
     }
@@ -7114,61 +7375,90 @@ impl Workspace {
             self.request_preview(p, PreviewKind::Thumbnail);
             let texture = self.texture(index, PreviewKind::Thumbnail, cx);
             let p = &self.photos[index];
-            // Preserve the full photograph within an equal-sized slot.
-            let mut image = div()
-                .relative()
-                .w(px(ui::FILM_WIDTH))
-                .h(px(ui::FILM_HEIGHT))
-                .bg(self.canvas_bg())
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center();
-            if let Some((texture, _, _, _, _, _)) = texture {
-                image = image.child(img(texture).size_full().object_fit(ObjectFit::Contain));
+            // Preserve the full photograph within an equal-sized slot; badges
+            // pin to the picture so portrait frames keep them on the photo.
+            let mut frame = div().relative().flex_shrink_0();
+            if let Some((texture, width, height, _, _, _)) = texture {
+                let (w, h) = contained(ui::FILM_WIDTH, ui::FILM_HEIGHT, width, height);
+                frame = frame.w(px(w)).h(px(h)).child(
+                    div()
+                        .size_full()
+                        .opacity(self.reject_opacity(p.flag, active))
+                        .child(img(texture).size_full().object_fit(ObjectFit::Contain)),
+                );
             } else {
-                image = image.child(icon("camera", self.icon_muted()));
+                frame = frame
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("camera", self.icon_muted()));
             }
-            if p.flag != Flag::None {
-                image = image.child(self.flag_badge(p.flag));
+            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+                frame = frame.child(badges);
             }
             if p.rating > 0 {
-                image = image.child(
+                // Compact "★5" chip: the count, not five glyphs over the photo.
+                frame = frame.child(
                     div()
                         .absolute()
-                        .bottom(px(5.))
-                        .right(px(3.))
+                        .bottom(px(space::XS))
+                        .right(px(space::XS))
+                        .h(px(14.))
                         .px(px(space::XS))
-                        .bg(rgba(0x0f0f0fd0))
-                        .text_size(px(9.))
-                        .text_color(self.rating_color())
-                        .child(stars(p.rating)),
+                        .flex()
+                        .items_center()
+                        .bg(self.scrim())
+                        .text_size(px(ui::text::MICRO))
+                        .text_color(self.scrim_rating())
+                        .child(format!("★{}", p.rating)),
                 );
             }
             let burst = self.burst_slot(p.id);
             let run_start =
                 burst.is_some_and(|(group, ..)| run.as_ref().is_none_or(|(g, _)| *g != group));
             if let (true, Some((_, _, count))) = (run_start, burst) {
-                image = image.child(self.group_count_badge(count));
+                frame = frame.child(self.group_count_badge(count));
             }
-            if let Some(bar) = self.label_bar(p.label) {
-                image = image.child(bar);
-            }
+            let image = div()
+                .relative()
+                .w(px(ui::FILM_WIDTH))
+                .h(px(ui::FILM_HEIGHT))
+                // The strip sits on a panel, so its slots use the canvas, which
+                // steps away from the panel in both themes (the grid well steps
+                // away from the window background instead).
+                .bg(self.canvas_bg())
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(frame);
             let photo_id = p.id;
-            let cell = div()
-                .id(("film", position))
-                .flex_shrink_0()
-                .p(px(1.))
+            // Selection is an inset overlay, so selected and unselected cells
+            // have identical boxes and the strip keeps one constant gap.
+            let ring = div()
+                .absolute()
+                .inset_0()
                 .border_2()
                 .border_color(if active {
                     self.accent()
                 } else if multi {
-                    self.accent().opacity(0.45)
+                    self.accent().opacity(0.8)
                 } else {
                     transparent_black()
                 })
+                .when(!active && !multi, |s| {
+                    let hover = self.icon_muted();
+                    s.group_hover("film-cell", move |s| s.border_color(hover))
+                });
+            let cell = div()
+                .id(("film", position))
+                .group("film-cell")
+                .relative()
+                .flex_shrink_0()
                 .cursor_pointer()
                 .child(image)
+                .child(ring)
                 .tooltip(self.tip(
                     &match burst {
                         Some((_, frame, count)) => {
@@ -7204,12 +7494,10 @@ impl Workspace {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(space::TINY))
-                                    .px(px(space::TINY))
-                                    .pb(px(1.))
-                                    .bg(self.hover_bg())
+                                    .gap(px(ui::FILM_GAP))
+                                    .pb(px(space::TINY))
                                     .border_t_2()
-                                    .border_color(self.accent().opacity(0.55))
+                                    .border_color(self.icon_muted().opacity(0.6))
                                     .child(cell),
                             ));
                         }
@@ -7272,7 +7560,8 @@ impl Workspace {
                 .justify_center()
                 .gap(px(space::SM))
                 .cursor_pointer()
-                .when(on, |s| s.bg(color.opacity(0.15)))
+                // 10% keeps the coloured label at 4.5:1 on its own tint in both themes.
+                .when(on, |s| s.bg(color.opacity(0.10)))
                 .when(!on, |s| s.hover(move |s| s.bg(hover)))
                 .child(icon(
                     if on {
@@ -7345,7 +7634,7 @@ impl Workspace {
                 self.button(
                     "reset-decision",
                     if compact { "" } else { "Reset" },
-                    "unflagged",
+                    "reset",
                     Cmd::ResetDecision,
                     false,
                     cx,
@@ -7402,7 +7691,7 @@ impl Workspace {
                         )),
                 )
                 .child(
-                    self.button(
+                    self.toggle_button(
                         "header-advance",
                         "",
                         "auto-advance",
@@ -7420,11 +7709,11 @@ impl Workspace {
                     )),
                 )
                 .child(
-                    self.button("pin-reference", "", "pin", Cmd::Pin, pinned, cx)
+                    self.toggle_button("pin-reference", "", "pin", Cmd::Pin, pinned, cx)
                         .tooltip(self.tip("Pin as compare reference", "B")),
                 )
                 .child(
-                    self.button(
+                    self.toggle_button(
                         "survey-burst",
                         "",
                         "group",
@@ -7440,7 +7729,7 @@ impl Workspace {
                 )
             })
             .child(
-                self.button(
+                self.toggle_button(
                     "zoom-photo",
                     &if self.zoom {
                         format!("{:.0}%", self.zoom_factor * 100.)
@@ -7473,10 +7762,10 @@ impl Workspace {
                     .tooltip(self.tip("Zoom in", "+")),
             )
             .child(
-                self.button(
+                self.toggle_button(
                     "focus-peaking",
                     "",
-                    "focus",
+                    "peaking",
                     Cmd::FocusPeaking,
                     self.focus_peaking,
                     cx,
@@ -7596,7 +7885,7 @@ impl Workspace {
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(px(13.))
+                        .text_size(px(ui::text::TITLE))
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_normal()
@@ -7619,7 +7908,7 @@ impl Workspace {
                                     .flex()
                                     .items_center()
                                     .bg(self.selected_bg())
-                                    .text_size(px(12.))
+                                    .text_size(px(ui::text::BODY))
                                     .child(fact)
                             })),
                     )
@@ -7656,7 +7945,7 @@ impl Workspace {
                         "Burst"
                     })
                     .child(
-                        self.button(
+                        self.toggle_button(
                             "inspector-survey",
                             "Survey",
                             "group",
@@ -7676,30 +7965,30 @@ impl Workspace {
                     .id("histogram-scale")
                     .flex()
                     .border_1()
-                    .border_color(self.border())
+                    .border_color(self.control_border())
                     .child(
                         self.segment(
                             "histogram-lin",
                             "LIN",
-                            Cmd::HistogramLog,
+                            Cmd::SetHistogramLog(false),
                             !self.histogram_log,
                             cx,
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(10.)),
+                        .text_size(px(ui::text::LABEL)),
                     )
                     .child(
                         self.segment(
                             "histogram-log",
                             "LOG",
-                            Cmd::HistogramLog,
+                            Cmd::SetHistogramLog(true),
                             self.histogram_log,
                             cx,
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(10.)),
+                        .text_size(px(ui::text::LABEL)),
                     )
                     .tooltip(self.tip("Histogram scale · log lifts shadows and highlights", ""));
                 body = body
@@ -7723,6 +8012,8 @@ impl Workspace {
                             } else {
                                 crate::histogram::HistogramSource::Preview
                             },
+                            label: self.muted().into(),
+                            label_strong: self.text().into(),
                             ..Default::default()
                         },
                     ));
@@ -7743,7 +8034,7 @@ impl Workspace {
                 .into_iter()
                 .enumerate()
                 {
-                    let color = label_rgb(label);
+                    let color = self.label_color(label);
                     labels = labels.child(
                         div()
                             .id(("label", n))
@@ -7759,9 +8050,16 @@ impl Workspace {
                             .child(
                                 div()
                                     .size_full()
-                                    .when_some(color, |s, c| s.bg(rgb(c)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(ui::text::MICRO))
+                                    .line_height(px(ui::text::MICRO))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
+                                    .when_some(color, |s, c| s.bg(c).child(label_initial(label)))
                                     .when(color.is_none(), |s| {
-                                        s.border_1().border_color(self.muted())
+                                        s.border_1().border_color(self.control_border())
                                     }),
                             )
                             .tooltip(self.tip(
@@ -7944,34 +8242,25 @@ impl Workspace {
                     .h(px(TOOLBAR_HEIGHT))
                     .flex_shrink_0()
                     .flex()
-                    .items_center()
-                    .justify_start()
-                    .gap(px(ui::BAR_INSET))
-                    .p(px(ui::BAR_INSET))
+                    .px(px(ui::BAR_INSET))
                     .border_b_1()
                     .border_color(self.border())
-                    .child(
-                        self.button(
-                            "panel-review",
-                            "Review",
-                            "pick",
-                            Cmd::InspectorTab(false),
-                            !self.inspector_info,
-                            cx,
-                        )
-                        .flex_1(),
-                    )
-                    .child(
-                        self.button(
-                            "panel-info",
-                            "Info",
-                            "camera",
-                            Cmd::InspectorTab(true),
-                            self.inspector_info,
-                            cx,
-                        )
-                        .flex_1(),
-                    ),
+                    .child(self.panel_tab(
+                        "panel-review",
+                        "Review",
+                        "loupe",
+                        Cmd::InspectorTab(false),
+                        !self.inspector_info,
+                        cx,
+                    ))
+                    .child(self.panel_tab(
+                        "panel-info",
+                        "Info",
+                        "camera",
+                        Cmd::InspectorTab(true),
+                        self.inspector_info,
+                        cx,
+                    )),
             )
             .child(body)
             .into_any_element()
@@ -8772,13 +9061,33 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(space::SM))
+                    .relative()
                     .cursor_pointer()
-                    .when(active, |s| s.bg(self.selected_bg()))
+                    .when(active, |s| {
+                        // The row Return runs: fill, a 2 px accent bar and full
+                        // text, so it reads even where the fill is subtle.
+                        s.bg(self.selected_bg()).child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(2.))
+                                .bg(self.accent()),
+                        )
+                    })
                     .when(!active, |s| s.hover(move |s| s.bg(hover)))
+                    // The pointer moves the selection, so hover and Return agree.
+                    .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
+                        if this.palette_index != n {
+                            this.palette_index = n;
+                            cx.notify();
+                        }
+                    }))
                     .child(icon(
                         item.icon,
                         if active {
-                            self.accent()
+                            self.c("icon", "#b8b8b8")
                         } else {
                             self.icon_muted()
                         },
@@ -8929,7 +9238,7 @@ impl Workspace {
             .flex()
             .flex_shrink_0()
             .border_1()
-            .border_color(self.border());
+            .border_color(self.control_border());
         for (i, (label, cmd, active)) in options.into_iter().enumerate() {
             row = row.child(self.segment(
                 SharedString::from(format!("{id}-{i}")),
@@ -9101,7 +9410,7 @@ impl Workspace {
                         .px(px(space::MD))
                         .pt(px(space::SM))
                         .pb(px(space::XS))
-                        .text_size(px(10.))
+                        .text_size(px(ui::text::LABEL))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(self.muted())
                         .child(if light { "LIGHT" } else { "DARK" }),
@@ -9451,7 +9760,7 @@ impl Workspace {
             .bg(self.canvas_bg())
             .child(
                 div()
-                    .text_size(px(15.))
+                    .text_size(px(ui::text::DISPLAY))
                     .font_weight(FontWeight::MEDIUM)
                     .child(if library_empty {
                         "Insert a card or Import a folder"
@@ -9603,7 +9912,7 @@ impl Workspace {
             .text_size(px(11.))
             .text_color(self.muted())
             .child(
-                self.compact_button(
+                self.compact_toggle(
                     "toggle-sidebar",
                     "",
                     "panel-left",
@@ -9774,7 +10083,7 @@ impl Workspace {
                 },
             )
             .child(
-                self.compact_button(
+                self.compact_toggle(
                     "toggle-histogram",
                     "",
                     "graph",
@@ -9785,7 +10094,7 @@ impl Workspace {
                 .tooltip(self.tip("Toggle histogram", "H")),
             )
             .child(
-                self.compact_button(
+                self.compact_toggle(
                     "header-inspector",
                     "",
                     "panel-right",
@@ -9796,7 +10105,7 @@ impl Workspace {
                 .tooltip(self.tip("Toggle inspector", "I")),
             )
             .child(
-                self.compact_button(
+                self.compact_toggle(
                     "preferences",
                     "",
                     "settings",
