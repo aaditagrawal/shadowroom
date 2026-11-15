@@ -641,6 +641,41 @@ impl Workspace {
     /// or a filter with no matches, each with its way forward.
     pub(super) fn empty(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let library_empty = self.photos.is_empty();
+        // The first folder is still being read: say so, not "insert a card".
+        if library_empty && self.busy {
+            let found = if self.status.starts_with("Indexing") {
+                format!("{} · originals are not modified", self.status)
+            } else {
+                "Photos appear here as they are found · originals are not modified".into()
+            };
+            return div()
+                .id("empty-reading")
+                .flex_1()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .p(px(ui::PANEL_INSET))
+                .text_center()
+                .gap(px(space::MD))
+                .bg(self.canvas_bg())
+                .child(
+                    div()
+                        .text_size(px(ui::text::DISPLAY))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Reading photos…"),
+                )
+                .child(div().text_color(self.muted()).child(found))
+                .child(
+                    div()
+                        .w(px(160.))
+                        .h(px(2.))
+                        .bg(self.border())
+                        .child(div().w(px(48.)).h_full().bg(self.accent())),
+                )
+                .into_any_element();
+        }
         let scope = match &self.scope {
             Some(scope) => format!("in {}", self.scope_display(scope)),
             None => "in the whole library".into(),

@@ -98,6 +98,7 @@ impl AssetSource for Assets {
             "files" => Some(include_bytes!("../assets/icons/file-code.svg")),
             "xmp" => Some(include_bytes!("../assets/icons/file-code.svg")),
             "export" => Some(include_bytes!("../assets/icons/export.svg")),
+            "import" => Some(include_bytes!("../assets/icons/shadowroom/import.svg")),
             "grid" => Some(include_bytes!("../assets/icons/shadowroom/view-grid.svg")),
             "group" => Some(include_bytes!("../assets/icons/layers.svg")),
             "duplicates" => Some(include_bytes!("../assets/icons/shadowroom/duplicate.svg")),
@@ -180,6 +181,8 @@ enum Cmd {
     SaveRemoteHost,
     RemoteAction(String, String, Option<String>),
     ExportPicks,
+    /// Every pick in the catalog, not just the current view (palette only).
+    ExportAllPicks,
     ExportXmp,
     Palette,
     Preferences,
@@ -1840,13 +1843,12 @@ impl Workspace {
                     .into(),
             );
         }
+        // Picks with no ids are every catalog pick; ids scope either kind.
+        let scope: HashSet<i64> = ids.iter().copied().collect();
         for photo in self.photos.iter().filter(|photo| {
             !photo.trashed
-                && if picks {
-                    photo.flag == Flag::Pick
-                } else {
-                    ids.contains(&photo.id)
-                }
+                && (!picks || photo.flag == Flag::Pick)
+                && ((picks && scope.is_empty()) || scope.contains(&photo.id))
         }) {
             photo
                 .require_local("Export and XMP writing")
@@ -2229,7 +2231,7 @@ impl Workspace {
         }
         self.drain_decisions();
         self.drain_settings();
-        self.ingest_tick();
+        dirty |= self.ingest_tick();
         if self.recovery_pending
             && self.unsaved.is_empty()
             && self.prefs_sync == PrefsSync::Durable
@@ -3054,16 +3056,92 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Picks in the current view (the title-bar Export scope).
+    fn view_pick_ids(&self) -> Vec<i64> {
+        self.filtered
+            .iter()
+            .map(|&i| &self.photos[i])
+            .filter(|p| p.flag == Flag::Pick && !p.trashed)
+            .map(|p| p.id)
+            .collect()
+    }
+
+    fn view_pick_count(&self) -> usize {
+        self.filtered
+            .iter()
+            .filter(|&&i| self.photos[i].flag == Flag::Pick && !self.photos[i].trashed)
+            .count()
+    }
+
+    /// Export every pick in the catalog (palette): an empty scope.
+    fn choose_export_all_picks(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.counts.picks == 0 {
+            self.announce(
+                "No picks in the catalog yet · press P to pick",
+                Tone::Warning,
+            );
+            return;
+        }
+        self.choose_destination(Some(true), Vec::new(), cx);
+    }
+
     fn choose_folder(&mut self, export: Option<bool>, cx: &mut gpui::Context<Self>) {
+        let ids = if export == Some(true) {
+            // Export picks the current view; the whole catalog is a palette command.
+            let picks = self.view_pick_ids();
+            if picks.is_empty() {
+                self.announce("No picks in this view · press P to pick", Tone::Warning);
+                return;
+            }
+            picks
+        } else if self.multi.is_empty() {
+            self.filtered.iter().map(|&i| self.photos[i].id).collect()
+        } else {
+            self.multi.iter().copied().collect()
+        };
+        self.choose_destination(export, ids, cx);
+    }
+
+    /// Queues an export chosen in a picker and remembers its folder for next time.
+    fn start_export(&mut self, path: PathBuf, picks: bool, ids: Vec<i64>) {
+        match self.queue_export(path.clone(), picks, ids) {
+            Ok(_) => {
+                self.announce("Exporting in background…", Tone::Info);
+                self.settings
+                    .extra
+                    .insert("last_export_dir".into(), json!(path.to_string_lossy()));
+                self.save_settings();
+            }
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
+    /// Where the next export picker starts: the last export folder, else the library.
+    fn export_start(&self) -> PathBuf {
+        self.settings
+            .extra
+            .get("last_export_dir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(|| self.settings.ingest_library_root.clone())
+    }
+
+    fn choose_destination(
+        &mut self,
+        export: Option<bool>,
+        ids: Vec<i64>,
+        cx: &mut gpui::Context<Self>,
+    ) {
         if cfg!(target_os = "linux") {
-            let ids = if self.multi.is_empty() {
-                self.filtered.iter().map(|&i| self.photos[i].id).collect()
+            let initial = if export.is_some() {
+                self.export_start()
             } else {
-                self.multi.iter().copied().collect()
+                self.settings.ingest_library_root.clone()
             };
             self.show_path_picker(
                 folder_picker::Purpose::Workspace { export, ids },
-                self.settings.ingest_library_root.clone(),
+                initial,
                 cx,
             );
             return;
@@ -3073,31 +3151,21 @@ impl Workspace {
             directories: true,
             multiple: false,
             prompt: Some(
-                if export.is_some() {
-                    "Choose export destination"
-                } else {
-                    "Import from card or folder"
+                match export {
+                    Some(true) if ids.is_empty() => "Export all catalog picks".into(),
+                    Some(true) => format!("Export {}", plural(ids.len(), "pick", "picks")),
+                    Some(false) => "Choose export destination".into(),
+                    None => "Import from card or folder".into(),
                 }
                 .into(),
             ),
         });
-        let ids = if self.multi.is_empty() {
-            self.filtered
-                .iter()
-                .map(|&i| self.photos[i].id)
-                .collect::<Vec<_>>()
-        } else {
-            self.multi.iter().copied().collect()
-        };
         cx.spawn(async move |this, cx| match prompt.await {
             Ok(Ok(Some(paths))) => {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |this, cx| {
                         if let Some(picks) = export {
-                            this.announce("Exporting in background…", Tone::Info);
-                            if let Err(e) = this.queue_export(path, picks, ids) {
-                                this.error = Some(e.into());
-                            }
+                            this.start_export(path, picks, ids);
                         } else {
                             this.status = format!("Opening {}", path.display());
                             this.open_ingest(path);
@@ -3365,6 +3433,7 @@ impl Workspace {
             }
             Cmd::Import => self.choose_folder(None, cx),
             Cmd::ExportPicks => self.choose_folder(Some(true), cx),
+            Cmd::ExportAllPicks => self.choose_export_all_picks(cx),
             Cmd::ExportXmp => self.choose_folder(Some(false), cx),
             Cmd::Palette => {
                 // The palette layers over Preferences and the import form: an
@@ -4080,6 +4149,34 @@ impl Workspace {
                 Cmd::Ingest("history".into()),
             ),
             item(
+                "Start Import",
+                "File · copy and verify the selected photos",
+                "⌘Enter",
+                "import",
+                Cmd::Ingest("start".into()),
+            ),
+            item(
+                "Pause or Resume Import",
+                "File · the running import",
+                "",
+                "import",
+                Cmd::Ingest("pause".into()),
+            ),
+            item(
+                "Cancel Import",
+                "File · verified photos stay imported",
+                "",
+                "stop",
+                Cmd::Ingest("cancel_now".into()),
+            ),
+            item(
+                "Refresh Import Plan",
+                "File · recheck destination space and names",
+                "",
+                "refresh",
+                Cmd::Ingest("plan".into()),
+            ),
+            item(
                 "Import from Card/Folder…",
                 "File",
                 "⌘O",
@@ -4087,11 +4184,18 @@ impl Workspace {
                 Cmd::Import,
             ),
             item(
-                "Export Picks…",
-                "File · all catalog picks",
-                "⌘⇧E",
+                "Export Picks in This View…",
+                "File · picks in the current view",
+                "⇧E",
                 "export",
                 Cmd::ExportPicks,
+            ),
+            item(
+                "Export All Catalog Picks…",
+                "File · every pick in the catalog",
+                "",
+                "export",
+                Cmd::ExportAllPicks,
             ),
             item(
                 "Export XMP Sidecars…",
@@ -4711,8 +4815,18 @@ impl Workspace {
             return;
         }
         if key == "escape" {
-            // Escape dismisses a showing toast first, and nothing else.
+            // Escape dismisses a showing toast first, and nothing else. In an
+            // Import text field it only leaves the field; a second Escape
+            // closes Import.
             if self.error.take().is_some() {
+                cx.notify();
+            } else if self.import_ui.open
+                && self.import_ui.active_field.is_some()
+                && !self.palette
+                && !self.preferences
+                && self.add_host.is_none()
+            {
+                self.import_ui.active_field = None;
                 cx.notify();
             } else {
                 self.execute(Cmd::Close, window, cx);
@@ -5860,7 +5974,8 @@ impl Workspace {
             (ViewMode::Compare, "Compare", "compare", "C"),
             (ViewMode::Survey, "Survey", "group", "S"),
         ] {
-            let active = self.mode == mode;
+            // While Import replaces the centre, no view tab claims the location.
+            let active = self.mode == mode && !self.import_ui.open;
             let hover = self.hover_bg();
             views = views.child(
                 div()
@@ -5979,25 +6094,13 @@ impl Workspace {
                         )
                         .tooltip(self.tip("Getting Started · workflow and shortcuts", "F1")),
                     )
-                    .child(if self.photos.is_empty() {
-                        // Nothing to export yet: present but inert (CAT-21).
-                        div()
-                            .id("title-export")
-                            .h(px(ui::CONTROL_HEIGHT))
-                            .px(px(if narrow { 0. } else { space::MD }))
-                            .when(narrow, |s| s.w(px(ui::CONTROL_HEIGHT)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(space::SM))
-                            .text_color(self.c("text.disabled", "#5c5c5c"))
-                            .child(icon("export", self.c("text.disabled", "#5c5c5c")))
-                            .when(!narrow, |s| s.child("Export"))
-                            .tooltip(self.tip("Export picks… · add photos first", ""))
-                    } else {
+                    .child({
+                        // Export says what it will export: the picks in this view.
+                        let picks = self.view_pick_count();
+                        let label = format!("Export {}…", plural(picks, "pick", "picks"));
                         self.button(
                             "title-export",
-                            if narrow { "" } else { "Export" },
+                            if narrow { "" } else { &label },
                             "export",
                             Cmd::ExportPicks,
                             false,
@@ -6007,7 +6110,15 @@ impl Workspace {
                         .px(px(if narrow { 0. } else { space::MD }))
                         .bg(self.selected_bg())
                         .when(narrow, |s| s.w(px(ui::CONTROL_HEIGHT)))
-                        .tooltip(self.tip("Export picks…", "⇧E"))
+                        .when(picks == 0, |s| s.opacity(0.45))
+                        .tooltip(if picks == 0 {
+                            self.tip(
+                                "No picks in this view · press P to pick. Export All Catalog Picks is in the command palette.",
+                                "",
+                            )
+                        } else {
+                            self.tip(&format!("{label} · picks in this view"), "⇧E")
+                        })
                     }),
             );
         if mac {
@@ -6078,11 +6189,14 @@ impl Workspace {
         let unrated = counts.unrated;
         let rejects = counts.rejects;
         let hover = self.hover_bg();
+        // While Import replaces the centre, only its source drive is current.
+        let importing = self.import_ui.open;
         let row = |id: ElementId,
                    glyph: &'static str,
                    label: String,
                    count: Option<usize>,
                    active: bool| {
+            let active = active && (!importing || glyph == "drive");
             // One zero rule: no "0" except on the collection being viewed.
             let count = count.filter(|n| *n > 0 || active);
             div()
@@ -6479,7 +6593,7 @@ impl Workspace {
                         drive.name.clone()
                     },
                     None,
-                    false,
+                    importing && drive.path == self.import_ui.source,
                 )
                 .tooltip(self.tip("Import from drive", ""))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -10004,8 +10118,11 @@ impl Workspace {
                 self.enqueue(IoCommand::CancelImport);
             }
             "export_picks" | "export_xmp" => {
+                // Picks without ids are every catalog pick; ids scope them.
                 let ids = if p.get("ids").is_some() {
                     self.api_ids(p)?
+                } else if method == "export_picks" {
+                    Vec::new()
                 } else {
                     self.photos.iter().map(|p| p.id).collect()
                 };
@@ -11115,13 +11232,10 @@ impl Workspace {
         } else if self.quit.closing() {
             self.status.clone()
         } else if self.import_ui.active() {
-            if self.import_ui.progress.phase == Phase::Paused {
-                "Import paused".into()
+            if self.import_ui.cancel_pending() {
+                "Cancel the import? Click Cancel again · verified photos stay imported".into()
             } else {
-                format!(
-                    "Importing · {} of {}",
-                    self.import_ui.progress.completed, self.import_ui.progress.total
-                )
+                copy::import_progress(&self.import_ui.progress)
             }
         } else if self.import_ui.scanning() {
             "Scanning import…".into()
@@ -11178,17 +11292,20 @@ impl Workspace {
                 .tooltip(self.tip("Toggle sidebar", "⌘B")),
             )
             .when(self.import_ui.active(), |s| {
+                // Byte-weighted, so one large video never stalls the bar.
                 s.child(
-                    div().w(px(80.)).h(px(3.)).bg(self.border()).child(
-                        div()
-                            .h_full()
-                            .w(relative(
-                                (self.import_ui.progress.completed as f32
-                                    / self.import_ui.progress.total.max(1) as f32)
-                                    .clamp(0., 1.),
-                            ))
-                            .bg(self.accent()),
-                    ),
+                    div()
+                        .id("ingest-status-progress")
+                        .w(px(120.))
+                        .h(px(3.))
+                        .bg(self.border())
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(copy::import_fraction(&self.import_ui.progress)))
+                                .bg(self.accent()),
+                        )
+                        .tooltip(self.tip(&copy::import_progress(&self.import_ui.progress), "")),
                 )
                 .child(self.compact_button(
                     "ingest-status-show",
@@ -11210,14 +11327,23 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(self.compact_button(
-                    "ingest-status-cancel",
-                    "Cancel",
-                    "",
-                    Cmd::Ingest("cancel".into()),
-                    false,
-                    cx,
-                ))
+                .child(
+                    self.compact_button(
+                        "ingest-status-cancel",
+                        if self.import_ui.cancel_pending() {
+                            "Confirm cancel"
+                        } else {
+                            "Cancel…"
+                        },
+                        "",
+                        Cmd::Ingest("cancel".into()),
+                        false,
+                        cx,
+                    )
+                    .when(self.import_ui.cancel_pending(), |s| {
+                        s.text_color(self.c("error", "#d46a6a"))
+                    }),
+                )
             })
             .child(
                 self.status_notice(cx)

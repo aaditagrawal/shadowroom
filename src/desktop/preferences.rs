@@ -394,6 +394,14 @@ impl Draft {
                 }
                 "day" => s.ingest_day_start_hour = (s.ingest_day_start_hour + 1) % 24,
                 "auto_eject" => s.eject_after_ingest = !s.eject_after_ingest,
+                "auto_eject:on" | "auto_eject:off" => {
+                    s.eject_after_ingest = action == "auto_eject:on";
+                }
+                mode if mode.starts_with("insert:") => s.ingest_on_insert = mode[7..].into(),
+                hour if hour.starts_with("day:") => match hour[4..].parse::<u8>() {
+                    Ok(hour) => s.ingest_day_start_hour = hour % 24,
+                    Err(_) => return false,
+                },
                 "remember" => {
                     if let Some(volume) = volume {
                         let rule = if s.ingest_volumes.get(volume).is_some_and(|r| r == "deny") {

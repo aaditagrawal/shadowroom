@@ -3,6 +3,7 @@
 //! function so the copy is unit-tested in one place.
 use super::NoticeKind;
 use shadowroom::duplicates::{DuplicateScanState, ScanPhase};
+use shadowroom::ingest::{Phase, Progress};
 use shadowroom::model::{ColorLabel, Flag};
 
 /// A count with its noun: "1 photo", "0 photos", "50,112 photos".
@@ -144,14 +145,146 @@ pub(super) fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
-/// The import button: "Import 1 photo (2.4 MB)", videos only when present.
+/// The Import button: "Import 612 photos · 48 GB", videos only when present.
 pub(super) fn import_label(photos: usize, videos: usize, bytes: u64) -> String {
-    let mut label = format!("Import {}", plural(photos, "photo", "photos"));
-    if videos > 0 {
+    let mut label = if photos == 0 && videos > 0 {
+        format!("Import {}", plural(videos, "video", "videos"))
+    } else {
+        format!("Import {}", plural(photos, "photo", "photos"))
+    };
+    if videos > 0 && photos > 0 {
         label.push_str(&format!(" · {}", plural(videos, "video", "videos")));
     }
-    label.push_str(&format!(" ({})", fmt_bytes(bytes)));
+    label.push_str(&format!(" · {}", fmt_bytes(bytes)));
     label
+}
+
+/// "8.4 of 48 GB": both amounts in the unit of the total.
+pub(super) fn bytes_of(done: u64, total: u64) -> String {
+    let whole = fmt_bytes(total);
+    let Some((_, unit)) = whole.rsplit_once(' ') else {
+        return whole;
+    };
+    let scale = match unit {
+        "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        _ => return format!("{} of {whole}", fmt_bytes(done)),
+    };
+    let value = done.min(total) as f64 / scale;
+    if value < 10. {
+        format!("{value:.1} of {whole}")
+    } else {
+        format!("{value:.0} of {whole}")
+    }
+}
+
+/// Time left in words: "about 4 min left", "about 1 h 20 min left".
+pub(super) fn time_left(seconds: Option<u64>) -> String {
+    match seconds {
+        None => "estimating…".into(),
+        Some(s) if s < 60 => "less than a minute left".into(),
+        Some(s) if s < 3600 => format!("about {} min left", s.div_ceil(60)),
+        Some(s) => {
+            let minutes = s.div_ceil(60);
+            format!("about {} h {} min left", minutes / 60, minutes % 60)
+        }
+    }
+}
+
+/// Sentence-case name of an import job phase.
+pub(super) fn import_phase(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Idle => "Ready",
+        Phase::Queued => "Starting",
+        Phase::Copying => "Copying",
+        Phase::Verifying => "Verifying",
+        Phase::Paused => "Paused",
+        Phase::Finalizing => "Finalizing",
+        Phase::Indexing => "Indexing",
+        Phase::Completed => "Imported",
+        Phase::Failed => "Import stopped",
+        Phase::Cancelled => "Cancelled",
+    }
+}
+
+/// The running job in one line: "Copying 37 of 612 · 8.4 of 48 GB ·
+/// 142 MB/s · about 4 min left". Paused jobs drop the rate and time left.
+pub(super) fn import_progress(progress: &Progress) -> String {
+    let done = (progress.completed + progress.skipped + progress.failed).min(progress.total);
+    let mut line = format!(
+        "{} {done} of {}",
+        import_phase(progress.phase),
+        progress.total
+    );
+    if progress.total_bytes > 0 {
+        line.push_str(&format!(
+            " · {}",
+            bytes_of(progress.transferred, progress.total_bytes)
+        ));
+    }
+    if progress.phase.is_transferring() {
+        if progress.mb_per_second >= 0.05 {
+            line.push_str(&format!(" · {:.0} MB/s", progress.mb_per_second.max(1.)));
+        }
+        line.push_str(&format!(" · {}", time_left(progress.eta_seconds)));
+    }
+    line
+}
+
+/// Groups already in the library and groups that failed, when there are any.
+pub(super) fn import_exceptions(progress: &Progress) -> (Option<String>, Option<String>) {
+    (
+        (progress.skipped > 0).then(|| format!("{} skipped", progress.skipped)),
+        (progress.failed > 0).then(|| format!("{} failed", progress.failed)),
+    )
+}
+
+/// The bar's fraction: bytes when known, so one large video never stalls it.
+pub(super) fn import_fraction(progress: &Progress) -> f32 {
+    if progress.total_bytes > 0 {
+        (progress.transferred as f64 / progress.total_bytes as f64).clamp(0., 1.) as f32
+    } else {
+        let done = progress.completed + progress.skipped + progress.failed;
+        (done as f32 / progress.total.max(1) as f32).clamp(0., 1.)
+    }
+}
+
+/// A path shortened in the middle at component boundaries, keeping the root
+/// and the last components: "/home/…/Pictures/Library".
+pub(super) fn middle_path(path: &str, max: usize) -> String {
+    if path.chars().count() <= max {
+        return path.to_owned();
+    }
+    let separator = if path.contains('\\') && !path.contains('/') {
+        '\\'
+    } else {
+        '/'
+    };
+    let parts: Vec<&str> = path.split(separator).collect();
+    if parts.len() < 3 {
+        return path.to_owned();
+    }
+    // Keep the head component ("" for an absolute path, plus its first name).
+    let head_len = if parts[0].is_empty() { 2 } else { 1 };
+    let head = parts[..head_len.min(parts.len() - 1)].join(&separator.to_string());
+    let mut tail: Vec<&str> = Vec::new();
+    for part in parts[head_len.min(parts.len() - 1)..].iter().rev() {
+        let candidate =
+            tail.iter().map(|p| p.chars().count() + 1).sum::<usize>() + part.chars().count() + 1;
+        if !tail.is_empty() && head.chars().count() + 2 + candidate > max {
+            break;
+        }
+        tail.insert(0, part);
+    }
+    if tail.len() + head_len >= parts.len() {
+        return path.to_owned();
+    }
+    format!(
+        "{head}{separator}…{separator}{}",
+        tail.join(&separator.to_string())
+    )
 }
 
 /// The Duplicates view with nothing to show, by scan state: what happened,
@@ -434,10 +567,59 @@ mod tests {
         assert_eq!(fmt_bytes(2_400_000), "2.4 MB");
         assert_eq!(fmt_bytes(48_200_000_000), "48 GB");
         assert_eq!(fmt_bytes(1_000), "1.0 KB");
-        assert_eq!(import_label(1, 0, 2_400_000), "Import 1 photo (2.4 MB)");
+        assert_eq!(import_label(1, 0, 2_400_000), "Import 1 photo · 2.4 MB");
         assert_eq!(
             import_label(612, 3, 48_200_000_000),
-            "Import 612 photos · 3 videos (48 GB)"
+            "Import 612 photos · 3 videos · 48 GB"
+        );
+        assert_eq!(import_label(0, 1, 1_500_000_000), "Import 1 video · 1.5 GB");
+    }
+
+    #[test]
+    fn import_progress_reads_as_one_sentence() {
+        let mut progress = Progress {
+            phase: Phase::Copying,
+            completed: 36,
+            failed: 1,
+            total: 612,
+            transferred: 8_400_000_000,
+            total_bytes: 48_200_000_000,
+            mb_per_second: 142.3,
+            eta_seconds: Some(230),
+            ..Default::default()
+        };
+        assert_eq!(
+            import_progress(&progress),
+            "Copying 37 of 612 · 8.4 of 48 GB · 142 MB/s · about 4 min left"
+        );
+        assert_eq!(
+            import_exceptions(&progress),
+            (None, Some("1 failed".into()))
+        );
+        progress.eta_seconds = None;
+        assert!(import_progress(&progress).ends_with("· estimating…"));
+        progress.phase = Phase::Paused;
+        assert_eq!(
+            import_progress(&progress),
+            "Paused 37 of 612 · 8.4 of 48 GB"
+        );
+        assert!((import_fraction(&progress) - 0.174).abs() < 0.001);
+        assert_eq!(time_left(Some(30)), "less than a minute left");
+        assert_eq!(time_left(Some(4800)), "about 1 h 20 min left");
+        assert_eq!(bytes_of(512, 900), "512 B of 900 B");
+    }
+
+    #[test]
+    fn long_paths_shorten_in_the_middle_at_component_boundaries() {
+        let path = "/tmp/claude-1000/scratchpad/hi/session/Pictures/Library";
+        let short = middle_path(path, 30);
+        assert_eq!(short, "/tmp/…/Pictures/Library");
+        assert!(short.chars().count() <= 30);
+        assert_eq!(middle_path("/home/me/Pictures", 30), "/home/me/Pictures");
+        // The last component survives even when it alone is long.
+        assert_eq!(
+            middle_path("/media/me/EOS_DIGITAL_WITH_A_LONG_NAME", 12),
+            "/media/…/EOS_DIGITAL_WITH_A_LONG_NAME"
         );
     }
 

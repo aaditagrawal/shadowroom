@@ -192,6 +192,14 @@ def _():
             stroke([(8, 11.5), (8, 5.5)]),
             stroke([(6, 7.5), (8, 5.5), (10, 7.5)])]
 
+@icon("import", "Import into the library")
+def _():
+    # an arrow dropping into an open tray: copies come in (unlike export's
+    # arrow leaving a bar)
+    return [stroke([(2.5, 9.5), (2.5, 13.5), (13.5, 13.5), (13.5, 9.5)]),
+            stroke([(8, 1.5), (8, 10)]),
+            stroke([(5, 7), (8, 10), (11, 7)])]
+
 @icon("drive", "Drive")
 def _():
     return [frame(1, 4, 15, 12, 1.5), rrect(3, 8, 7, 9), circle(12, 8.5, 0.75)]

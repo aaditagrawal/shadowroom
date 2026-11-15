@@ -204,12 +204,27 @@ impl Catalog {
             .lock()
             .map_err(|_| anyhow::anyhow!("Catalog lock poisoned"))?;
         let mut photos = Vec::new();
-        if picks {
+        if picks && ids.is_empty() {
             // The flag index limits snapshot work to the actual export set.
             let mut stmt = conn.prepare_cached("SELECT id,data,rating,flag,label,trashed FROM photos WHERE flag='pick' AND trashed=0 ORDER BY id")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 photos.push(photo_from_row(row)?);
+            }
+        } else if picks {
+            // Picks within a scope (the current view): the captured decision,
+            // not the caller's, decides whether a photo is still a pick.
+            let mut selected = ids.to_vec();
+            selected.sort_unstable();
+            selected.dedup();
+            let mut stmt = conn.prepare_cached(
+                "SELECT id,data,rating,flag,label,trashed FROM photos WHERE id=?1 AND flag='pick' AND trashed=0",
+            )?;
+            for id in selected {
+                let mut rows = stmt.query([id])?;
+                if let Some(row) = rows.next()? {
+                    photos.push(photo_from_row(row)?);
+                }
             }
         } else {
             let mut selected = ids.to_vec();
@@ -1558,13 +1573,23 @@ fn persist_manifest(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 fn validate_destination(photos: &[Photo], destination: &Path) -> Result<()> {
-    // Resolve existing ancestors so symlinks and not-yet-created subdirectories cannot bypass the check.
-    let destination = resolved_path(destination)?;
     let folders: std::collections::HashSet<_> = photos
         .iter()
         .flat_map(|p| std::iter::once(&p.path).chain(p.companion_path.iter()))
         .filter_map(|path| path.parent())
         .collect();
+    check_export_destination(folders, destination)
+}
+
+/// The export folder rule, for checking a destination before an export is
+/// queued (the folder picker runs it off the UI thread): the destination must
+/// not be inside any of `folders`, the folders that hold original photos.
+pub fn check_export_destination<'a>(
+    folders: impl IntoIterator<Item = &'a Path>,
+    destination: &Path,
+) -> Result<()> {
+    // Resolve existing ancestors so symlinks and not-yet-created subdirectories cannot bypass the check.
+    let destination = resolved_path(destination)?;
     for parent in folders {
         let parent = resolved_path(parent)?;
         if destination.starts_with(parent) {
@@ -2244,13 +2269,20 @@ mod tests {
             vec![ids[0], ids[2]]
         );
         assert_eq!(plan.photos[1].flag, Flag::Pick);
-        let picks = catalog
-            .prepare_export(Path::new("/unused"), true, &[ids[0]])
-            .unwrap();
-        assert_eq!(
-            picks.photos.iter().map(|p| p.id).collect::<Vec<_>>(),
-            vec![ids[2]]
-        );
+        // Picks export: no ids means every pick in the catalog; ids scope it
+        // (the current view) and still require the captured Pick flag.
+        let picks = |scope: &[i64]| {
+            catalog
+                .prepare_export(Path::new("/unused"), true, scope)
+                .unwrap()
+                .photos
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(picks(&[]), vec![ids[2]]);
+        assert!(picks(&[ids[0]]).is_empty());
+        assert_eq!(picks(&[ids[2], ids[1], ids[0]]), vec![ids[2]]);
         assert!(
             catalog
                 .prepare_export(Path::new("/unused"), false, &[])

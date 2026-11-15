@@ -4,7 +4,9 @@ Original media and existing source sidecars are opened read-only. Export destina
 
 ## Copy picked groups
 
-`export_picks` exports all photographs flagged Pick in the captured catalog state. The `ids` argument of `prepare_export` selects generated XMP exports; it does not limit picks exports. A picked RAW with a JPEG companion is one export group.
+`export_picks` without ids exports all photographs flagged Pick in the captured catalog state. With ids, it exports the photographs among those ids that are still flagged Pick when the plan is captured (the desktop's title-bar **Export N picks…** and Shift+E pass the current view; **Export All Catalog Picks…** in the command palette passes none). The `ids` argument of `prepare_export` also selects generated XMP exports. A picked RAW with a JPEG companion is one export group.
+
+In the desktop, Export is disabled-looking with an explanation when the view has no picks, and nothing is written. The destination picker names the scope and totals ("Export 14 picks in this view", "28 files incl. RAW+JPEG pairs · 1.2 GB, plus their sidecars"), starts in the last export folder, and checks the folder rule before it closes: a folder inside the photo folders keeps the picker open with the reason.
 
 Each group includes its primary photograph, its registered companion, and existing adjacent sidecars matching either the photograph stem (`capture.xmp`, `capture.AAE`) or full filename (`capture.nef.xmp`, `capture.jpg.xmp`). XMP/AAE extension matching is case-insensitive. Directory sidecar listings are cached during an export rather than rescanning a large source directory for every photo. Shared stem sidecars associated with both RAW and JPEG are copied once.
 

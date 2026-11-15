@@ -20,7 +20,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub use copy::{
@@ -785,6 +785,10 @@ struct ControlState {
     paused: bool,
     cancelled: bool,
     finished: bool,
+    /// When the current pause began, and the total of earlier pauses, so
+    /// throughput and time left count only time spent copying.
+    paused_since: Option<Instant>,
+    paused_total: Duration,
     /// Last progress the running job reported, so pause/resume acknowledgements
     /// carry real counters and the phase the job is actually in.
     progress: Progress,
@@ -795,6 +799,8 @@ impl Control {
             state.cancelled = false;
             state.finished = false;
             state.paused = false;
+            state.paused_since = None;
+            state.paused_total = Duration::ZERO;
             state.progress = Progress::default();
             self.0.1.notify_all();
         }
@@ -828,13 +834,23 @@ impl Control {
     pub fn pause(&self) {
         if let Ok(mut state) = self.0.0.lock() {
             state.paused = true;
+            state.paused_since.get_or_insert_with(Instant::now);
         }
     }
     pub fn resume(&self) {
         if let Ok(mut state) = self.0.0.lock() {
             state.paused = false;
+            if let Some(since) = state.paused_since.take() {
+                state.paused_total += since.elapsed();
+            }
             self.0.1.notify_all();
         }
+    }
+    /// Time this job has spent paused, including a pause still in progress.
+    pub(crate) fn paused_for(&self) -> Duration {
+        self.0.0.lock().map_or(Duration::ZERO, |state| {
+            state.paused_total + state.paused_since.map_or(Duration::ZERO, |s| s.elapsed())
+        })
     }
     pub fn cancel(&self) {
         if let Ok(mut state) = self.0.0.lock() {
@@ -948,6 +964,10 @@ pub struct Progress {
     pub videos: usize,
     pub bytes: u64,
     pub total_bytes: u64,
+    /// Bytes of the plan already handled (copied, or skipped/failed whole
+    /// groups), so a byte-weighted bar never stalls behind one large video.
+    #[serde(default)]
+    pub transferred: u64,
     pub mb_per_second: f64,
     pub eta_seconds: Option<u64>,
     pub destinations: Vec<String>,
