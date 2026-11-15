@@ -139,6 +139,23 @@ def _():
     # same disc as Codicons pass-filled; slash angle matches circle-slash
     return [circle(8, 8, 7), stroke([(4.6, 11.4), (11.4, 4.6)], cw=False)]
 
+@icon("reset-decision", "Reset rating and pick/reject")
+def _():
+    # an eraser (45-degree block with a ferrule line) over a short baseline:
+    # "clear the marks", unlike the empty Unreviewed circle or the Undo arrow
+    a, b, c, d = (1.5, 9.5), (7.5, 3.5), (12.5, 8.5), (6.5, 14.5)
+    return [stroke([a, b, c, d, a]), stroke([(3.5, 7.5), (8.5, 12.5)]),
+            stroke([(9.5, 14.5), (14.5, 14.5)])]
+
+@icon("peaking", "Focus peaking")
+def _():
+    # a focus reticle: ring, four edge ticks and a centre dot (not the
+    # four-corner fullscreen glyph)
+    ring = [circle(8, 8, 5), circle(8, 8, 4, cw=False)]
+    ticks = [rrect(7.5, 1, 8.5, 3.5), rrect(7.5, 12.5, 8.5, 15),
+             rrect(1, 7.5, 3.5, 8.5), rrect(12.5, 7.5, 15, 8.5)]
+    return ring + ticks + [circle(8, 8, 1.25)]
+
 @icon("auto-advance", "Auto-advance after a decision")
 def _():
     # decide (check) then move (arrow)
