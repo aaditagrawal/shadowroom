@@ -376,7 +376,7 @@ class Driver:
                 shutil.copy2(p, shoot / f"{copy:02d}-{p.name}")
         self.photo_count = len(photos) * self.args.copies
         settings = {"auto_discover_drives": False, "auto_advance": True, "grouping_mode": "off",
-                    "theme_mode": "manual", "theme": "Shadowroom Dark", "memory_budget_mb": 512,
+                    "theme_mode": "manual", "theme": "Shadowroom Dark", "memory_budget_mb": self.args.memory_mb,
                     "show_getting_started": False, "ingest_on_insert": "ask"}
         (session / "config/shadowroom/settings.json").write_text(json.dumps(settings))
         env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET")}
@@ -873,6 +873,7 @@ def main():
     parser.add_argument("--reduce-motion", type=int, choices=(0, 1), default=None,
                         help="set SHADOWROOM_REDUCE_MOTION for the app")
     parser.add_argument("--label", default="")
+    parser.add_argument("--memory-mb", type=int, default=512, help="preview memory budget (default 512)")
     parser.add_argument("--keep-session", action="store_true",
                         help="keep the private profile, photo copies and caches after the run")
     parser.add_argument("--reanalyse", action="store_true",

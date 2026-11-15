@@ -4472,6 +4472,18 @@ fn stars(rating: u8) -> &'static str {
     const STARS: [&str; 6] = ["", "★", "★★", "★★★", "★★★★", "★★★★★"];
     STARS[usize::from(rating.min(5))]
 }
+/// Thumbnail-preview dimensions for a larger preview, or `None` when it is
+/// already no larger (`PreviewKind::Thumbnail` decodes to a 384 px long edge).
+fn thumbnail_size(width: u32, height: u32) -> Option<(u32, u32)> {
+    const EDGE: u32 = 384;
+    let long = width.max(height);
+    (long > EDGE).then(|| {
+        let scale =
+            |side: u32| ((side as u64 * EDGE as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+        (scale(width), scale(height))
+    })
+}
+
 fn preview_mtime(p: &Photo) -> i64 {
     if p.companion_path.is_some() {
         p.companion_modified_at
@@ -6379,7 +6391,16 @@ impl Workspace {
         let Some(preview) = available else {
             return fallback;
         };
+        // A thumbnail slot (grid, filmstrip) whose thumbnail has left the
+        // preview cache falls back to a larger decoded preview. Its texture is
+        // scaled to thumbnail size off the UI thread: converting and uploading
+        // the full preview cost 10–25 ms of paint per newly visible cell
+        // (docs/PERFORMANCE.md, "Human interface responsiveness").
+        let shrink = (wanted == PreviewKind::Thumbnail && preview.kind != PreviewKind::Thumbnail)
+            .then(|| thumbnail_size(preview.width, preview.height))
+            .flatten();
         let k = match preview.kind {
+            _ if shrink.is_some() => 0,
             PreviewKind::Thumbnail => 0,
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
@@ -6401,10 +6422,13 @@ impl Workspace {
         if self.texture_inflight.len() >= 12 || self.texture_inflight.contains(&key) {
             return fallback;
         }
-        let width = preview.width;
-        let height = preview.height;
-        let bytes = preview.rgba.len();
-        let kind = preview.kind;
+        let (width, height) = shrink.unwrap_or((preview.width, preview.height));
+        let bytes = width as usize * height as usize * 4;
+        let kind = if shrink.is_some() {
+            PreviewKind::Thumbnail
+        } else {
+            preview.kind
+        };
         let source = TextureSource {
             embedded_raw: preview.embedded_raw,
             rendered_raw: preview.rendered_raw,
@@ -6434,7 +6458,14 @@ impl Workspace {
         };
         self.texture_inflight.insert(key);
         let task = cx.background_executor().spawn(async move {
-            let mut bgra = preview.rgba.clone();
+            let mut bgra = if shrink.is_some() {
+                let full =
+                    image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba.clone())
+                        .expect("validated preview dimensions");
+                image::imageops::thumbnail(&full, width, height).into_raw()
+            } else {
+                preview.rgba.clone()
+            };
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
@@ -11129,8 +11160,16 @@ mod ui_tests {
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
         NoticeKind, Overlay, PaletteCache, PanDrag, SurveySummary, UiInbox, ViewMode,
         adjust_folder, clear_notice, grip_owns_key, index_filtered_positions, is_quit_chord, item,
-        label_index, retained_position, text_input,
+        label_index, retained_position, text_input, thumbnail_size,
     };
+
+    #[test]
+    fn thumbnail_fallbacks_scale_to_the_thumbnail_edge() {
+        assert_eq!(thumbnail_size(2000, 1333), Some((384, 256)));
+        assert_eq!(thumbnail_size(1333, 2000), Some((256, 384)));
+        assert_eq!(thumbnail_size(384, 200), None);
+        assert_eq!(thumbnail_size(1, 5000), Some((1, 384)));
+    }
     use gpui::Keystroke;
     use gpui::{point, px};
     use serde_json::json;
