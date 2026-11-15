@@ -33,7 +33,48 @@ immediately.
 The selected palette is named in Preferences; the status bar retains the active palette until Apply. Theme source
 can also be changed through the palette's **Theme Source** commands.
 
-Shadowroom Dark uses `#0f0f0f` for the workspace/editor/image canvas, `#141414` for panels and chrome, `#1b1b1b` for elevated/hover surfaces, `#232323` for selection and `#2a2a2a` for active controls. Text is `#e6e6e6`, muted text `#8a8a8a`, borders `#262626`/`#333333`, accent `#5b9bd5`, success `#7fbf7f`, error `#d46a6a` and warning `#e0b341`.
+### Built-in palettes
+
+Both palettes are defined as theme roles in `src/theme.rs`; render code reads
+roles, not hex values.
+
+| Role | Shadowroom Dark | Shadowroom Light | Used for |
+| --- | --- | --- | --- |
+| `background`, `shadowroom.canvas` | `#0f0f0f`, `#0f0f0f` | `#f1f2f4`, `#dcdcdc` | window and grid background; image canvas (neutral, R=G=B) |
+| `panel.background` (title, toolbar, status bars) | `#181818` | `#f8f9fb` | chrome |
+| `elevated_surface.background` | `#202020` | `#ffffff` | dialogs, menus, palette, tooltips |
+| `shadowroom.well` | `#161616` | `#e4e4e4` | thumbnail image wells in grid and filmstrip |
+| `text` / `text.muted` / `text.disabled` | `#e6e6e6` / `#9a9a9a` / `#666666` | `#292e37` / `#566070` / `#8992a0` | copy |
+| `text.accent`, `border.focused` | `#5b9bd5` | `#245c91`, `#3979b4` | the single accent (see below) |
+| `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions |
+| `shadowroom.control_border` | `#707070` | `#848d9b` | outlines of choice groups and keycaps (3:1 against surfaces) |
+| `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
+| `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#765612` | decisions on chrome |
+| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#82abe0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#2560b0` `#8a3fa6` | label swatches; `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws the initial on them |
+
+State ladder: hover is a fill only and always weaker than selection, on panels,
+dialogs and the canvas alike, which is why the ghost fills are translucent.
+Selection adds a second cue: the accent bar or underline for a location, a 2 px
+text-coloured bar on a chosen segment, or full-strength text and MEDIUM weight.
+
+The accent means "you are here": the active view tab and inspector tab
+underline, the current collection's bar, the current photo's outline, the
+command palette's selected row, and keyboard focus. Toggles (panels,
+histogram, zoom, focus peaking, grouping) show "on" as a quiet filled state with
+a full-strength icon instead.
+
+**Photo-overlay roles** (`shadowroom.scrim`, `shadowroom.scrim.{text,muted,pick,reject,rating,accent}`
+and `shadowroom.scrim.label.*`) are identical in both palettes: thumbnail
+badges and compare captions sit on photographs, which can be white or black in
+either appearance, so they use a dark `#0f0f0fd0` plate with colours that keep
+3:1 (glyphs) or 4.5:1 (text) over the plate on a white photo. Labels on
+thumbnails show their initial (R, Y, G, B, P) as well as their colour.
+
+Imported Zed themes never define Shadowroom roles. `shadowroom.well` and
+`shadowroom.control_border` are derived from the theme's own background, panel
+and muted-text roles (`Theme::derived_color`); other Shadowroom roles use the
+built-in palette of the same appearance. Colours a theme supplies itself always
+win, and derivation never rewrites the imported theme.
 
 ## Zed import
 
