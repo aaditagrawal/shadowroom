@@ -3,6 +3,7 @@ mod deletion_ui;
 mod dialog;
 mod feedback;
 mod folder_picker;
+mod frame_trace;
 mod help;
 mod ingest_ui;
 mod layout;
@@ -798,6 +799,18 @@ impl Overlay {
         Self::Preferences,
         Self::AddHost,
     ];
+    fn trace_name(self) -> &'static str {
+        match self {
+            Self::FolderPicker => "folder_picker",
+            Self::Deletion => "deletion",
+            Self::ImageContext => "image_context",
+            Self::GettingStarted => "getting_started",
+            Self::RatingFilter => "rating_filter",
+            Self::Palette => "palette",
+            Self::Preferences => "preferences",
+            Self::AddHost => "add_host",
+        }
+    }
 }
 /// Durability of review decisions, derived from the optimistic `unsaved` map
 /// and the count of unacknowledged writer batches.
@@ -1097,6 +1110,9 @@ pub struct Workspace {
     poll_render: bool,
     _automation_wake: Option<Task<()>>,
     _shutdown: Subscription,
+    /// Opt-in frame/input trace (`SHADOWROOM_FRAME_TRACE`); see `frame_trace`.
+    trace: frame_trace::Trace,
+    _trace_keys: Option<Subscription>,
 }
 
 impl Workspace {
@@ -1188,6 +1204,7 @@ impl Workspace {
             // before asking the actor to flush. Startup replays this synced journal.
             this.flush_navigation();
             this.drain_settings();
+            this.trace.flush();
             if let Some(journal)=this.pending_journal() && let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
             // Stop decoding now; queued preview-cache writes drain (at most 1 s)
             // while the catalog flushes, and are awaited below.
@@ -1198,6 +1215,17 @@ impl Workspace {
             }
             this.media.shutdown(Duration::from_secs(1));
             async {}
+        });
+        let trace = frame_trace::Trace::from_env();
+        // Interceptors run before any key dispatch; the deferred effect runs
+        // once every handler for the keystroke has returned.
+        let trace_keys = trace.enabled().then(|| {
+            let trace = trace.clone();
+            cx.intercept_keystrokes(move |event, _, cx| {
+                trace.input("key", &event.keystroke.unparse(), false);
+                let trace = trace.clone();
+                cx.defer(move |_| trace.handled());
+            })
         });
         let poll_wake = Rc::new(PollWake::default());
         let wake = poll_wake.clone();
@@ -1361,6 +1389,8 @@ impl Workspace {
             poll_render: false,
             _automation_wake: None,
             _shutdown: shutdown_subscription,
+            trace,
+            _trace_keys: trace_keys,
         };
         if let Some(server) = &workspace.automation {
             match UiInbox::new(server.requests.clone()) {
@@ -2150,6 +2180,8 @@ impl Workspace {
         if dirty {
             self.poll_render = true;
             cx.notify();
+        } else {
+            self.trace.flush();
         }
     }
 
@@ -10546,10 +10578,41 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let trace_started = self.trace.begin();
         // Input (or any repaint poll did not cause) returns poll to full speed.
-        if !std::mem::take(&mut self.poll_render) {
+        let poll_render = std::mem::take(&mut self.poll_render);
+        if !poll_render {
             self.poll_wake.kick();
         }
+        let element = self.render_workspace(window, cx);
+        if trace_started.is_some() {
+            let info = frame_trace::FrameInfo {
+                view: if self.import_ui.open {
+                    "import"
+                } else {
+                    match self.mode {
+                        ViewMode::Grid => "grid",
+                        ViewMode::Loupe => "loupe",
+                        ViewMode::Compare => "compare",
+                        ViewMode::Survey => "survey",
+                    }
+                },
+                overlay: self.top_overlay().map_or("none", Overlay::trace_name),
+                textures: self.visible_textures.len(),
+                poll: poll_render,
+            };
+            self.trace.end(trace_started, info, cx);
+        }
+        element
+    }
+}
+
+impl Workspace {
+    fn render_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> AnyElement {
         if self._automation_wake.is_none() {
             self.drain_automation(window, cx);
         }
@@ -10715,6 +10778,9 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.trace.enabled() && event.pressed_button.is_some() {
+                    this.trace.input("drag", "", false);
+                }
                 this.move_scrollbar(event, cx);
                 this.move_dock_resize(event, cx);
             }))
@@ -10740,7 +10806,11 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, _: &QuitApp, _window, cx| this.user_quit(cx)))
             // The pointer took over: hide the keyboard focus ring until Tab or arrows.
-            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if this.trace.enabled() {
+                    this.trace
+                        .input("mouse_down", &format!("{:?}", event.button), false);
+                }
                 if std::mem::take(&mut this.focus_visible) {
                     cx.notify();
                 }
