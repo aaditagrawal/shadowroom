@@ -10601,11 +10601,12 @@ impl Render for Workspace {
                 textures: self.visible_textures.len(),
                 photo: self.selected_id().map_or("none", |id| {
                     // Sharpest texture of the current photo this frame drew
-                    // (keys add 4 for focus-peaking copies).
+                    // (keys add 4 for focus-peaking copies; a visible key
+                    // without a texture is still being converted).
                     match self
                         .visible_textures
                         .iter()
-                        .filter(|key| key.0 == id)
+                        .filter(|key| key.0 == id && self.textures.contains_key(key))
                         .map(|key| key.1 % 4)
                         .max()
                     {
