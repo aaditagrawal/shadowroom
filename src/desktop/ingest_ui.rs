@@ -699,6 +699,7 @@ impl Workspace {
                 }
             }
             Event::Progress(mut progress) => {
+                let was_completed = self.import_ui.progress.phase == Phase::Completed;
                 if progress.job_id.is_empty() {
                     self.import_ui.progress.phase = progress.phase;
                 } else {
@@ -740,6 +741,21 @@ impl Workspace {
                     )
                 };
                 if p.phase == Phase::Completed {
+                    // The verified-offload sentence is the one that earns trust:
+                    // show it once, with a way to open the library.
+                    if !was_completed {
+                        let text = self.status.clone();
+                        match self.import_ui.progress.library_root.clone() {
+                            Some(root) => self.announce_action(
+                                text,
+                                Tone::Success,
+                                "Reveal",
+                                Cmd::RevealPath(root),
+                                "",
+                            ),
+                            None => self.announce(text, Tone::Success),
+                        }
+                    }
                     if self.settings.eject_after_ingest {
                         self.enqueue(IoCommand::Eject(self.import_ui.source.clone()));
                     }
@@ -755,10 +771,23 @@ impl Workspace {
             }
             Event::History(history) => self.import_ui.history = Arc::new(history),
             Event::Committed(committed) => self.import_ui.committed(committed),
-            Event::Marked(count) => {
-                self.status = format!("Marked {count} groups as imported; source unchanged")
-            }
-            Event::Ejected(path) => self.status = format!("Ejected {}", path.display()),
+            Event::Marked(count) => self.announce(
+                format!(
+                    "Marked {} as imported · source unchanged",
+                    plural(count, "photo", "photos")
+                ),
+                Tone::Success,
+            ),
+            Event::Ejected(path) => self.announce(
+                format!(
+                    "Ejected {} · safe to remove",
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned()
+                    )
+                ),
+                Tone::Success,
+            ),
             Event::Error(error) => {
                 if self.import_ui.progress.phase == Phase::Queued {
                     self.import_ui.progress.phase = Phase::Failed;
@@ -929,6 +958,8 @@ impl Workspace {
     pub(super) fn ingest_action(&mut self, action: &str, cx: &mut gpui::Context<Self>) {
         match action {
             "show" => {
+                // History is a separate page; Show always returns to the panel.
+                self.import_ui.show_history = false;
                 if self
                     .preferences_draft
                     .as_ref()
@@ -951,6 +982,7 @@ impl Workspace {
                 self.enqueue(IoCommand::IngestHistory(100));
             }
             "close" => {
+                self.import_ui.show_history = false;
                 self.import_ui.open = false;
                 self.import_ui.menu = None;
                 self.import_ui.active_field = None;
@@ -1021,7 +1053,7 @@ impl Workspace {
                 );
                 self.import_ui.menu = None;
                 self.save_settings();
-                self.status = format!("Saved naming preset “{name}”");
+                self.announce(format!("Saved naming preset “{name}”"), Tone::Success);
             }
             "videos:include" | "videos:skip" => {
                 self.import_ui.options.include_videos = action == "videos:include";
@@ -1053,7 +1085,13 @@ impl Workspace {
                 self.pending_ingest_scope = Some(self.import_ui.source.clone());
                 self.ingest_scope_arrived();
                 self.mode = ViewMode::Grid;
-                self.status = "Cull in place, then Show Import Panel and choose Picks / Except rejects / Rated".into();
+                self.announce_action(
+                    "Cull in place, then import Picks, Except rejects or Rated",
+                    Tone::Info,
+                    "Show Import",
+                    Cmd::Ingest("show".into()),
+                    "",
+                );
             }
             "picks" => {
                 self.import_ui.open = true;
@@ -1108,7 +1146,7 @@ impl Workspace {
                     self.settings.ingest_job_codes.insert(0, options.job_code);
                 }
                 self.save_settings();
-                self.status = "Import defaults saved".into();
+                self.announce("Import defaults saved", Tone::Success);
             }
             "start" => {
                 if let Err(error) = self.ingest_api("ingest_start", &json!({})) {
@@ -2207,7 +2245,71 @@ impl Workspace {
     pub(super) fn ingest_view(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         if self.import_ui.show_history {
             let history = self.import_ui.history.clone();
+            let loaded = history["jobs"].is_array();
             let jobs_len = history["jobs"].as_array().map_or(0, Vec::len);
+            let empty = (jobs_len == 0).then(|| {
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(space::MD))
+                    .text_center()
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(if loaded {
+                                "No imports yet"
+                            } else {
+                                "Loading history…"
+                            }),
+                    )
+                    .when(loaded, |s| {
+                        s.child(div().text_color(self.muted()).child(
+                            "Imports you run from a card or folder appear here with their verification result.",
+                        ))
+                        .child(
+                            self.button(
+                                "ingest-history-import",
+                                "Import from card or folder…",
+                                "folder-opened",
+                                Cmd::Import,
+                                false,
+                                cx,
+                            )
+                            .border_1()
+                            .border_color(self.c("border.variant", "#333333")),
+                        )
+                    })
+            });
+            if let Some(empty) = empty {
+                return div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .p(px(ui::PANEL_INSET))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child("Import History")
+                            .child(self.button(
+                                "ingest-history-close",
+                                "Close",
+                                "close",
+                                Cmd::Ingest("close".into()),
+                                false,
+                                cx,
+                            )),
+                    )
+                    .child(empty)
+                    .into_any_element();
+            }
             return div()
                 .flex_1()
                 .min_h(px(0.))
@@ -2246,10 +2348,15 @@ impl Workspace {
                                         .border_b_1()
                                         .border_color(this.border())
                                         .child(format!(
-                                            "{} · {} · {} groups",
+                                            "{} · {} · {}",
                                             jobs[i]["id"].as_str().unwrap_or(""),
                                             jobs[i]["verification"].as_str().unwrap_or(""),
-                                            jobs[i]["counts"]["completed"].as_u64().unwrap_or(0)
+                                            plural(
+                                                jobs[i]["counts"]["completed"].as_u64().unwrap_or(0)
+                                                    as usize,
+                                                "photo",
+                                                "photos"
+                                            )
                                         ))
                                         .child(
                                             div()
@@ -2357,7 +2464,11 @@ impl Workspace {
                                         ),
                                         this.icon_muted(),
                                     ))
-                                    .child(format!("{} · {} files", group.label, group.ids.len())),
+                                    .child(format!(
+                                        "{} · {}",
+                                        group.label,
+                                        plural(group.ids.len(), "photo", "photos")
+                                    )),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let ids = this.import_ui.timeline[index].ids.clone();
@@ -2397,21 +2508,13 @@ impl Workspace {
         );
         let label = self.import_ui.plan.as_ref().map_or_else(
             || {
-                format!(
-                    "Import {} photos · {} videos ({:.2} GB)",
+                copy::import_label(
                     self.import_ui.photos,
                     self.import_ui.videos,
-                    self.import_ui.bytes as f64 / 1e9
+                    self.import_ui.bytes,
                 )
             },
-            |s| {
-                format!(
-                    "Import {} photos · {} videos ({:.2} GB)",
-                    s.plan.photos,
-                    s.plan.videos,
-                    s.plan.bytes as f64 / 1e9
-                )
-            },
+            |s| copy::import_label(s.plan.photos, s.plan.videos, s.plan.bytes),
         );
         let destination = self.ingest_destination(
             if focus_destination {
@@ -2559,7 +2662,7 @@ impl Workspace {
             "Import needs attention".into()
         } else if let Some(plan) = &self.import_ui.plan {
             if plan.ready {
-                format!("Plan ready · {} files", plan.plan.files)
+                format!("Plan ready · {}", plural(plan.plan.files, "file", "files"))
             } else {
                 "Plan needs attention".into()
             }

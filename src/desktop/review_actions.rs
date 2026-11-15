@@ -102,7 +102,7 @@ impl Workspace {
         if mode == ViewMode::Compare {
             if self.filtered.len() < 2 {
                 self.reference = None;
-                self.status = "Select at least two photographs to compare".into();
+                self.announce("Compare needs two photos in this view", Tone::Warning);
             } else {
                 if self.reference.is_none() {
                     self.reference = self.selected_id();
@@ -237,7 +237,7 @@ impl Workspace {
             | ImageAction::PermanentDelete
                 if !self.target_context_photo(menu.photo_id) =>
             {
-                self.status = "That photograph is no longer in this view".into();
+                self.announce("That photo is no longer in this view", Tone::Warning);
             }
             ImageAction::Pick => self.execute(Cmd::Flag(Flag::Pick), window, cx),
             ImageAction::Reject => self.execute(Cmd::Flag(Flag::Reject), window, cx),
