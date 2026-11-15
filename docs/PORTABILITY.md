@@ -12,8 +12,12 @@ JPEG/PNG/WebP/BMP, dedicated TIFF and JPEG XL decoding are also Rust. SQLite is
 compiled into the executable; rewriting it would not remove a runtime package.
 
 Linux folder, ingest-destination, export and theme pickers run inside the app,
-with background directory reads and bounded listings. Ctrl+L edits the path, Tab
-switches to the entry list, Enter opens an entry, Ctrl+Enter confirms, and Escape cancels. macOS keeps
+with background directory reads and bounded listings, a places column (Home,
+Pictures, Desktop, Downloads and mounted drives) and folder icons on the entries.
+The entry list has focus when the picker opens, so Down highlights the first
+folder; Ctrl+L edits the path, Tab switches between path and list, Enter opens an
+entry, Ctrl+Enter confirms, and Escape cancels. The confirm button names the
+folder it will use. macOS keeps
 native pickers. The picker never creates destination folders or changes photos.
 
 Linux OS Trash writes FreeDesktop Trash storage directly without loading GIO.

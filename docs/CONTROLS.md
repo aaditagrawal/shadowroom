@@ -25,7 +25,7 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
 | Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports. With unsaved decisions it asks first; a second press quits anyway from the recovery journal |
-| Escape | Dismiss the error notice when one is showing (nothing else that press); otherwise close the topmost menu, dialog or Import |
+| Escape | Dismiss the error notice when one is showing (nothing else that press); in an Import field, leave the field; otherwise close the topmost menu, dialog or Import |
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
 
@@ -40,7 +40,10 @@ panes. It is a visual aid, not an automatic sharpness verdict, and never changes
 the source or histogram.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
-Ctrl/Cmd-click toggles individual frames. Import checkboxes toggle independently.
+Ctrl/Cmd-click toggles individual frames. In the Import grid a plain click or
+arrow only moves the current tile; the checkbox, Space and Ctrl/Cmd-click check
+or uncheck a photo, Shift extends from the anchor, Tab enters the fields (Job
+code first; J jumps there) and Ctrl/Cmd+Return starts the import.
 With zero or one selected photo, **Enter/L** opens Review across the current
 folder and filters, starting at the selected (outlined) photo, never at the
 photo under the pointer. With two or more selected photos, **Enter/L** freezes that
