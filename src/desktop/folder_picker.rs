@@ -89,7 +89,9 @@ impl Workspace {
             address: initial.to_string_lossy().into_owned(),
             entries: Vec::new(),
             selected: None,
-            address_focused: true,
+            // The list takes focus: Down highlights the first folder at once,
+            // and Ctrl+L (or a click) edits the path.
+            address_focused: false,
             loading: false,
             truncated: false,
             unreadable: 0,
@@ -97,9 +99,6 @@ impl Workspace {
             request: 0,
             edit: text_input::Edit::default(),
         });
-        if let Some(state) = &mut self.folder_picker {
-            state.edit.focus(&state.address);
-        }
         self.picker_navigate(initial, cx);
         cx.notify();
     }
@@ -135,7 +134,9 @@ impl Workspace {
                         state.selected = None;
                         state.truncated = listing.truncated;
                         state.unreadable = listing.unreadable;
-                        state.edit.focus(&state.address);
+                        if state.address_focused {
+                            state.edit.focus(&state.address);
+                        }
                     }
                     Err(error) => state.error = Some(format!("{error:#}")),
                 }
@@ -209,6 +210,27 @@ impl Workspace {
             return;
         }
         let purpose = state.purpose.clone();
+        // Exports check the destination rule here, so a bad choice keeps the
+        // picker open with the reason instead of failing later in a toast.
+        let photo_folders: Vec<PathBuf> = if matches!(
+            purpose,
+            Purpose::Workspace {
+                export: Some(_),
+                ..
+            }
+        ) {
+            self.photos
+                .iter()
+                .filter(|photo| !photo.is_remote())
+                .flat_map(|photo| std::iter::once(&photo.path).chain(photo.companion_path.iter()))
+                .filter_map(|path| path.parent())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .map(Path::to_path_buf)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let request = rand::random();
         let state = self.folder_picker.as_mut().unwrap();
         state.request = request;
@@ -234,6 +256,11 @@ impl Workspace {
                         Ok((path, Some(theme)))
                     } else {
                         anyhow::ensure!(path.is_dir(), "Choose an existing folder");
+                        shadowroom::catalog::check_export_destination(
+                            photo_folders.iter().map(PathBuf::as_path),
+                            &path,
+                        )
+                        .context("Choose a folder outside your photo folders, such as a new Exports folder")?;
                         Ok::<_, anyhow::Error>((path, None))
                     }
                 })
@@ -253,12 +280,7 @@ impl Workspace {
                             Purpose::Workspace {
                                 export: Some(picks),
                                 ids,
-                            } => {
-                                this.announce("Exporting in background…", Tone::Info);
-                                if let Err(error) = this.queue_export(path, picks, ids) {
-                                    this.error = Some(error.into());
-                                }
-                            }
+                            } => this.start_export(path, picks, ids),
                             Purpose::Workspace { export: None, .. } => {
                                 this.status = format!("Opening {}", path.display());
                                 this.open_ingest(path);
@@ -363,25 +385,70 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The photos a picks export will copy: the scope's picks, or every
+    /// pick in the catalog when the scope is empty.
+    fn export_picks_in<'a>(&'a self, ids: &'a [i64]) -> Vec<&'a Photo> {
+        if ids.is_empty() {
+            self.photos
+                .iter()
+                .filter(|p| !p.trashed && p.flag == Flag::Pick)
+                .collect()
+        } else {
+            ids.iter()
+                .filter_map(|id| self.photo_index.get(id).map(|&i| &self.photos[i]))
+                .filter(|p| !p.trashed && p.flag == Flag::Pick)
+                .collect()
+        }
+    }
     /// Title, explanation and confirm label: exports say what they will
     /// write and for how many photos, so Picks and XMP never look alike.
     fn picker_copy(&self, purpose: &Purpose) -> (String, Option<String>, String) {
+        let state = self.folder_picker.as_ref();
+        // The folder the confirm button will use: the highlighted row, else the
+        // folder being shown.
+        let target = state
+            .and_then(|state| {
+                (!state.address_focused)
+                    .then(|| state.selected.and_then(|i| state.entries.get(i)))
+                    .flatten()
+                    .filter(|entry| entry.directory)
+                    .map(|entry| entry.path.clone())
+                    .or_else(|| Some(state.directory.clone()))
+            })
+            .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "this folder".into());
         match purpose {
             Purpose::Workspace {
-                export: Some(true), ..
+                export: Some(true),
+                ids,
             } => {
-                let picks = self
-                    .photos
+                let picks = self.export_picks_in(ids);
+                let files: usize = picks
                     .iter()
-                    .filter(|p| !p.trashed && p.flag == Flag::Pick)
-                    .count();
+                    .map(|p| 1 + usize::from(p.companion_path.is_some()))
+                    .sum();
+                let bytes: u64 = picks
+                    .iter()
+                    .map(|p| p.size_bytes + p.companion_size_bytes)
+                    .sum();
+                let scope = if ids.is_empty() {
+                    "from the whole catalog"
+                } else {
+                    "in this view"
+                };
                 (
-                    format!("Export {} to a folder", plural(picks, "pick", "picks")),
-                    Some(
-                        "Copies each pick's files, with RAW+JPEG companions and sidecars. Your originals are not modified."
-                            .into(),
-                    ),
-                    "Export here".into(),
+                    format!("Export {} {scope}", plural(picks.len(), "pick", "picks")),
+                    Some(format!(
+                        "{}{} · {}, plus their sidecars. Originals are copied byte for byte and verified; nothing is modified.",
+                        plural(files, "file", "files"),
+                        if files > picks.len() {
+                            " incl. RAW+JPEG pairs"
+                        } else {
+                            ""
+                        },
+                        copy::fmt_bytes(bytes)
+                    )),
+                    format!("Export to “{target}”"),
                 )
             }
             Purpose::Workspace {
@@ -403,8 +470,76 @@ impl Workspace {
                 )
             }
             Purpose::Theme(_) => (purpose.title().into(), None, "Use theme".into()),
-            _ => (purpose.title().into(), None, "Use folder".into()),
+            _ => (purpose.title().into(), None, format!("Use “{target}”")),
         }
+    }
+    /// Places: home folders and mounted drives, one click away.
+    fn picker_places(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let mut places: Vec<(String, &'static str, PathBuf)> = Vec::new();
+        if let Some(dirs) = directories::UserDirs::new() {
+            places.push(("Home".into(), "folder", dirs.home_dir().to_path_buf()));
+            for (name, dir) in [
+                ("Pictures", dirs.picture_dir()),
+                ("Desktop", dirs.desktop_dir()),
+                ("Downloads", dirs.download_dir()),
+            ] {
+                if let Some(dir) = dir {
+                    places.push((name.into(), "folder", dir.to_path_buf()));
+                }
+            }
+        }
+        for drive in &self.drives {
+            places.push((drive.name.clone(), "drive", drive.path.clone()));
+        }
+        let current = self.folder_picker.as_ref().map(|s| s.directory.clone());
+        let mut column = div()
+            .id("path-picker-places")
+            .w(px(152.))
+            .flex_shrink_0()
+            .h_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .py(px(space::XS))
+            .border_r_1()
+            .border_color(self.border());
+        for (index, (name, glyph, path)) in places.into_iter().enumerate() {
+            let hover = self.hover_bg();
+            let here = current.as_ref() == Some(&path);
+            column = column.child(
+                div()
+                    .id(("path-picker-place", index))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .px(px(space::MD))
+                    .py(px(space::XS + 1.))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .when(here, |s| s.bg(self.selected_bg()))
+                    .hover(move |s| s.bg(hover))
+                    .child(icon(glyph, self.icon_muted()))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                    .tooltip(self.tip(&path.display().to_string(), ""))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        window.focus(&this.focus);
+                        if let Some(state) = this.folder_picker.as_mut() {
+                            state.address_focused = false;
+                        }
+                        this.picker_navigate(path.clone(), cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        column
     }
     pub(super) fn picker_view(&self, cx: &Context<Self>) -> AnyElement {
         let state = self.folder_picker.as_ref().unwrap();
@@ -432,11 +567,15 @@ impl Workspace {
                         transparent_black()
                     })
                     .hover(move |style| style.bg(hover))
-                    .child(format!(
-                        "{}  {}",
-                        if entry.directory { "▸" } else { "·" },
-                        label
-                    ))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .child(if entry.directory {
+                        icon("folder", self.icon_muted()).into_any_element()
+                    } else {
+                        icon("files", self.icon_muted()).into_any_element()
+                    })
+                    .child(label.into_owned())
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         window.focus(&this.focus);
@@ -542,7 +681,12 @@ impl Workspace {
                             })
                             .child(self.input_field(
                                 &state.edit,
-                                &state.address,
+                                // Unfocused, keep the root and the last folders visible.
+                                &if state.address_focused {
+                                    state.address.clone()
+                                } else {
+                                    copy::middle_path(&state.address, 58)
+                                },
                                 "Folder path",
                                 state.address_focused,
                                 state.address_focused,
@@ -566,15 +710,24 @@ impl Workspace {
                         cx,
                     )),
             )
-            .child(rows);
-        if state.loading {
-            body = body.child(
+            .child(
+                // A thin bar while a folder is read, where the list will change.
                 div()
-                    .px(px(space::LG))
-                    .text_color(self.muted())
-                    .child("Reading folder…"),
+                    .h(px(2.))
+                    .flex_shrink_0()
+                    .mx(px(space::LG))
+                    .when(state.loading, |s| s.bg(self.accent())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .border_t_1()
+                    .border_color(self.border())
+                    .when(!state.purpose.files(), |s| s.child(self.picker_places(cx)))
+                    .child(rows),
             );
-        }
         if state.truncated || state.unreadable > 0 {
             body = body.child(
                 div()
