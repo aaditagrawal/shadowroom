@@ -621,6 +621,8 @@ class Driver:
             self.tap("escape", label="close palette", gap=0.45)
         self.tap("ctrl+k", label="open palette", gap=0.45)
         self.measure_idle("idle_palette_open")
+        # Starts more than ten seconds after the last key: the caret has stopped blinking.
+        self.measure_idle("idle_palette_open_after_10s")
         self.tap("escape", label="close palette", gap=0.45)
 
         self.scenario = "preferences_open_close"
