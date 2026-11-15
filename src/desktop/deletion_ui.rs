@@ -270,15 +270,21 @@ impl Workspace {
                 if let Err(error) = self.trash_photos(&ids, true) {
                     self.error = Some(error.into());
                 } else {
-                    self.status = format!(
-                        "{} photos hidden in in-app Trash; files remain in place",
-                        ids.len()
+                    self.announce_action(
+                        format!(
+                            "Moved {} to Trash · files stay in place",
+                            plural(ids.len(), "photo", "photos")
+                        ),
+                        Tone::Success,
+                        "Undo",
+                        Cmd::Undo,
+                        "⌘Z",
                     );
                 }
             }
             Action::Files(plan) => {
                 if self.enqueue(IoCommand::DeleteFiles(plan)) {
-                    self.status = "Deleting confirmed files…".into();
+                    self.announce("Deleting confirmed files…", Tone::Info);
                 } else {
                     self.deletion.finished();
                 }
@@ -290,13 +296,14 @@ impl Workspace {
     pub(super) fn deletion_finished(&mut self, report: DeletionReport) {
         let completed = report.completed_file_count();
         if report.is_success() {
-            self.status = format!(
-                "{completed} files {}",
+            let files = plural(completed, "file", "files");
+            self.announce(
                 if report.mode == DeletionMode::Permanent {
-                    "permanently deleted"
+                    format!("Permanently deleted {files}")
                 } else {
-                    "moved to OS trash; restore using your file manager"
-                }
+                    format!("Moved {files} to the system Trash · restore from your file manager")
+                },
+                Tone::Success,
             );
         } else {
             let mut errors: Vec<_> = report
@@ -315,7 +322,8 @@ impl Workspace {
             let remaining = report.files.len().saturating_sub(completed + failed);
             self.error = Some(
                 format!(
-                    "{completed} files completed; {failed} failed; {remaining} not attempted. {}",
+                    "Some files could not be deleted. {} done · {failed} failed · {remaining} not attempted · {}",
+                    plural(completed, "file", "files"),
                     errors.join(" · ")
                 )
                 .into(),

@@ -251,7 +251,7 @@ impl Workspace {
                                 export: Some(picks),
                                 ids,
                             } => {
-                                this.status = "Exporting in background…".into();
+                                this.announce("Exporting in background…", Tone::Info);
                                 if let Err(error) = this.queue_export(path, picks, ids) {
                                     this.error = Some(error.into());
                                 }

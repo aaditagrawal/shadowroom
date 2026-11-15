@@ -261,8 +261,12 @@ fn run_catalog(
                                 None,
                             );
                             IoEvent::Status(format!(
-                                "Exported {count} {} to {}",
-                                if request.picks { "files" } else { "sidecars" },
+                                "Exported {} to {}",
+                                if request.picks {
+                                    self::count(count as u64, "file", "files")
+                                } else {
+                                    self::count(count as u64, "sidecar", "sidecars")
+                                },
                                 request.destination.display()
                             ))
                         }

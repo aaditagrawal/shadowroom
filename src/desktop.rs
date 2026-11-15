@@ -1,4 +1,6 @@
+mod copy;
 mod deletion_ui;
+mod feedback;
 mod folder_picker;
 mod help;
 mod ingest_ui;
@@ -8,7 +10,9 @@ mod review_actions;
 mod scrollbar;
 mod text_input;
 use anyhow::{Context as _, Result};
+use copy::plural;
 use crossbeam_channel::{Receiver, Sender};
+use feedback::Tone;
 use gpui::{prelude::*, *};
 use layout as ui;
 use layout::DockSide;
@@ -219,6 +223,8 @@ enum Cmd {
     ImportTheme,
     Refresh,
     Reveal,
+    /// Show a finished import or export destination in the file manager.
+    RevealPath(PathBuf),
     AllSelect,
     Gap(u64),
     Threshold(u32),
@@ -615,6 +621,10 @@ struct ExportJob {
     state: JobState,
     completed: usize,
     error: Option<String>,
+    /// Where it writes and whether it exports picks (else XMP sidecars), for
+    /// the completion notice and its Reveal button.
+    #[serde(skip)]
+    target: Option<(PathBuf, bool)>,
 }
 /// What raised the error toast, so a later success clears only its own notice
 /// instead of matching message text.
@@ -1052,6 +1062,7 @@ pub struct Workspace {
     history: History,
     status: String,
     error: Option<Notice>,
+    feedback: feedback::Feedback,
     busy: bool,
     drives: Vec<Drive>,
     remote_hosts: std::collections::BTreeMap<String, shadowroom::network::HostSnapshot>,
@@ -1157,11 +1168,7 @@ impl Workspace {
             // before asking the actor to flush. Startup replays this synced journal.
             this.flush_navigation();
             this.drain_settings();
-            if !this.unsaved.is_empty()||this.prefs_sync.dirty()||this.recovery_pending {
-                let decisions=this.unsaved.values().map(|d|PhotoDecision{id:d.id,rating:d.rating,flag:d.flag,label:d.label,trashed:d.trashed}).collect();
-                let journal=shadowroom::recovery::RecoveryJournal::new(decisions,if this.prefs_sync.dirty()||this.recovery_settings.is_some(){Some(this.settings.clone())}else{None});
-                if let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
-            }
+            if let Some(journal)=this.pending_journal() && let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
             // Stop decoding now; queued preview-cache writes drain (at most 1 s)
             // while the catalog flushes, and are awaited below.
             this.media.shutdown(Duration::ZERO);
@@ -1295,6 +1302,7 @@ impl Workspace {
             history: History::default(),
             status: "Opening local catalog…".into(),
             error: settings_error.map(Notice::from),
+            feedback: feedback::Feedback::default(),
             unsaved: HashMap::new(),
             outbox: VecDeque::new(),
             awaiting: 0,
@@ -1385,7 +1393,7 @@ impl Workspace {
                     PrefsSync::Held
                 };
                 if !workspace.settings_writable {
-                    workspace.settings_failure=Some("Repair the settings file, then use Retry unsaved decisions to recover preferences.".into());
+                    workspace.settings_failure=Some("Repair the settings file, then use Retry Unsaved Decisions to recover preferences.".into());
                 }
             }
             workspace.status = "Recovering pending decisions from the previous session…".into();
@@ -1609,6 +1617,7 @@ impl Workspace {
         }
         self.next_job_id += 1;
         let id = self.next_job_id;
+        let target = Some((destination.clone(), picks));
         if !self.enqueue(IoCommand::ExportTracked {
             id,
             destination,
@@ -1622,6 +1631,7 @@ impl Workspace {
             state: JobState::Queued,
             completed: 0,
             error: None,
+            target,
         });
         Ok(id)
     }
@@ -1694,21 +1704,12 @@ impl Workspace {
             }
             _ => {}
         }
-        if self.save_state() == SaveState::Failed {
+        // Refused quits ask instead of dead-ending in a toast: Retry, Quit
+        // Anyway (the recovery journal restores the changes) or Cancel.
+        let held_preferences = self.recovery_settings.is_some() && !self.settings_writable;
+        if self.save_state() == SaveState::Failed || held_preferences {
             self.quit = QuitState::Open;
-            self.error = Some(Notice::new(
-                NoticeKind::UnsavedDecisions,
-                format!(
-                    "{} photographs have unsaved decisions. Use Retry unsaved decisions before closing.",
-                    self.unsaved.len()
-                ),
-            ));
-            cx.notify();
-            return;
-        }
-        if self.recovery_settings.is_some() && !self.settings_writable {
-            self.quit = QuitState::Open;
-            self.error=Some("Recovered preferences are waiting for repair of the settings file. Repair it and use Retry unsaved decisions before closing.".into());
+            self.open_quit_prompt(held_preferences);
             cx.notify();
             return;
         }
@@ -1800,8 +1801,10 @@ impl Workspace {
                             .get(&snapshot.config.id)
                             .is_some_and(|old| old.state() == HostState::Indexing)
                         {
-                            self.status =
-                                format!("{} · metadata synced", snapshot.config.display_name);
+                            self.announce(
+                                format!("{} · metadata synced", snapshot.config.display_name),
+                                Tone::Success,
+                            );
                         }
                     }
                     // Host failures arrive once as IoEvent::Error on each transition
@@ -1825,16 +1828,25 @@ impl Workspace {
                         self.unsaved.remove(&id);
                     }
                     if self.unsaved.is_empty() {
+                        let recovered = self
+                            .error
+                            .as_ref()
+                            .is_some_and(|n| n.kind == NoticeKind::UnsavedDecisions);
                         clear_notice(&mut self.error, NoticeKind::UnsavedDecisions);
+                        if recovered {
+                            self.announce("Unsaved decisions are now saved", Tone::Success);
+                        }
+                        if self.awaiting == 0 {
+                            self.feedback.saved_until = Some(Instant::now() + feedback::SAVED_TTL);
+                        }
                     }
                 }
                 IoEvent::SaveFailed(e) => {
                     self.awaiting = self.awaiting.saturating_sub(1);
                     self.save_revisions.acknowledge(false);
-                    self.error = Some(Notice::new(
-                        NoticeKind::UnsavedDecisions,
-                        format!("Decisions remain unsaved: {e}"),
-                    ));
+                    // The toast headline is written from the kind and count;
+                    // the writer's own text stays available under Details.
+                    self.error = Some(Notice::new(NoticeKind::UnsavedDecisions, e));
                 }
                 IoEvent::PreferencesSaved(settings) => {
                     if settings == self.settings {
@@ -1889,25 +1901,41 @@ impl Workspace {
                                 .enumerate()
                                 .flat_map(|(i, group)| group.iter().map(move |id| (*id, i)))
                                 .collect();
-                            self.status = format!(
-                                "{} duplicate sets · {} photos",
-                                scan.groups.len(),
-                                self.duplicate_ids.len()
-                            );
-                            if !scan.errors.is_empty() || scan.errors_omitted > 0 {
-                                self.status.push_str(&format!(
-                                    " · {} errors",
-                                    scan.errors.len() + scan.errors_omitted
-                                ));
+                            let mut summary = if scan.groups.is_empty() {
+                                format!(
+                                    "No exact duplicates · checked {}",
+                                    plural(scan.total, "photo", "photos")
+                                )
+                            } else {
+                                format!(
+                                    "{} · {}",
+                                    plural(scan.groups.len(), "duplicate set", "duplicate sets"),
+                                    plural(self.duplicate_ids.len(), "photo", "photos")
+                                )
+                            };
+                            let errors = scan.errors.len() + scan.errors_omitted;
+                            if errors > 0 {
+                                summary
+                                    .push_str(&format!(" · {}", plural(errors, "error", "errors")));
                             }
                             if scan.truncated {
-                                self.status.push_str(" · results capped");
+                                summary.push_str(" · results capped");
                             }
+                            self.announce(
+                                summary,
+                                if errors > 0 || scan.truncated {
+                                    Tone::Warning
+                                } else {
+                                    Tone::Success
+                                },
+                            );
                         } else if scan.phase == ScanPhase::Running {
                             self.status = format!(
                                 "Checking duplicates · {} of {} candidates",
                                 scan.processed, scan.candidates
                             );
+                        } else if scan.phase == ScanPhase::Cancelled {
+                            self.announce("Duplicate scan cancelled", Tone::Info);
                         } else {
                             self.status = format!("Duplicate scan {}", scan.phase);
                             if scan.phase == ScanPhase::Failed {
@@ -1924,14 +1952,25 @@ impl Workspace {
                     completed,
                     error,
                 } => {
-                    let job = ExportJob {
+                    let mut job = ExportJob {
                         id,
                         state,
                         completed,
                         error,
+                        target: None,
                     };
-                    if let Some(slot) = self.export_jobs.iter_mut().find(|job| job.id == id) {
-                        *slot = job;
+                    let previous = self.export_jobs.iter().position(|job| job.id == id);
+                    let finished = state == JobState::Completed
+                        && previous
+                            .is_none_or(|i| self.export_jobs[i].state != JobState::Completed);
+                    if let Some(i) = previous {
+                        job.target = self.export_jobs[i].target.take();
+                    }
+                    if finished {
+                        self.announce_export(&job);
+                    }
+                    if let Some(i) = previous {
+                        self.export_jobs[i] = job;
                     } else {
                         self.export_jobs.push(job);
                     }
@@ -1962,7 +2001,10 @@ impl Workspace {
             match shadowroom::recovery::RecoveryJournal::clear(&self.recovery_path) {
                 Ok(()) => {
                     self.recovery_pending = false;
-                    self.status = "Recovered pending decisions".into();
+                    self.announce(
+                        "Restored unsaved changes from the previous session",
+                        Tone::Success,
+                    );
                 }
                 Err(error) => {
                     self.error = Some(format!("Could not finalize recovery: {error:#}").into())
@@ -1972,6 +2014,8 @@ impl Workspace {
         if self.quit == QuitState::Draining {
             self.request_quit(cx);
         }
+        dirty |= self.reconcile_quit_prompt();
+        dirty |= self.feedback.expire(Instant::now());
         if self.unsaved.is_empty() {
             let photos = self
                 .photo_slot
@@ -2299,7 +2343,13 @@ impl Workspace {
             self.duplicate_ids.clear();
             self.duplicate_lookup.clear();
             self.duplicate_slots.clear();
-            self.status = "Duplicate results changed · scan again".into();
+            self.announce_action(
+                "Duplicate results changed · scan again",
+                Tone::Warning,
+                "Scan again",
+                Cmd::ScanDuplicates,
+                "",
+            );
             self.rebuild(self.selected_id());
         }
     }
@@ -2453,7 +2503,7 @@ impl Workspace {
     fn apply_decisions(&mut self, decisions: Vec<Decision>) -> bool {
         if self.recovery_pending || self.recovery_broken {
             self.error = Some(
-                "Finish recovery before making new decisions. Retry unsaved decisions if needed."
+                "Finish recovery before making new decisions. Retry Unsaved Decisions if needed."
                     .into(),
             );
             return false;
@@ -2572,7 +2622,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.history.push(before, after);
+        self.history.push(before, after.clone());
         let old = self.selected_id();
         // Keeps the selected photo when it is still visible (even if earlier
         // batch members left the view and shifted it), else holds the position
@@ -2587,6 +2637,11 @@ impl Workspace {
             && self.selected_id() == old
         {
             self.navigate(1, cx);
+        }
+        // The decided frame is no longer on screen (auto-advance, or the
+        // decision filtered it out): confirm what it now carries.
+        if old.is_some() && self.selected_id() != old {
+            self.confirm_decision(&after, (rating, flag, label));
         }
         cx.notify();
     }
@@ -2708,7 +2763,7 @@ impl Workspace {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |this, cx| {
                         if let Some(picks) = export {
-                            this.status = "Exporting in background…".into();
+                            this.announce("Exporting in background…", Tone::Info);
                             if let Err(e) = this.queue_export(path, picks, ids) {
                                 this.error = Some(e.into());
                             }
@@ -2763,7 +2818,7 @@ impl Workspace {
             )
         {
             self.error = Some(
-                "Recovery is pending. Wait for writes or use Retry unsaved decisions after repair."
+                "Recovery is pending. Wait for writes or use Retry Unsaved Decisions after repair."
                     .into(),
             );
             cx.notify();
@@ -2821,7 +2876,7 @@ impl Workspace {
                     .map(|p| p.id)
                     .collect();
                 if ids.is_empty() {
-                    self.status = "No photos to scan in this view".into();
+                    self.announce("No photos to scan in this view", Tone::Warning);
                     cx.notify();
                     return;
                 }
@@ -2892,7 +2947,7 @@ impl Workspace {
                         shadowroom::network::RemoteCommand::Add(config),
                     )) {
                         self.add_host = None;
-                        self.status = "Checking remote agent protocol and version…".into();
+                        self.announce("Checking remote agent protocol and version…", Tone::Info);
                     }
                 }
             }
@@ -3022,9 +3077,16 @@ impl Workspace {
             Cmd::Undo => {
                 if let Some(d) = self.history.undo() {
                     let id = d.first().map(|d| d.id);
+                    let subject = self.decisions_subject(&d);
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
-                        self.status = "Decision undone".into();
+                        self.announce_action(
+                            format!("Undone · {subject}"),
+                            Tone::Info,
+                            "Redo",
+                            Cmd::Redo,
+                            "⌘⇧Z",
+                        );
                     } else {
                         self.history.redo();
                     }
@@ -3033,9 +3095,16 @@ impl Workspace {
             Cmd::Redo => {
                 if let Some(d) = self.history.redo() {
                     let id = d.first().map(|d| d.id);
+                    let subject = self.decisions_subject(&d);
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
-                        self.status = "Decision restored".into();
+                        self.announce_action(
+                            format!("Redone · {subject}"),
+                            Tone::Info,
+                            "Undo",
+                            Cmd::Undo,
+                            "⌘Z",
+                        );
                     } else {
                         self.history.undo();
                     }
@@ -3050,7 +3119,14 @@ impl Workspace {
             }
             Cmd::Pin => {
                 self.reference = self.selected_id();
-                self.status = "Reference pinned · navigate to compare a candidate".into();
+                let name = self.selected_photo().map(|p| p.filename.clone());
+                self.announce(
+                    match name {
+                        Some(name) => format!("Reference pinned · {name} · move to a candidate"),
+                        None => "Reference pinned · move to a candidate".into(),
+                    },
+                    Tone::Info,
+                );
             }
             Cmd::Zoom => {
                 self.zoom = !self.zoom;
@@ -3078,12 +3154,14 @@ impl Workspace {
             }
             Cmd::FocusPeaking => {
                 self.focus_peaking = !self.focus_peaking;
-                self.status = if self.focus_peaking {
-                    "Focus peaking on · cyan highlights fine edges · F toggles"
-                } else {
-                    "Focus peaking off"
-                }
-                .into();
+                self.announce(
+                    if self.focus_peaking {
+                        "Focus peaking on · cyan highlights fine edges · F toggles"
+                    } else {
+                        "Focus peaking off"
+                    },
+                    Tone::Info,
+                );
             }
             Cmd::Inspector => {
                 self.inspector = self.focus_mode || !self.inspector || self.docks.inspector == 0.;
@@ -3120,8 +3198,10 @@ impl Workspace {
             }
             Cmd::ResizeDock(side) => {
                 if self.import_ui.open && side == DockSide::Inspector {
-                    self.status =
-                        "Inspector is available in Catalog, Review, Compare and Survey".into();
+                    self.announce(
+                        "Inspector is available in Catalog, Review, Compare and Survey",
+                        Tone::Warning,
+                    );
                     cx.notify();
                     return;
                 }
@@ -3333,11 +3413,27 @@ impl Workspace {
                             ..*d
                         })
                         .collect();
+                    let rejected = before
+                        .iter()
+                        .filter(|d| d.id != id && d.flag != Flag::Reject)
+                        .count();
                     if self.apply_decisions(after.clone()) {
                         self.history.push(before, after);
                         self.rebuild_after_decisions(Some(id));
-                        self.status =
-                            "Burst resolved · existing decisions preserved · undo available".into();
+                        let kept = self
+                            .photo_index
+                            .get(&id)
+                            .map_or_else(String::new, |&i| self.photos[i].filename.clone());
+                        self.announce_action(
+                            format!(
+                                "Kept {kept} · rejected {} · decided frames unchanged",
+                                plural(rejected, "other frame", "other frames")
+                            ),
+                            Tone::Info,
+                            "Undo",
+                            Cmd::Undo,
+                            "⌘Z",
+                        );
                     }
                 }
             }
@@ -3354,6 +3450,7 @@ impl Workspace {
                     }
                 }
             }
+            Cmd::RevealPath(path) => cx.reveal_path(&path),
             Cmd::AllSelect => {
                 self.multi = self.filtered.iter().map(|&i| self.photos[i].id).collect();
             }
@@ -4009,7 +4106,11 @@ impl Workspace {
         // Quit works from every view, field, menu and dialog; request_quit still
         // waits for decision writes, exports and imports to settle.
         if is_quit_chord(&event.keystroke) {
-            self.request_quit(cx);
+            self.user_quit(cx);
+            return;
+        }
+        // The quit prompt is system-modal: it sits above every overlay.
+        if self.quit_prompt_key(event, window, cx) {
             return;
         }
         if self.picker_key(event, cx) {
@@ -4046,7 +4147,12 @@ impl Workspace {
             return;
         }
         if key == "escape" {
-            self.execute(Cmd::Close, window, cx);
+            // Escape dismisses a showing toast first, and nothing else.
+            if self.error.take().is_some() {
+                cx.notify();
+            } else {
+                self.execute(Cmd::Close, window, cx);
+            }
             return;
         }
         if self.getting_started {
@@ -4363,10 +4469,6 @@ fn label_key(label: ColorLabel) -> &'static str {
         ColorLabel::Blue => "9",
         _ => "",
     }
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 fn icon(name: &'static str, color: Hsla) -> Svg {
@@ -5255,7 +5357,11 @@ impl Workspace {
                 "collection-duplicates".into(),
                 "duplicates",
                 "Duplicates".into(),
-                Some(self.duplicate_ids.len()),
+                // A count only means something once a scan has completed.
+                self.duplicate_scan
+                    .as_ref()
+                    .filter(|scan| scan.phase == ScanPhase::Completed)
+                    .map(|_| self.duplicate_ids.len()),
                 self.duplicates_only,
             )
             .tooltip(self.tip("Review exact duplicates; scan from the command palette", ""))
@@ -5801,11 +5907,7 @@ impl Workspace {
             options = options.child(
                 self.button(
                     ("filter-option", r as usize),
-                    &if r == 0 {
-                        "All ratings".into()
-                    } else {
-                        format!("{r} stars and up")
-                    },
+                    &copy::rating_threshold(r),
                     if active { "check" } else { "star" },
                     Cmd::SetMinRating(r),
                     active,
@@ -6359,29 +6461,55 @@ impl Workspace {
             );
         }
         let compare = self.mode == ViewMode::Compare;
-        let pane = pane.when(compare, |pane| {
+        // The frame's own decision rides on the photo, next to the Compare role.
+        let chip = self.decision_chip(photo);
+        let pane = pane.when(compare || chip.is_some(), |pane| {
             pane.child(
                 div()
                     .absolute()
                     .top(px(8.))
                     .left(px(8.))
-                    .max_w(px(360.))
-                    .px(px(space::SM))
-                    .py(px(space::TINY))
+                    .right(px(8.))
                     .flex()
-                    .gap(px(space::SM))
-                    .bg(rgba(0x0f0f0fd0))
-                    .text_size(px(11.))
-                    .text_color(rgb(0xe6e6e6))
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .child(div().text_color(rgb(0x9a9a9a)).child(if reference {
-                        "Reference"
-                    } else {
-                        "Candidate"
-                    }))
-                    .child(photo.filename.clone()),
+                    .items_start()
+                    .gap(px(space::XS))
+                    .when(compare, |row| {
+                        row.child(
+                            div()
+                                .max_w(px(360.))
+                                .min_w(px(0.))
+                                .px(px(space::SM))
+                                .h(px(22.))
+                                .items_center()
+                                .flex()
+                                .gap(px(space::SM))
+                                .bg(rgba(0x0f0f0fd0))
+                                .text_size(px(11.))
+                                .text_color(rgb(0xe6e6e6))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .child(div().text_color(rgb(0x9a9a9a)).child(if reference {
+                                    "Reference"
+                                } else {
+                                    "Candidate"
+                                }))
+                                .child(photo.filename.clone()),
+                        )
+                    })
+                    .children(chip.map(|chip| chip.flex_shrink_0())),
             )
+        });
+        // What the previous frame now carries, briefly, after auto-advance.
+        let pane = pane.when(!reference, |pane| {
+            pane.children(self.decision_note_chip().map(|chip| {
+                div()
+                    .absolute()
+                    .bottom(px(8.))
+                    .left(px(8.))
+                    .right(px(8.))
+                    .flex()
+                    .child(chip.max_w_full())
+            }))
         });
         let details = match quality_note {
             Some(note) => format!("{quality} · {note}"),
@@ -8039,6 +8167,8 @@ impl Workspace {
             "trash_count":self.counts.trash,"duplicates_only":self.duplicates_only,"duplicate_scan":self.duplicate_scan,
             "recovery":{"pending":self.recovery_pending,"needs_repair":self.recovery_broken},"persistence":self.persistence_state(),"indexing":self.busy,"status":self.status,"error":self.error,"export_jobs":self.export_jobs,
             "closing":self.quit.closing(),"settings_writable":self.settings_writable,"settings_persistence":{"state":if self.settings_failure.is_some(){"failed"}else if self.prefs_sync.dirty(){"pending"}else{"durable"},"error":self.settings_failure}});
+        state["notice"] = json!(self.feedback.flash.as_ref().map(|flash| &flash.text));
+        state["quit_prompt"] = json!(self.feedback.quit_prompt.as_ref().map(|p| p.title()));
         state["inspector_tab"] = json!(if self.inspector_info {
             "info"
         } else {
@@ -9431,6 +9561,12 @@ impl Workspace {
     }
     fn empty(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let library_empty = self.photos.is_empty();
+        let scope = match &self.scope {
+            Some(scope) => format!("in {}", self.scope_display(scope)),
+            None => "in the whole library".into(),
+        };
+        let (duplicates_title, duplicates_body, duplicates_button) =
+            copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
         let hint = |key: &str, what: &str| {
             div()
                 .flex()
@@ -9454,34 +9590,37 @@ impl Workspace {
                     .text_size(px(15.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(if library_empty {
-                        "Insert a card or Import a folder"
+                        "Insert a card or Import a folder".into()
                     } else if self.duplicates_only {
-                        "Review duplicate photos"
+                        duplicates_title
                     } else if self.filter == Filter::Trash {
-                        "Trash is empty"
+                        "Trash is empty".into()
                     } else {
-                        "Nothing matches this view"
+                        "Nothing matches this view".to_owned()
                     }),
             )
             .child(div().text_color(self.muted()).child(if library_empty {
-                "Open a folder or card to start culling. Originals are never modified."
+                "Open a folder or card to start culling. Originals are never modified.".into()
             } else if self.duplicates_only {
-                "Scan to verify exact file matches. Nothing is moved or removed automatically."
+                duplicates_body
             } else if self.filter == Filter::Trash {
-                "Trashed photos can be restored with their ratings and flags."
+                "Trashed photos can be restored with their ratings and flags.".into()
             } else {
-                "Choose another collection or clear the rating filter."
+                "Choose another collection or clear the rating filter.".to_owned()
             }))
-            .when(self.duplicates_only, |s| {
-                s.child(self.button(
-                    "empty-scan-duplicates",
-                    "Find Duplicates",
-                    "duplicates",
-                    Cmd::ScanDuplicates,
-                    false,
-                    cx,
-                ))
-            })
+            .when_some(
+                duplicates_button.filter(|_| self.duplicates_only && !library_empty),
+                |s, label| {
+                    s.child(self.button(
+                        "empty-scan-duplicates",
+                        label,
+                        "duplicates",
+                        Cmd::ScanDuplicates,
+                        false,
+                        cx,
+                    ))
+                },
+            )
             .when(library_empty, |s| {
                 s.child(
                     div().pt(px(space::SM)).child(
@@ -9521,19 +9660,8 @@ impl Workspace {
 impl Workspace {
     fn status_bar(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         let stats = self.media.stats();
-        let failed = self.recovery_broken
-            || self.settings_failure.is_some()
-            || self.save_state() == SaveState::Failed;
-        let (save_text, save_color) = if failed {
-            ("Not saved · retry", self.c("error", "#d46a6a"))
-        } else if self.awaiting > 0 || self.prefs_sync.dirty() || self.recovery_pending {
-            ("Saving…", self.muted())
-        } else {
-            ("Saved", self.muted())
-        };
-        let retry = failed;
-        // The footer describes the current workspace, rather than retaining
-        // the last successful action as a permanent notification.
+        // The footer describes the current workspace; a completed action shows
+        // as a transient notice in its place (feedback.rs), never permanently.
         let context = if let Some(drag) = self.dock_drag {
             let (name, minimum, actual) = match drag.side {
                 DockSide::Library => ("Catalog", ui::LIBRARY_MIN_WIDTH, self.docks.library),
@@ -9656,15 +9784,20 @@ impl Workspace {
                 ))
             })
             .child(
-                div()
-                    .id("workspace-status")
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_normal()
-                    .line_clamp(1)
-                    .child(context),
+                self.status_notice(cx)
+                    .filter(|_| self.dock_drag.is_none())
+                    .unwrap_or_else(|| {
+                        div()
+                            .id("workspace-status")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .child(context)
+                            .into_any_element()
+                    }),
             )
             .when(
                 self.workspace_size.0 >= 1120.
@@ -9702,19 +9835,7 @@ impl Workspace {
                     s.child(div().px(px(space::SM)).child(text))
                 },
             )
-            .child(
-                div()
-                    .id("save-state")
-                    .px(px(space::XS))
-                    .text_color(save_color)
-                    .when(retry, |s| {
-                        s.cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.execute(Cmd::RetrySaves, window, cx)
-                            }))
-                    })
-                    .child(save_text),
-            )
+            .children(self.save_state_view(cx))
             .child(
                 div()
                     .id("appearance")
@@ -9927,6 +10048,8 @@ impl Render for Workspace {
                     .and_then(|id| self.photo_index.get(&id).copied())
                 {
                     viewer = viewer.child(self.photo_view(reference, true, window, cx));
+                } else {
+                    viewer = viewer.child(self.compare_placeholder(cx));
                 }
             }
             viewer
@@ -10001,7 +10124,7 @@ impl Render for Workspace {
                     this.finish_dock_resize(cx);
                 }),
             )
-            .on_action(cx.listener(|this, _: &QuitApp, _window, cx| this.request_quit(cx)))
+            .on_action(cx.listener(|this, _: &QuitApp, _window, cx| this.user_quit(cx)))
             .relative()
             .size_full()
             .flex()
@@ -10015,32 +10138,6 @@ impl Render for Workspace {
             .child(self.title_bar(window, cx))
             .child(body)
             .child(self.status_bar(window, cx));
-        if let Some(error) = &self.error {
-            root = root.child(
-                div()
-                    .id("error-toast")
-                    .occlude()
-                    .absolute()
-                    .bottom(px(ui::STATUS_HEIGHT + space::SM))
-                    .right(px(ui::PANEL_INSET))
-                    .w(px(420.))
-                    .p(px(ui::BAR_INSET))
-                    .border_1()
-                    .border_color(self.c("error", "#d46a6a"))
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
-                    .flex()
-                    .items_start()
-                    .gap(px(space::MD))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_normal()
-                            .child(error.text.clone()),
-                    )
-                    .child(self.button("dismiss-error", "", "close", Cmd::DismissError, false, cx)),
-            );
-        }
         if let Some(AddHostForm {
             fields,
             active,
@@ -10137,6 +10234,10 @@ impl Render for Workspace {
         if self.folder_picker.is_some() {
             root = root.child(self.picker_view(cx));
         }
+        // System feedback paints above every overlay so no scrim dims it.
+        root = root
+            .children(self.quit_prompt_view(cx))
+            .children(self.error_toast(cx));
         self.trim_display_cache();
         // Client-side decorations (Wayland, composited X11): transparent resize
         // margin around a 1px framed window. Server/macOS decorations need none.
@@ -10822,7 +10923,9 @@ mod ui_tests {
         );
         let sources = [
             ("desktop.rs", include_str!("desktop.rs")),
+            ("copy.rs", include_str!("desktop/copy.rs")),
             ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
+            ("feedback.rs", include_str!("desktop/feedback.rs")),
             ("folder_picker.rs", include_str!("desktop/folder_picker.rs")),
             ("help.rs", include_str!("desktop/help.rs")),
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
@@ -10847,6 +10950,19 @@ mod ui_tests {
             first.map(str::trim),
             Some("if is_quit_chord(&event.keystroke) {")
         );
+        // The chord quits (or confirms Quit Anyway) before the system-modal
+        // quit prompt, and that prompt routes before every other overlay.
+        let chord = body.find("self.user_quit(cx);").expect("quit chord action");
+        let prompt = body
+            .find("self.quit_prompt_key(event, window, cx)")
+            .expect("quit prompt routing");
+        let picker = body.find("self.picker_key(event, cx)").expect("picker");
+        assert!(chord < prompt && prompt < picker);
+        let quit_app = root
+            .find("_: &QuitApp")
+            .map(|at| &root[at..at + 80])
+            .expect("menu quit action");
+        assert!(quit_app.contains("this.user_quit(cx)"));
         let mut handlers = 0;
         for (name, source) in sources {
             for marker in [".on_key_down(", ".capture_key_down(", ".on_key_up("] {
