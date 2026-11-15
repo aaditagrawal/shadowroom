@@ -75,6 +75,9 @@ LCMS2_STATIC=1 cargo build --locked --release --bins
 ./target/release/shadowroom /path/to/photos
 ```
 
+For source edits, use `scripts/dev.sh`; the [development workflow](docs/BUILD.md#local-development)
+covers fast profiles, shared MBX caching and optional Wild linking.
+
 On macOS, the default build needs Xcode's Metal tools. Command Line Tools users
 can add `--features runtime-shaders`. Linux needs a desktop session and Vulkan
 drivers. Native package and AppImage instructions are in the [build guide](docs/BUILD.md).

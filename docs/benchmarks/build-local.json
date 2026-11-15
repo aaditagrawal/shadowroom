@@ -1,0 +1,361 @@
+{
+  "date": "2026-11-13",
+  "base_commit": "3f2b09b0024a6395a3ebf0a024bf96a187bc1563",
+  "machine": {
+    "cpu": "Intel Core i5-10300H",
+    "physical_cores": 4,
+    "logical_cpus": 8,
+    "ram_gib_approx": 16,
+    "gpu": "NVIDIA GeForce GTX 1650 Ti, 4 GiB",
+    "storage": "NVMe, XFS",
+    "power_profile": "performance"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "linker": "LLD 23.1.1, already used by the baseline",
+  "command": "scripts/check-linux-local.sh build --locked --offline --profile PROFILE --bin shadowroom --timings",
+  "features": "unchanged defaults: desktop,native-color,native-codecs",
+  "method": "Warm caches; small unique error-message edits in src/main.rs (desktop) and src/catalog.rs (core). Three edits/profile/scenario; profile order alternated each iteration. Source bytes restored and both profiles rebuilt afterward. Warmups and restoration builds excluded from summary.",
+  "limitations": [
+    "Unrelated Cargo builds ran concurrently; CPU, memory, and storage contention varied between samples. Results are indicative rather than an isolated speedup measurement.",
+    "Small string edits do not represent all code changes or clean builds.",
+    "Fresh dev-fast target populated from an already-cached local Cargo registry; no network downloads. Baseline was already warm, so there is no clean-build speedup comparison.",
+    "No runtime performance comparison; dev-fast and dev use the same unoptimized settings and development assertions. Full variable/type debugging is available in dev, while dev-fast keeps application line tables and omits dependency debug information.",
+    "Individual compilation-unit durations overlap and must not be summed to derive elapsed build time."
+  ],
+  "dev_fast_initial_cache_population_seconds": 101.32,
+  "binary_bytes": {
+    "dev": 663195168,
+    "dev-fast": 142560240
+  },
+  "summary": {
+    "unchanged": {
+      "dev": {
+        "samples": 1,
+        "median_wall_seconds": 0.563,
+        "min_wall_seconds": 0.563,
+        "max_wall_seconds": 0.563
+      },
+      "dev-fast": {
+        "samples": 1,
+        "median_wall_seconds": 0.316,
+        "min_wall_seconds": 0.316,
+        "max_wall_seconds": 0.316
+      }
+    },
+    "desktop-edit": {
+      "dev": {
+        "samples": 3,
+        "median_wall_seconds": 5.305,
+        "min_wall_seconds": 4.835,
+        "max_wall_seconds": 5.416
+      },
+      "dev-fast": {
+        "samples": 3,
+        "median_wall_seconds": 3.212,
+        "min_wall_seconds": 1.687,
+        "max_wall_seconds": 3.567
+      }
+    },
+    "core-edit": {
+      "dev": {
+        "samples": 3,
+        "median_wall_seconds": 9.317,
+        "min_wall_seconds": 8.933,
+        "max_wall_seconds": 22.974
+      },
+      "dev-fast": {
+        "samples": 3,
+        "median_wall_seconds": 9.05,
+        "min_wall_seconds": 5.076,
+        "max_wall_seconds": 9.222
+      }
+    }
+  },
+  "measurements": [
+    {
+      "profile": "dev",
+      "scenario": "warmup",
+      "iteration": 0,
+      "wall_seconds": 5.115,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "unchanged",
+      "iteration": 0,
+      "wall_seconds": 0.563,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "warmup",
+      "iteration": 0,
+      "wall_seconds": 0.479,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "unchanged",
+      "iteration": 0,
+      "wall_seconds": 0.316,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "desktop-edit",
+      "iteration": 0,
+      "wall_seconds": 5.305,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "desktop-edit",
+      "iteration": 0,
+      "wall_seconds": 3.567,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "desktop-edit",
+      "iteration": 1,
+      "wall_seconds": 1.687,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "desktop-edit",
+      "iteration": 1,
+      "wall_seconds": 4.835,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "desktop-edit",
+      "iteration": 2,
+      "wall_seconds": 5.416,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "desktop-edit",
+      "iteration": 2,
+      "wall_seconds": 3.212,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "restore-desktop-edit",
+      "iteration": 0,
+      "wall_seconds": 3.906,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "restore-desktop-edit",
+      "iteration": 0,
+      "wall_seconds": 14.386,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "core-edit",
+      "iteration": 0,
+      "wall_seconds": 22.974,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "core-edit",
+      "iteration": 0,
+      "wall_seconds": 9.05,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "core-edit",
+      "iteration": 1,
+      "wall_seconds": 5.076,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "core-edit",
+      "iteration": 1,
+      "wall_seconds": 8.933,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev",
+      "scenario": "core-edit",
+      "iteration": 2,
+      "wall_seconds": 9.317,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "core-edit",
+      "iteration": 2,
+      "wall_seconds": 9.222,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 2
+    },
+    {
+      "profile": "dev",
+      "scenario": "restore-core-edit",
+      "iteration": 0,
+      "wall_seconds": 11.327,
+      "binary_bytes": 663195168,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 2
+    },
+    {
+      "profile": "dev-fast",
+      "scenario": "restore-core-edit",
+      "iteration": 0,
+      "wall_seconds": 7.489,
+      "binary_bytes": 142560240,
+      "returncode": 0,
+      "other_cargo_builds_at_start": 1
+    }
+  ],
+  "dev_fast_populate_compilation_units": 727,
+  "dev_fast_populate_longest_units": [
+    {
+      "name": "x11rb-protocol",
+      "version": "0.13.2",
+      "target": "",
+      "duration": 18.68
+    },
+    {
+      "name": "ash",
+      "version": "0.38.0+1.3.281",
+      "target": "",
+      "duration": 18.0
+    },
+    {
+      "name": "zbus",
+      "version": "5.19.0",
+      "target": "",
+      "duration": 14.2
+    },
+    {
+      "name": "naga",
+      "version": "25.0.1",
+      "target": "",
+      "duration": 13.85
+    },
+    {
+      "name": "naga",
+      "version": "25.0.1",
+      "target": "",
+      "duration": 13.14
+    },
+    {
+      "name": "gpui",
+      "version": "0.2.2",
+      "target": "",
+      "duration": 12.89
+    },
+    {
+      "name": "moxcms",
+      "version": "0.8.1",
+      "target": "",
+      "duration": 12.7
+    },
+    {
+      "name": "read-fonts",
+      "version": "0.41.0",
+      "target": "",
+      "duration": 11.22
+    },
+    {
+      "name": "libsqlite3-sys",
+      "version": "0.35.0",
+      "target": " build-script (run)",
+      "duration": 10.72
+    },
+    {
+      "name": "shadowroom",
+      "version": "0.1.6",
+      "target": "",
+      "duration": 10.13
+    },
+    {
+      "name": "wayland-protocols",
+      "version": "0.32.13",
+      "target": "",
+      "duration": 9.44
+    },
+    {
+      "name": "ashpd",
+      "version": "0.12.3",
+      "target": "",
+      "duration": 7.52
+    },
+    {
+      "name": "rustls",
+      "version": "0.23.46",
+      "target": "",
+      "duration": 7.35
+    },
+    {
+      "name": "syn",
+      "version": "3.0.9",
+      "target": "",
+      "duration": 6.78
+    }
+  ],
+  "validation": {
+    "desktop_build": "passed",
+    "core_unit_tests": {
+      "passed": 286,
+      "ignored": 30,
+      "failed": 0
+    },
+    "desktop_unit_tests": {
+      "passed": 39,
+      "ignored": 3,
+      "failed": 0
+    },
+    "cargo_fmt": "passed",
+    "documentation_links": "30 Markdown files checked; passed",
+    "lockfile": "unchanged",
+    "cargo_check": "passed"
+  },
+  "dev_fast_initial_check_cache_population_seconds": 94.08
+}

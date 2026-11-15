@@ -3,6 +3,40 @@
 # system packages. Default: check the desktop app; pass cargo arguments to build.
 set -euo pipefail
 
+runner=cargo
+if [[ ${1:-} == --help ]]; then
+    printf '%s\n' 'Usage: scripts/check-linux-local.sh [--runner cargo|mbx|blaze] [cargo arguments...]'
+    exit 0
+fi
+if [[ ${1:-} == --runner ]]; then
+    runner=${2:-}
+    case "$runner" in
+        cargo|mbx|blaze) shift 2 ;;
+        *) printf '%s\n' '--runner requires cargo, mbx, or blaze.' >&2; exit 2 ;;
+    esac
+fi
+
+resolve_tool() {
+    local name=$1 directory
+    if command -v "$name" >/dev/null 2>&1; then
+        command -v "$name"
+        return
+    fi
+    for directory in "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/.bun/bin"; do
+        if [[ -x "$directory/$name" ]]; then
+            printf '%s\n' "$directory/$name"
+            return
+        fi
+    done
+    printf '%s is required; install it or add it to PATH.\n' "$name" >&2
+    return 1
+}
+
+# MBX invokes Cargo itself; keep the selected Rust installation discoverable.
+cargo_bin=$(resolve_tool cargo)
+export PATH="$(dirname -- "$cargo_bin"):$PATH"
+runner_bin=$(resolve_tool "$runner")
+
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build_root=${SHADOWROOM_SYSROOT:-"$HOME/.local/share/shadowroom-build"}
 build_lib="$build_root/usr/lib64"
@@ -30,18 +64,9 @@ if [[ -d /home/linuxbrew/.linuxbrew/lib/pkgconfig ]]; then
     export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:+$PKG_CONFIG_PATH:}/home/linuxbrew/.linuxbrew/lib/pkgconfig"
 fi
 
-if command -v cargo >/dev/null 2>&1; then
-    cargo_bin=$(command -v cargo)
-elif [[ -x "$HOME/.cargo/bin/cargo" ]]; then
-    cargo_bin="$HOME/.cargo/bin/cargo"
-else
-    printf '%s\n' 'cargo is required; install a Rust toolchain or add it to PATH.' >&2
-    exit 1
-fi
-
 cd -- "$project_root"
 if [[ $# -eq 0 ]]; then
-    exec "$cargo_bin" check --features desktop
+    exec "$runner_bin" check --features desktop
 else
-    exec "$cargo_bin" "$@"
+    exec "$runner_bin" "$@"
 fi

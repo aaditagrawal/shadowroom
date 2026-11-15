@@ -6,17 +6,37 @@ and any platform limitations.
 
 ## Local checks
 
+For routine desktop edits, use `scripts/dev.sh check`, then
+`scripts/dev.sh run -- /path/to/photos`. These use `dev-fast` for quick UI edits;
+`scripts/dev.sh --profile dev-perf run -- /path/to/photos` also optimizes hot
+codecs. `test-core` defaults to `dev-test`, which optimizes Shadowroom as well
+while retaining development assertions and overflow checks. Keep incremental
+compilation enabled locally; CI disables it for cache size.
+
+The [development workflow](docs/BUILD.md#local-development) includes the command
+matrix, optional MBX/Wild setup, ordinary Cargo equivalents, Linux native-library
+environment, first-profile costs and benchmark reproduction. Runner/linker
+options are per command; release keeps the production ThinLTO settings. Before
+submitting, run the checks relevant to the change, including full regression and
+native checks where appropriate:
+
 ```sh
 cargo fmt --all -- --check
+scripts/dev.sh test-core
 cargo test --locked --no-default-features
-LCMS2_STATIC=1 cargo build --locked --release --bins
-cargo test --locked --bin shadowroom
-bash -n scripts/*.sh
+scripts/dev.sh release
+scripts/dev.sh test-desktop
+for script in scripts/*.sh; do
+  bash -n "$script" || exit
+done
 uv run --no-project python scripts/check-docs.py
 ```
 
-The core command includes integration tests for import, remote protocol,
-round trips, grouping, image analysis, and persistence. Tests marked `ignored`
+The core commands include integration tests for import, remote protocol,
+round trips, grouping, image analysis, and persistence; `test-core` retains native
+color/codecs while `--no-default-features` also checks the lean configuration.
+To target a regression, append its filter to `test-core`, or use
+`scripts/dev.sh test-core --lib module::test_name -- --exact`. Tests marked `ignored`
 need explicit fixtures or measure workloads; read their requirements before
 running them. The desktop tests need native development dependencies but do not
 substitute for opening the app on a real desktop.

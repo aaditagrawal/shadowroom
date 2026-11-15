@@ -1,0 +1,5 @@
+# Seed app incremental state up front rather than on the first source edit.
+eager_incremental = true
+
+[scheduler]
+tests = true

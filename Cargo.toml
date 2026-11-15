@@ -73,6 +73,40 @@ required-features = ["desktop"]
 lto = "thin"
 codegen-units = 1
 
+# Opt-in edit/run profile; retain app backtraces without generating full DWARF.
+# Keep ordinary dev builds available for inspecting variables in a debugger.
+[profile.dev-fast]
+inherits = "dev"
+debug = "line-tables-only"
+lto = "off"
+incremental = true
+
+[profile.dev-fast.package."*"]
+debug = false
+
+# Keep UI edits unoptimized while making image-heavy development runs useful.
+[profile.dev-perf]
+inherits = "dev-fast"
+
+[profile.dev-perf.package.image]
+opt-level = 2
+
+[profile.dev-perf.package.moxcms]
+opt-level = 2
+
+[profile.dev-perf.package.zune-jpeg]
+opt-level = 2
+
+[profile.dev-perf.package.jpeg-decoder]
+opt-level = 2
+
+# Keep development assertions/overflow checks while speeding regression fixtures.
+[profile.dev-test]
+inherits = "dev-perf"
+
+[profile.dev-test.package.shadowroom]
+opt-level = 2
+
 [patch.crates-io]
 # GPUI's xattr 0.2 dependency predates libc removing Linux's ENOATTR alias.
 xattr = { path = "vendor/xattr" }

@@ -1,0 +1,4387 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-13",
+  "generated_utc": "2026-11-13T08:01:39Z",
+  "application": "Shadowroom 0.1.6",
+  "path_aliases": {
+    "$PROJECT": "Repository root",
+    "$HOME": "User home directory"
+  },
+  "provenance": {
+    "local_experiment_directory": ".local/build-experiments-20261113",
+    "selection": "Completed JSON objects with label and samples fields, including failed commands, discovered recursively beneath the local experiment directory. Cargo metadata and GitHub release API dumps are excluded.",
+    "excluded_top_level_json": [
+      ".local/build-experiments-20261113/final-metadata.json",
+      ".local/build-experiments-20261113/mold-release.json",
+      ".local/build-experiments-20261113/perf-metadata.json",
+      ".local/build-experiments-20261113/wild-release.json"
+    ],
+    "in_progress_report_files_at_scan": [],
+    "report_count": 37,
+    "sample_count_including_warmups_and_failures": 89,
+    "logs_committed": false,
+    "log_location": "Each sample names a log basename retained only in the ignored local experiment directory.",
+    "privacy": "Absolute repository/home paths are replaced with aliases. Unrelated project names and all process IDs are removed; boundary counts, process kinds, and presence flags are retained."
+  },
+  "hardware": {
+    "cpu": "Intel Core i5-10300H",
+    "physical_cores": 4,
+    "logical_threads": 8,
+    "memory": "16 GB installed (about 15 GiB visible)",
+    "gpu": "NVIDIA GeForce GTX 1650 Ti",
+    "gpu_vram_mib": 4096,
+    "storage": "Samsung PM981-family NVMe; repository and relocated MBX cache share an XFS filesystem with reflink enabled",
+    "power_state_observed": {
+      "cpu_governor": "performance",
+      "energy_performance_preference": "performance",
+      "platform_profile": "performance",
+      "turbo_enabled": true
+    }
+  },
+  "toolchains": {
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)",
+    "llvm_and_default_lld": "23.1.1",
+    "gcc": "16.2.1",
+    "mbx": "1.30.0",
+    "mold": "3.0.0",
+    "wild": "0.11.0",
+    "blaze": "0.20261030.1 (6560553 2026-10-30)",
+    "blaze_private_rustc": "1.101.0-nightly (16d1ffac1 2026-10-26), nightly-2026-10-27, LLVM 23.1.4",
+    "gpu_build_acceleration": "No GPU compiler/linker acceleration was measured or enabled."
+  },
+  "method": {
+    "harness": "scripts/benchmark-builds.py",
+    "wall_clock": "Python time.perf_counter around the complete command, including process startup, waits, compilation, linking, and tests when requested.",
+    "resource_measurement": "/usr/bin/time reports user_seconds, system_seconds, and max_rss_kib for the timed command and measured descendants. CPU and RSS do not include work in retained/background daemons. Maximum RSS is not aggregate system memory.",
+    "sampling": "Normally one warmup followed by three measured iterations. Some population/restore probes contain one sample. Warmups and failed samples remain in reports but are excluded from successful summary medians.",
+    "source_edits": {
+      "desktop-edit": {
+        "path": "src/main.rs",
+        "probe": "Shadowroom: {error:#}",
+        "change": "Insert a unique run/iteration suffix into the error-format string."
+      },
+      "core-edit": {
+        "path": "src/catalog.rs",
+        "probe": "Open local photo catalog",
+        "change": "Append a unique run/iteration suffix to the context string."
+      },
+      "restoration": "The harness restores the original source bytes on completion and records the original source SHA-256. It stops rather than overwriting an external source change.",
+      "warmup_edit": "When true, the warmup itself changes source to seed the first incremental source edit. Otherwise warmup uses original source. Earlier reports omit this field; their recorded samples are preserved."
+    },
+    "environment": "Each report retains the recorded allowlisted environment overrides, not a complete shell environment. Wrapper defaults and profile contents evolved during the session; preserve label/config distinctions when comparing results.",
+    "contention": "Process snapshots occur only before and after samples. A presence flag means a matching compiler/build process was observed; it does not measure its CPU utilization or prove continuous contention. Retained idle daemons can appear. Older snapshots lack process kind and are labeled unspecified-build-process. Reports before verify-check-unchanged excluded processes whose cwd matched the measured checkout. The final harness also records those processes. Known overlapping same-project work is called out explicitly where relevant.",
+    "caveats": [
+      "Experiments were sequential opportunistic probes on a machine with varying unrelated build activity, not randomized isolated trials. Boundary snapshots cannot account for all load or thermal variation.",
+      "Source edits change strings and represent one small application or core change; other edits, feature sets, and dependency updates can have different costs.",
+      "No end-to-end clean plain-Cargo baseline paired with MBX population/restore was measured. The 123.7971 s population and 26.8972 s restore are different cache states and had varying contention; they do not establish a clean-Cargo speedup ratio.",
+      "The 36.8977 s integrated MBX/Wild fresh-target restore uses eager incremental mode and a final-binary Wild adapter, differing from the 26.8972 s non-eager restore. It is not a fair fresh-cache winner comparison.",
+      "Codec fixture and core-loop commands include execution of the selected test. Faster optimized fixtures do not imply an equal improvement in compiler-only time.",
+      "Blaze runs used a different nightly/compiler architecture, retained daemon state, and did not complete a successful check. Their low client CPU/RSS must not be interpreted as low total work.",
+      "The first Wild invocation failed to select the linker. Only linker-wild-fixed supplies a successful adapter measurement.",
+      "Three successful samples give a small local observation, not a statistically established universal speedup. Warmups include profile/cache preparation costs and are retained for transparency."
+    ]
+  },
+  "summaries": {
+    "reports": [
+      {
+        "label": "cargo-fast",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/cargo-fast-unchanged-afe73f9e80.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 0.3909,
+        "min_wall_seconds": 0.3591,
+        "max_wall_seconds": 0.4993,
+        "median_user_seconds": 0.24,
+        "median_system_seconds": 0.11,
+        "median_max_rss_kib": 112172,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "cargo-fast",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/cargo-fast-desktop-edit-54bbfbc59a.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.9029,
+        "min_wall_seconds": 1.686,
+        "max_wall_seconds": 3.2699,
+        "median_user_seconds": 2.21,
+        "median_system_seconds": 0.72,
+        "median_max_rss_kib": 1124660,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "cargo-fast",
+        "scenario": "core-edit",
+        "source_report": ".local/build-experiments-20261113/cargo-fast-core-edit-8dbcbb76ad.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.9988,
+        "min_wall_seconds": 5.7131,
+        "max_wall_seconds": 13.6157,
+        "median_user_seconds": 5.38,
+        "median_system_seconds": 1.8,
+        "median_max_rss_kib": 1125728,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "mbx-populate",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/mbx-populate-unchanged-b0d0be2237.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 123.7971,
+        "min_wall_seconds": 123.7971,
+        "max_wall_seconds": 123.7971,
+        "median_user_seconds": 523.85,
+        "median_system_seconds": 61.15,
+        "median_max_rss_kib": 1481468,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "mbx-restore",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/mbx-restore-unchanged-341fdd57c8.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 26.8972,
+        "min_wall_seconds": 26.8972,
+        "max_wall_seconds": 26.8972,
+        "median_user_seconds": 41.68,
+        "median_system_seconds": 12.77,
+        "median_max_rss_kib": 1518388,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "mbx-default",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/mbx-default-desktop-edit-b57045a511.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 5.1288,
+        "min_wall_seconds": 2.8512,
+        "max_wall_seconds": 7.7429,
+        "median_user_seconds": 2.4,
+        "median_system_seconds": 1.64,
+        "median_max_rss_kib": 1119576,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "mbx-eager",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/mbx-eager-desktop-edit-1aa62d1441.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.5744,
+        "min_wall_seconds": 1.5607,
+        "max_wall_seconds": 1.6298,
+        "median_user_seconds": 2.26,
+        "median_system_seconds": 0.62,
+        "median_max_rss_kib": 1117956,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "linker-lld",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/linker-lld-desktop-edit-3a36a4f826.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.2446,
+        "min_wall_seconds": 2.2229,
+        "max_wall_seconds": 2.3261,
+        "median_user_seconds": 2.2,
+        "median_system_seconds": 0.81,
+        "median_max_rss_kib": 1123156,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "linker-mold",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/linker-mold-desktop-edit-4dc9735713.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.1024,
+        "min_wall_seconds": 1.9888,
+        "max_wall_seconds": 2.5026,
+        "median_user_seconds": 0.74,
+        "median_system_seconds": 0.42,
+        "median_max_rss_kib": 581440,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "linker-wild",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/linker-wild-desktop-edit-5e31303c6e.json",
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "blaze-check",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/blaze-check-unchanged-f456ee1b4e.json",
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "blaze-check-resume",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/blaze-check-resume-unchanged-d46ce7ed98.json",
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-populate",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-populate-unchanged-9e30b8a5bc.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 111.7193,
+        "min_wall_seconds": 111.7193,
+        "max_wall_seconds": 111.7193,
+        "median_user_seconds": 211.61,
+        "median_system_seconds": 16.92,
+        "median_max_rss_kib": 1219800,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "codec-baseline-populate",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-baseline-populate-unchanged-ba55312ff1.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 25.4787,
+        "min_wall_seconds": 25.4787,
+        "max_wall_seconds": 25.4787,
+        "median_user_seconds": 98.55,
+        "median_system_seconds": 9.08,
+        "median_max_rss_kib": 1204972,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-fast-1",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-fast-1-unchanged-494286c2fe.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.2715,
+        "min_wall_seconds": 18.2715,
+        "max_wall_seconds": 18.2715,
+        "median_user_seconds": 20.26,
+        "median_system_seconds": 0.17,
+        "median_max_rss_kib": 75920,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-perf-1",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-perf-1-unchanged-f263e88a3d.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.6411,
+        "min_wall_seconds": 10.6411,
+        "max_wall_seconds": 10.6411,
+        "median_user_seconds": 10.51,
+        "median_system_seconds": 0.18,
+        "median_max_rss_kib": 76308,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-fast-2",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-fast-2-unchanged-a4e1f4b881.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.3698,
+        "min_wall_seconds": 18.3698,
+        "max_wall_seconds": 18.3698,
+        "median_user_seconds": 20.38,
+        "median_system_seconds": 0.16,
+        "median_max_rss_kib": 76312,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-perf-2",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-perf-2-unchanged-c2e7511f39.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.5468,
+        "min_wall_seconds": 10.5468,
+        "max_wall_seconds": 10.5468,
+        "median_user_seconds": 10.54,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 76216,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-fast-3",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-fast-3-unchanged-67c4129db4.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.2159,
+        "min_wall_seconds": 18.2159,
+        "max_wall_seconds": 18.2159,
+        "median_user_seconds": 20.25,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 76336,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-perf-3",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-perf-3-unchanged-4f0eada34c.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.8661,
+        "min_wall_seconds": 10.8661,
+        "max_wall_seconds": 10.8661,
+        "median_user_seconds": 10.85,
+        "median_system_seconds": 0.16,
+        "median_max_rss_kib": 75948,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "test-opt-populate",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/test-opt-populate-unchanged-84f8710949.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 48.6907,
+        "min_wall_seconds": 48.6907,
+        "max_wall_seconds": 48.6907,
+        "median_user_seconds": 311.44,
+        "median_system_seconds": 13.58,
+        "median_max_rss_kib": 1644328,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "codec-test-opt",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-test-opt-unchanged-080f212037.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 6.0237,
+        "min_wall_seconds": 6.0113,
+        "max_wall_seconds": 6.2632,
+        "median_user_seconds": 6.0,
+        "median_system_seconds": 0.18,
+        "median_max_rss_kib": 76328,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "core-loop-fast",
+        "scenario": "core-edit",
+        "source_report": ".local/build-experiments-20261113/core-loop-fast-core-edit-b54a276dd6.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 20.251,
+        "min_wall_seconds": 20.1521,
+        "max_wall_seconds": 21.7486,
+        "median_user_seconds": 22.47,
+        "median_system_seconds": 0.59,
+        "median_max_rss_kib": 695048,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "core-loop-test-opt",
+        "scenario": "core-edit",
+        "source_report": ".local/build-experiments-20261113/core-loop-test-opt-core-edit-9f2ff215ae.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 8.3207,
+        "min_wall_seconds": 8.1762,
+        "max_wall_seconds": 10.1923,
+        "median_user_seconds": 8.75,
+        "median_system_seconds": 0.56,
+        "median_max_rss_kib": 755148,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "codec-test-opt2",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/codec-test-opt2-unchanged-344b5ae1af.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.7213,
+        "min_wall_seconds": 2.6628,
+        "max_wall_seconds": 4.6009,
+        "median_user_seconds": 2.55,
+        "median_system_seconds": 0.25,
+        "median_max_rss_kib": 76328,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "linker-wild-fixed",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/linker-wild-fixed-desktop-edit-adc6502ca4.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.239,
+        "min_wall_seconds": 1.2358,
+        "max_wall_seconds": 1.2527,
+        "median_user_seconds": 0.75,
+        "median_system_seconds": 0.28,
+        "median_max_rss_kib": 584796,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "app-no-debug",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/app-no-debug-desktop-edit-e4dce6a9b0.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.7063,
+        "min_wall_seconds": 1.6606,
+        "max_wall_seconds": 1.715,
+        "median_user_seconds": 2.29,
+        "median_system_seconds": 0.61,
+        "median_max_rss_kib": 1113820,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "frontend-parallel-4",
+        "scenario": "desktop-edit",
+        "source_report": ".local/build-experiments-20261113/frontend-parallel-4-desktop-edit-263775c40f.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 4.155,
+        "min_wall_seconds": 4.0991,
+        "max_wall_seconds": 4.6151,
+        "median_user_seconds": 3.26,
+        "median_system_seconds": 0.93,
+        "median_max_rss_kib": 1128880,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "core-loop-test-opt2",
+        "scenario": "core-edit",
+        "source_report": ".local/build-experiments-20261113/core-loop-test-opt2-core-edit-30bc760d42.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 5.8299,
+        "min_wall_seconds": 5.6706,
+        "max_wall_seconds": 6.1662,
+        "median_user_seconds": 6.25,
+        "median_system_seconds": 0.63,
+        "median_max_rss_kib": 754484,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "verify-mbx-wild-restore",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-mbx-wild-restore-unchanged-793a0e6f20.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 36.8977,
+        "min_wall_seconds": 36.8977,
+        "max_wall_seconds": 36.8977,
+        "median_user_seconds": 51.18,
+        "median_system_seconds": 13.98,
+        "median_max_rss_kib": 1503568,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "verify-core-tests",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-core-tests-unchanged-a24b7a092a.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 93.7069,
+        "min_wall_seconds": 93.7069,
+        "max_wall_seconds": 93.7069,
+        "median_user_seconds": 352.48,
+        "median_system_seconds": 13.28,
+        "median_max_rss_kib": 1138260,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "verify-desktop-tests",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-desktop-tests-unchanged-1e77b0e623.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 14.9277,
+        "min_wall_seconds": 14.9277,
+        "max_wall_seconds": 14.9277,
+        "median_user_seconds": 9.29,
+        "median_system_seconds": 2.19,
+        "median_max_rss_kib": 956636,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "verify-core-tests-warm",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-core-tests-warm-unchanged-8b8210791d.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 8.2224,
+        "min_wall_seconds": 8.056,
+        "max_wall_seconds": 8.8049,
+        "median_user_seconds": 15.15,
+        "median_system_seconds": 1.39,
+        "median_max_rss_kib": 545520,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "verify-check-unchanged",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-check-unchanged-unchanged-201ef0b6eb.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 4.1535,
+        "median_user_seconds": 0.48,
+        "median_system_seconds": 0.29,
+        "median_max_rss_kib": 112304,
+        "min_wall_seconds": 4.1014,
+        "max_wall_seconds": 4.7515,
+        "measured_samples_with_boundary_contention": 3
+      },
+      {
+        "label": "verify-release",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-release-unchanged-b6170caab8.json",
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 162.9148,
+        "median_user_seconds": 483.32,
+        "median_system_seconds": 8.7,
+        "median_max_rss_kib": 1664684,
+        "min_wall_seconds": 162.9148,
+        "max_wall_seconds": 162.9148,
+        "measured_samples_with_boundary_contention": 1
+      },
+      {
+        "label": "verify-wild-unchanged",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-wild-unchanged-unchanged-cbcb3c701b.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 0.4767,
+        "median_user_seconds": 0.38,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 112620,
+        "min_wall_seconds": 0.4564,
+        "max_wall_seconds": 0.6578,
+        "measured_samples_with_boundary_contention": 0
+      },
+      {
+        "label": "verify-release-unchanged",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-release-unchanged-unchanged-c37bf6dac9.json",
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "min_wall_seconds": 0.5193,
+        "max_wall_seconds": 0.9734,
+        "measured_samples_with_boundary_contention": 3,
+        "median_wall_seconds": 0.6024,
+        "median_user_seconds": 0.33,
+        "median_system_seconds": 0.17,
+        "median_max_rss_kib": 112616
+      }
+    ],
+    "combined_fixture_runs": [
+      {
+        "label_group": "codec-fast",
+        "source_reports": [
+          ".local/build-experiments-20261113/codec-fast-1-unchanged-494286c2fe.json",
+          ".local/build-experiments-20261113/codec-fast-2-unchanged-a4e1f4b881.json",
+          ".local/build-experiments-20261113/codec-fast-3-unchanged-67c4129db4.json"
+        ],
+        "successful_measured_sample_count": 3,
+        "median_wall_seconds": 18.2715,
+        "min_wall_seconds": 18.2159,
+        "max_wall_seconds": 18.3698,
+        "scope": "Repeated unchanged fixture-test command; includes test runtime, not a source-edit build."
+      },
+      {
+        "label_group": "codec-perf",
+        "source_reports": [
+          ".local/build-experiments-20261113/codec-perf-1-unchanged-f263e88a3d.json",
+          ".local/build-experiments-20261113/codec-perf-2-unchanged-c2e7511f39.json",
+          ".local/build-experiments-20261113/codec-perf-3-unchanged-4f0eada34c.json"
+        ],
+        "successful_measured_sample_count": 3,
+        "median_wall_seconds": 10.6411,
+        "min_wall_seconds": 10.5468,
+        "max_wall_seconds": 10.8661,
+        "scope": "Repeated unchanged fixture-test command; includes test runtime, not a source-edit build."
+      }
+    ],
+    "selected_comparisons": [
+      {
+        "name": "Fixed Wild adapter versus default LLD",
+        "scope": "Small desktop source edit, final crate compile and link under dev-fast",
+        "baseline": {
+          "label": "linker-lld",
+          "scenario": "desktop-edit",
+          "source_report": ".local/build-experiments-20261113/linker-lld-desktop-edit-3a36a4f826.json",
+          "median_wall_seconds": 2.2446,
+          "successful_measured_sample_count": 3
+        },
+        "candidate": {
+          "label": "linker-wild-fixed",
+          "scenario": "desktop-edit",
+          "source_report": ".local/build-experiments-20261113/linker-wild-fixed-desktop-edit-adc6502ca4.json",
+          "median_wall_seconds": 1.239,
+          "successful_measured_sample_count": 3
+        },
+        "observed_wall_reduction_percent": 44.8,
+        "observed_ratio": 1.8116,
+        "caveat": "Separate short trials; preserve contention and warmup context. This is command wall time, not isolated linker time."
+      },
+      {
+        "name": "Optimized core test loop versus dev-fast",
+        "scope": "Core source edit followed by the exact codec fixture test",
+        "baseline": {
+          "label": "core-loop-fast",
+          "scenario": "core-edit",
+          "source_report": ".local/build-experiments-20261113/core-loop-fast-core-edit-b54a276dd6.json",
+          "median_wall_seconds": 20.251,
+          "successful_measured_sample_count": 3
+        },
+        "candidate": {
+          "label": "core-loop-test-opt2",
+          "scenario": "core-edit",
+          "source_report": ".local/build-experiments-20261113/core-loop-test-opt2-core-edit-30bc760d42.json",
+          "median_wall_seconds": 5.8299,
+          "successful_measured_sample_count": 3
+        },
+        "observed_wall_reduction_percent": 71.21,
+        "observed_ratio": 3.4736,
+        "caveat": "Includes compilation and fixture execution; profile.dev-test.package.shadowroom.opt-level=2. Both have source-edit warmups; varying contention remains."
+      }
+    ],
+    "cache_stages_without_speedup_claim": [
+      {
+        "label": "mbx-populate",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/mbx-populate-unchanged-b0d0be2237.json",
+        "median_wall_seconds": 123.7971,
+        "successful_measured_sample_count": 1
+      },
+      {
+        "label": "mbx-restore",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/mbx-restore-unchanged-341fdd57c8.json",
+        "median_wall_seconds": 26.8972,
+        "successful_measured_sample_count": 1
+      },
+      {
+        "label": "verify-mbx-wild-restore",
+        "scenario": "unchanged",
+        "source_report": ".local/build-experiments-20261113/verify-mbx-wild-restore-unchanged-793a0e6f20.json",
+        "median_wall_seconds": 36.8977,
+        "successful_measured_sample_count": 1
+      }
+    ],
+    "integrated_restore_details": {
+      "source_report": ".local/build-experiments-20261113/verify-mbx-wild-restore-unchanged-793a0e6f20.json",
+      "cache_hits": 717,
+      "cache_misses": 2,
+      "compilations_not_looked_up": 6,
+      "restored_outputs": 1171,
+      "restored_logical_size_approx_gib": 1.7,
+      "restore_method": "reflink",
+      "gpui_compilation_seconds": 15.68,
+      "application_compilation_seconds": 14.49,
+      "note": "Cache/compile details supplied by the completed local run log; these timings can overlap and are not additive command wall time."
+    },
+    "validation": [
+      {
+        "label": "verify-desktop-tests",
+        "source_report": ".local/build-experiments-20261113/verify-desktop-tests-unchanged-1e77b0e623.json",
+        "median_wall_seconds": 14.9277,
+        "passed": 39,
+        "ignored": 3,
+        "scope": "desktop tests"
+      },
+      {
+        "label": "verify-core-tests-warm",
+        "source_report": ".local/build-experiments-20261113/verify-core-tests-warm-unchanged-8b8210791d.json",
+        "median_wall_seconds": 8.2224,
+        "passed": 354,
+        "ignored": 32,
+        "scope": "core and integration tests"
+      }
+    ]
+  },
+  "reports": [
+    {
+      "label": "cargo-fast",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "build",
+        "--offline"
+      ],
+      "run_id": "afe73f9e80",
+      "utc_started": "2026-11-13T07:17:38Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 8.4636,
+          "user_seconds": 7.78,
+          "system_seconds": 2.33,
+          "max_rss_kib": 1126520,
+          "exit_code": 0,
+          "log": "cargo-fast-unchanged-afe73f9e80--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 0.4993,
+          "user_seconds": 0.24,
+          "system_seconds": 0.11,
+          "max_rss_kib": 112172,
+          "exit_code": 0,
+          "log": "cargo-fast-unchanged-afe73f9e80-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 0.3909,
+          "user_seconds": 0.25,
+          "system_seconds": 0.13,
+          "max_rss_kib": 112276,
+          "exit_code": 0,
+          "log": "cargo-fast-unchanged-afe73f9e80-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 0.3591,
+          "user_seconds": 0.24,
+          "system_seconds": 0.11,
+          "max_rss_kib": 112152,
+          "exit_code": 0,
+          "log": "cargo-fast-unchanged-afe73f9e80-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 0.3909,
+      "min_wall_seconds": 0.3591,
+      "max_wall_seconds": 0.4993,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/cargo-fast-unchanged-afe73f9e80.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 0.3909,
+        "min_wall_seconds": 0.3591,
+        "max_wall_seconds": 0.4993,
+        "median_user_seconds": 0.24,
+        "median_system_seconds": 0.11,
+        "median_max_rss_kib": 112172,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "cargo-fast",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/dev.sh",
+        "build",
+        "--offline"
+      ],
+      "run_id": "54bbfbc59a",
+      "utc_started": "2026-11-13T07:18:26Z",
+      "environment": {},
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 0.4544,
+          "user_seconds": 0.2,
+          "system_seconds": 0.12,
+          "max_rss_kib": 111984,
+          "exit_code": 0,
+          "log": "cargo-fast-desktop-edit-54bbfbc59a--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 3.2699,
+          "user_seconds": 2.2,
+          "system_seconds": 1.05,
+          "max_rss_kib": 1128036,
+          "exit_code": 0,
+          "log": "cargo-fast-desktop-edit-54bbfbc59a-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 1.9029,
+          "user_seconds": 2.21,
+          "system_seconds": 0.72,
+          "max_rss_kib": 1123000,
+          "exit_code": 0,
+          "log": "cargo-fast-desktop-edit-54bbfbc59a-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 1.686,
+          "user_seconds": 2.22,
+          "system_seconds": 0.63,
+          "max_rss_kib": 1124660,
+          "exit_code": 0,
+          "log": "cargo-fast-desktop-edit-54bbfbc59a-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 1.9029,
+      "min_wall_seconds": 1.686,
+      "max_wall_seconds": 3.2699,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/cargo-fast-desktop-edit-54bbfbc59a.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.9029,
+        "min_wall_seconds": 1.686,
+        "max_wall_seconds": 3.2699,
+        "median_user_seconds": 2.21,
+        "median_system_seconds": 0.72,
+        "median_max_rss_kib": 1124660,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "cargo-fast",
+      "scenario": "core-edit",
+      "command": [
+        "scripts/dev.sh",
+        "build",
+        "--offline"
+      ],
+      "run_id": "8dbcbb76ad",
+      "utc_started": "2026-11-13T07:18:48Z",
+      "environment": {},
+      "source_sha256": "758320b6eedd44558a81eeefe3a85d8bcc307ae73986430b8a40b32511433ca1",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 4.4644,
+          "user_seconds": 2.32,
+          "system_seconds": 1.54,
+          "max_rss_kib": 1124584,
+          "exit_code": 0,
+          "log": "cargo-fast-core-edit-8dbcbb76ad--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 5.7131,
+          "user_seconds": 4.04,
+          "system_seconds": 1.43,
+          "max_rss_kib": 1125728,
+          "exit_code": 0,
+          "log": "cargo-fast-core-edit-8dbcbb76ad-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 13.6157,
+          "user_seconds": 5.98,
+          "system_seconds": 2.1,
+          "max_rss_kib": 1125724,
+          "exit_code": 0,
+          "log": "cargo-fast-core-edit-8dbcbb76ad-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 10.9988,
+          "user_seconds": 5.38,
+          "system_seconds": 1.8,
+          "max_rss_kib": 1126540,
+          "exit_code": 0,
+          "log": "cargo-fast-core-edit-8dbcbb76ad-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 10.9988,
+      "min_wall_seconds": 5.7131,
+      "max_wall_seconds": 13.6157,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/cargo-fast-core-edit-8dbcbb76ad.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.9988,
+        "min_wall_seconds": 5.7131,
+        "max_wall_seconds": 13.6157,
+        "median_user_seconds": 5.38,
+        "median_system_seconds": 1.8,
+        "median_max_rss_kib": 1125728,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "mbx-populate",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "build",
+        "--offline",
+        "--timings"
+      ],
+      "run_id": "b0d0be2237",
+      "utc_started": "2026-11-13T07:19:38Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/mbx-a"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 123.7971,
+          "user_seconds": 523.85,
+          "system_seconds": 61.15,
+          "max_rss_kib": 1481468,
+          "exit_code": 0,
+          "log": "mbx-populate-unchanged-b0d0be2237-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 123.7971,
+      "min_wall_seconds": 123.7971,
+      "max_wall_seconds": 123.7971,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/mbx-populate-unchanged-b0d0be2237.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 123.7971,
+        "min_wall_seconds": 123.7971,
+        "max_wall_seconds": 123.7971,
+        "median_user_seconds": 523.85,
+        "median_system_seconds": 61.15,
+        "median_max_rss_kib": 1481468,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "mbx-restore",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "build",
+        "--offline",
+        "--timings"
+      ],
+      "run_id": "341fdd57c8",
+      "utc_started": "2026-11-13T07:21:55Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/mbx-b",
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 26.8972,
+          "user_seconds": 41.68,
+          "system_seconds": 12.77,
+          "max_rss_kib": 1518388,
+          "exit_code": 0,
+          "log": "mbx-restore-unchanged-341fdd57c8-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 26.8972,
+      "min_wall_seconds": 26.8972,
+      "max_wall_seconds": 26.8972,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/mbx-restore-unchanged-341fdd57c8.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 26.8972,
+        "min_wall_seconds": 26.8972,
+        "max_wall_seconds": 26.8972,
+        "median_user_seconds": 41.68,
+        "median_system_seconds": 12.77,
+        "median_max_rss_kib": 1518388,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "mbx-default",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "build",
+        "--offline"
+      ],
+      "run_id": "b57045a511",
+      "utc_started": "2026-11-13T07:22:50Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/mbx-b"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 0.5371,
+          "user_seconds": 0.28,
+          "system_seconds": 0.14,
+          "max_rss_kib": 112232,
+          "exit_code": 0,
+          "log": "mbx-default-desktop-edit-b57045a511--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 7.7429,
+          "user_seconds": 8.2,
+          "system_seconds": 2.01,
+          "max_rss_kib": 1119576,
+          "exit_code": 0,
+          "log": "mbx-default-desktop-edit-b57045a511-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 5.1288,
+          "user_seconds": 2.4,
+          "system_seconds": 1.64,
+          "max_rss_kib": 1112196,
+          "exit_code": 0,
+          "log": "mbx-default-desktop-edit-b57045a511-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 2.8512,
+          "user_seconds": 2.4,
+          "system_seconds": 1.04,
+          "max_rss_kib": 1120652,
+          "exit_code": 0,
+          "log": "mbx-default-desktop-edit-b57045a511-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 5.1288,
+      "min_wall_seconds": 2.8512,
+      "max_wall_seconds": 7.7429,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/mbx-default-desktop-edit-b57045a511.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 5.1288,
+        "min_wall_seconds": 2.8512,
+        "max_wall_seconds": 7.7429,
+        "median_user_seconds": 2.4,
+        "median_system_seconds": 1.64,
+        "median_max_rss_kib": 1119576,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "mbx-eager",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "build",
+        "--offline"
+      ],
+      "run_id": "1aa62d1441",
+      "utc_started": "2026-11-13T07:24:10Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/mbx-b",
+        "MBX_EAGER_INCREMENTAL": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 4.7304,
+          "user_seconds": 2.38,
+          "system_seconds": 0.92,
+          "max_rss_kib": 1119884,
+          "exit_code": 0,
+          "log": "mbx-eager-desktop-edit-1aa62d1441--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 1.6298,
+          "user_seconds": 2.3,
+          "system_seconds": 0.62,
+          "max_rss_kib": 1117956,
+          "exit_code": 0,
+          "log": "mbx-eager-desktop-edit-1aa62d1441-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 1.5744,
+          "user_seconds": 2.21,
+          "system_seconds": 0.65,
+          "max_rss_kib": 1119756,
+          "exit_code": 0,
+          "log": "mbx-eager-desktop-edit-1aa62d1441-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 1.5607,
+          "user_seconds": 2.26,
+          "system_seconds": 0.62,
+          "max_rss_kib": 1116396,
+          "exit_code": 0,
+          "log": "mbx-eager-desktop-edit-1aa62d1441-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 1.5744,
+      "min_wall_seconds": 1.5607,
+      "max_wall_seconds": 1.6298,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/mbx-eager-desktop-edit-1aa62d1441.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.5744,
+        "min_wall_seconds": 1.5607,
+        "max_wall_seconds": 1.6298,
+        "median_user_seconds": 2.26,
+        "median_system_seconds": 0.62,
+        "median_max_rss_kib": 1117956,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "linker-lld",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom"
+      ],
+      "run_id": "3a36a4f826",
+      "utc_started": "2026-11-13T07:25:13Z",
+      "environment": {
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 5.6933,
+          "user_seconds": 3.7,
+          "system_seconds": 1.41,
+          "max_rss_kib": 1124292,
+          "exit_code": 0,
+          "log": "linker-lld-desktop-edit-3a36a4f826--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 2.3261,
+          "user_seconds": 2.17,
+          "system_seconds": 0.86,
+          "max_rss_kib": 1122012,
+          "exit_code": 0,
+          "log": "linker-lld-desktop-edit-3a36a4f826-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 2.2229,
+          "user_seconds": 2.2,
+          "system_seconds": 0.81,
+          "max_rss_kib": 1123156,
+          "exit_code": 0,
+          "log": "linker-lld-desktop-edit-3a36a4f826-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 2.2446,
+          "user_seconds": 2.28,
+          "system_seconds": 0.76,
+          "max_rss_kib": 1123940,
+          "exit_code": 0,
+          "log": "linker-lld-desktop-edit-3a36a4f826-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 2.2446,
+      "min_wall_seconds": 2.2229,
+      "max_wall_seconds": 2.3261,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/linker-lld-desktop-edit-3a36a4f826.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.2446,
+        "min_wall_seconds": 2.2229,
+        "max_wall_seconds": 2.3261,
+        "median_user_seconds": 2.2,
+        "median_system_seconds": 0.81,
+        "median_max_rss_kib": 1123156,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "linker-mold",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom",
+        "--",
+        "-C",
+        "linker-features=-lld",
+        "-C",
+        "link-arg=-B$PROJECT/.local/build-experiments-20261113/linker-bin/",
+        "-C",
+        "link-arg=-fuse-ld=mold"
+      ],
+      "run_id": "4dc9735713",
+      "utc_started": "2026-11-13T07:25:25Z",
+      "environment": {
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 3.8602,
+          "user_seconds": 4.42,
+          "system_seconds": 0.68,
+          "max_rss_kib": 748176,
+          "exit_code": 0,
+          "log": "linker-mold-desktop-edit-4dc9735713--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 2.5026,
+          "user_seconds": 0.76,
+          "system_seconds": 0.46,
+          "max_rss_kib": 584960,
+          "exit_code": 0,
+          "log": "linker-mold-desktop-edit-4dc9735713-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 2.1024,
+          "user_seconds": 0.73,
+          "system_seconds": 0.4,
+          "max_rss_kib": 581440,
+          "exit_code": 0,
+          "log": "linker-mold-desktop-edit-4dc9735713-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 1.9888,
+          "user_seconds": 0.74,
+          "system_seconds": 0.42,
+          "max_rss_kib": 580756,
+          "exit_code": 0,
+          "log": "linker-mold-desktop-edit-4dc9735713-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 2.1024,
+      "min_wall_seconds": 1.9888,
+      "max_wall_seconds": 2.5026,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other Cargo projects are recorded at sample boundaries.",
+      "source_report": ".local/build-experiments-20261113/linker-mold-desktop-edit-4dc9735713.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.1024,
+        "min_wall_seconds": 1.9888,
+        "max_wall_seconds": 2.5026,
+        "median_user_seconds": 0.74,
+        "median_system_seconds": 0.42,
+        "median_max_rss_kib": 581440,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "linker-wild",
+      "scenario": "desktop-edit",
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom",
+        "--",
+        "-C",
+        "linker-features=-lld",
+        "-C",
+        "link-arg=-B$PROJECT/.local/build-experiments-20261113/linker-bin/",
+        "-C",
+        "link-arg=-fuse-ld=wild"
+      ],
+      "run_id": "5e31303c6e",
+      "utc_started": "2026-11-13T07:25:36Z",
+      "environment": {
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 2.7519,
+          "user_seconds": 4.26,
+          "system_seconds": 0.66,
+          "max_rss_kib": 750948,
+          "exit_code": 101,
+          "log": "linker-wild-desktop-edit-5e31303c6e--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "source_report": ".local/build-experiments-20261113/linker-wild-desktop-edit-5e31303c6e.json",
+      "summary": {
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      "failure_note": "The first GCC named-linker invocation failed: collect2 could not find 'ld'. This is an adapter-selection failure, not a successful Wild timing."
+    },
+    {
+      "label": "blaze-check",
+      "scenario": "unchanged",
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "180s",
+        "scripts/dev.sh",
+        "--runner",
+        "blaze",
+        "check",
+        "--offline"
+      ],
+      "run_id": "f456ee1b4e",
+      "utc_started": "2026-11-13T07:25:55Z",
+      "environment": {
+        "BLAZE_HOME": "$PROJECT/.local/build-experiments-20261113/blaze-home",
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/blaze-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 180.0659,
+          "user_seconds": 0.03,
+          "system_seconds": 0.09,
+          "max_rss_kib": 3788,
+          "exit_code": 124,
+          "log": "blaze-check-unchanged-f456ee1b4e-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          }
+        }
+      ],
+      "source_report": ".local/build-experiments-20261113/blaze-check-unchanged-f456ee1b4e.json",
+      "summary": {
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      "failure_note": "Initial check timed out at 180 seconds (exit 124) while preparing build scripts/proc macros; it did not produce a successful application check."
+    },
+    {
+      "label": "blaze-check-resume",
+      "scenario": "unchanged",
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=5s",
+        "240s",
+        "scripts/dev.sh",
+        "--runner",
+        "blaze",
+        "check",
+        "--offline"
+      ],
+      "run_id": "d46ce7ed98",
+      "utc_started": "2026-11-13T07:30:19Z",
+      "environment": {
+        "BLAZE_HOME": "$PROJECT/.local/build-experiments-20261113/blaze-home",
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/blaze-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 151.4194,
+          "user_seconds": 0.06,
+          "system_seconds": 0.12,
+          "max_rss_kib": 49200,
+          "exit_code": 101,
+          "log": "blaze-check-resume-unchanged-d46ce7ed98-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "unspecified-build-process": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "source_report": ".local/build-experiments-20261113/blaze-check-resume-unchanged-d46ce7ed98.json",
+      "summary": {
+        "status": "failed",
+        "successful_measured_sample_count": 0,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 1,
+        "median_wall_seconds": null,
+        "min_wall_seconds": null,
+        "max_wall_seconds": null,
+        "median_user_seconds": null,
+        "median_system_seconds": null,
+        "median_max_rss_kib": null,
+        "measured_samples_with_boundary_contention": 0
+      },
+      "failure_note": "Resumed check failed with exit 101: the wasm32-wasip1 load graph had no const-random-macro proc macro. Client CPU/RSS does not include retained daemon work."
+    },
+    {
+      "label": "codec-populate",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-perf",
+        "test-core",
+        "--offline",
+        "--no-run"
+      ],
+      "run_id": "9e30b8a5bc",
+      "utc_started": "2026-11-13T07:30:55Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 111.7193,
+          "user_seconds": 211.61,
+          "system_seconds": 16.92,
+          "max_rss_kib": 1219800,
+          "exit_code": 0,
+          "log": "codec-populate-unchanged-9e30b8a5bc-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 14,
+            "process_kinds": {
+              "blaze-engine": 11,
+              "cargo": 1,
+              "rustc": 2
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 8,
+            "process_kinds": {
+              "blaze-engine": 8
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 111.7193,
+      "min_wall_seconds": 111.7193,
+      "max_wall_seconds": 111.7193,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-populate-unchanged-9e30b8a5bc.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 111.7193,
+        "min_wall_seconds": 111.7193,
+        "max_wall_seconds": 111.7193,
+        "median_user_seconds": 211.61,
+        "median_system_seconds": 16.92,
+        "median_max_rss_kib": 1219800,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "codec-baseline-populate",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-fast",
+        "test-core",
+        "--offline",
+        "--no-run"
+      ],
+      "run_id": "ba55312ff1",
+      "utc_started": "2026-11-13T07:34:30Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 25.4787,
+          "user_seconds": 98.55,
+          "system_seconds": 9.08,
+          "max_rss_kib": 1204972,
+          "exit_code": 0,
+          "log": "codec-baseline-populate-unchanged-ba55312ff1-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 25.4787,
+      "min_wall_seconds": 25.4787,
+      "max_wall_seconds": 25.4787,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-baseline-populate-unchanged-ba55312ff1.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 25.4787,
+        "min_wall_seconds": 25.4787,
+        "max_wall_seconds": 25.4787,
+        "median_user_seconds": 98.55,
+        "median_system_seconds": 9.08,
+        "median_max_rss_kib": 1204972,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-fast-1",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-fast",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "494286c2fe",
+      "utc_started": "2026-11-13T07:36:03Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 18.2715,
+          "user_seconds": 20.26,
+          "system_seconds": 0.17,
+          "max_rss_kib": 75920,
+          "exit_code": 0,
+          "log": "codec-fast-1-unchanged-494286c2fe-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 18.2715,
+      "min_wall_seconds": 18.2715,
+      "max_wall_seconds": 18.2715,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-fast-1-unchanged-494286c2fe.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.2715,
+        "min_wall_seconds": 18.2715,
+        "max_wall_seconds": 18.2715,
+        "median_user_seconds": 20.26,
+        "median_system_seconds": 0.17,
+        "median_max_rss_kib": 75920,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-perf-1",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-perf",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "f263e88a3d",
+      "utc_started": "2026-11-13T07:36:21Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 10.6411,
+          "user_seconds": 10.51,
+          "system_seconds": 0.18,
+          "max_rss_kib": 76308,
+          "exit_code": 0,
+          "log": "codec-perf-1-unchanged-f263e88a3d-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 10.6411,
+      "min_wall_seconds": 10.6411,
+      "max_wall_seconds": 10.6411,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-perf-1-unchanged-f263e88a3d.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.6411,
+        "min_wall_seconds": 10.6411,
+        "max_wall_seconds": 10.6411,
+        "median_user_seconds": 10.51,
+        "median_system_seconds": 0.18,
+        "median_max_rss_kib": 76308,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-fast-2",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-fast",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "a4e1f4b881",
+      "utc_started": "2026-11-13T07:36:32Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 18.3698,
+          "user_seconds": 20.38,
+          "system_seconds": 0.16,
+          "max_rss_kib": 76312,
+          "exit_code": 0,
+          "log": "codec-fast-2-unchanged-a4e1f4b881-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 18.3698,
+      "min_wall_seconds": 18.3698,
+      "max_wall_seconds": 18.3698,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-fast-2-unchanged-a4e1f4b881.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.3698,
+        "min_wall_seconds": 18.3698,
+        "max_wall_seconds": 18.3698,
+        "median_user_seconds": 20.38,
+        "median_system_seconds": 0.16,
+        "median_max_rss_kib": 76312,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-perf-2",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-perf",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "c2e7511f39",
+      "utc_started": "2026-11-13T07:36:50Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 10.5468,
+          "user_seconds": 10.54,
+          "system_seconds": 0.15,
+          "max_rss_kib": 76216,
+          "exit_code": 0,
+          "log": "codec-perf-2-unchanged-c2e7511f39-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 10.5468,
+      "min_wall_seconds": 10.5468,
+      "max_wall_seconds": 10.5468,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-perf-2-unchanged-c2e7511f39.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.5468,
+        "min_wall_seconds": 10.5468,
+        "max_wall_seconds": 10.5468,
+        "median_user_seconds": 10.54,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 76216,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-fast-3",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-fast",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "67c4129db4",
+      "utc_started": "2026-11-13T07:37:01Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 18.2159,
+          "user_seconds": 20.25,
+          "system_seconds": 0.15,
+          "max_rss_kib": 76336,
+          "exit_code": 0,
+          "log": "codec-fast-3-unchanged-67c4129db4-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 18.2159,
+      "min_wall_seconds": 18.2159,
+      "max_wall_seconds": 18.2159,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-fast-3-unchanged-67c4129db4.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 18.2159,
+        "min_wall_seconds": 18.2159,
+        "max_wall_seconds": 18.2159,
+        "median_user_seconds": 20.25,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 76336,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-perf-3",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-perf",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "4f0eada34c",
+      "utc_started": "2026-11-13T07:37:19Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 10.8661,
+          "user_seconds": 10.85,
+          "system_seconds": 0.16,
+          "max_rss_kib": 75948,
+          "exit_code": 0,
+          "log": "codec-perf-3-unchanged-4f0eada34c-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 10.8661,
+      "min_wall_seconds": 10.8661,
+      "max_wall_seconds": 10.8661,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-perf-3-unchanged-4f0eada34c.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 10.8661,
+        "min_wall_seconds": 10.8661,
+        "max_wall_seconds": 10.8661,
+        "median_user_seconds": 10.85,
+        "median_system_seconds": 0.16,
+        "median_max_rss_kib": 75948,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "test-opt-populate",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-test",
+        "test-core",
+        "--offline",
+        "--no-run"
+      ],
+      "run_id": "84f8710949",
+      "utc_started": "2026-11-13T07:38:32Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 48.6907,
+          "user_seconds": 311.44,
+          "system_seconds": 13.58,
+          "max_rss_kib": 1644328,
+          "exit_code": 0,
+          "log": "test-opt-populate-unchanged-84f8710949-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 48.6907,
+      "min_wall_seconds": 48.6907,
+      "max_wall_seconds": 48.6907,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/test-opt-populate-unchanged-84f8710949.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 48.6907,
+        "min_wall_seconds": 48.6907,
+        "max_wall_seconds": 48.6907,
+        "median_user_seconds": 311.44,
+        "median_system_seconds": 13.58,
+        "median_max_rss_kib": 1644328,
+        "measured_samples_with_boundary_contention": 0
+      }
+    },
+    {
+      "label": "codec-test-opt",
+      "scenario": "unchanged",
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-test",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "080f212037",
+      "utc_started": "2026-11-13T07:39:32Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 6.0113,
+          "user_seconds": 6.0,
+          "system_seconds": 0.14,
+          "max_rss_kib": 76264,
+          "exit_code": 0,
+          "log": "codec-test-opt-unchanged-080f212037-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 6.2632,
+          "user_seconds": 6.23,
+          "system_seconds": 0.18,
+          "max_rss_kib": 76328,
+          "exit_code": 0,
+          "log": "codec-test-opt-unchanged-080f212037-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 6.0237,
+          "user_seconds": 5.98,
+          "system_seconds": 0.18,
+          "max_rss_kib": 76416,
+          "exit_code": 0,
+          "log": "codec-test-opt-unchanged-080f212037-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 6.0237,
+      "min_wall_seconds": 6.0113,
+      "max_wall_seconds": 6.2632,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-test-opt-unchanged-080f212037.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 6.0237,
+        "min_wall_seconds": 6.0113,
+        "max_wall_seconds": 6.2632,
+        "median_user_seconds": 6.0,
+        "median_system_seconds": 0.18,
+        "median_max_rss_kib": 76328,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "core-loop-fast",
+      "scenario": "core-edit",
+      "warmup_edit": true,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-fast",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "b54a276dd6",
+      "utc_started": "2026-11-13T07:40:12Z",
+      "environment": {},
+      "source_sha256": "758320b6eedd44558a81eeefe3a85d8bcc307ae73986430b8a40b32511433ca1",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 42.0807,
+          "user_seconds": 52.69,
+          "system_seconds": 1.84,
+          "max_rss_kib": 1031348,
+          "exit_code": 0,
+          "log": "core-loop-fast-core-edit-b54a276dd6--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 21.7486,
+          "user_seconds": 23.7,
+          "system_seconds": 0.71,
+          "max_rss_kib": 700508,
+          "exit_code": 0,
+          "log": "core-loop-fast-core-edit-b54a276dd6-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 20.251,
+          "user_seconds": 22.47,
+          "system_seconds": 0.54,
+          "max_rss_kib": 695040,
+          "exit_code": 0,
+          "log": "core-loop-fast-core-edit-b54a276dd6-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 20.1521,
+          "user_seconds": 22.32,
+          "system_seconds": 0.59,
+          "max_rss_kib": 695048,
+          "exit_code": 0,
+          "log": "core-loop-fast-core-edit-b54a276dd6-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 20.251,
+      "min_wall_seconds": 20.1521,
+      "max_wall_seconds": 21.7486,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/core-loop-fast-core-edit-b54a276dd6.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 20.251,
+        "min_wall_seconds": 20.1521,
+        "max_wall_seconds": 21.7486,
+        "median_user_seconds": 22.47,
+        "median_system_seconds": 0.59,
+        "median_max_rss_kib": 695048,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "core-loop-test-opt",
+      "scenario": "core-edit",
+      "warmup_edit": true,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-test",
+        "test-core",
+        "--offline",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "9f2ff215ae",
+      "utc_started": "2026-11-13T07:41:56Z",
+      "environment": {},
+      "source_sha256": "758320b6eedd44558a81eeefe3a85d8bcc307ae73986430b8a40b32511433ca1",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 28.4508,
+          "user_seconds": 114.16,
+          "system_seconds": 2.02,
+          "max_rss_kib": 1244456,
+          "exit_code": 0,
+          "log": "core-loop-test-opt-core-edit-9f2ff215ae--1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 8.3207,
+          "user_seconds": 8.75,
+          "system_seconds": 0.56,
+          "max_rss_kib": 778284,
+          "exit_code": 0,
+          "log": "core-loop-test-opt-core-edit-9f2ff215ae-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 8.1762,
+          "user_seconds": 8.36,
+          "system_seconds": 0.55,
+          "max_rss_kib": 755148,
+          "exit_code": 0,
+          "log": "core-loop-test-opt-core-edit-9f2ff215ae-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 10.1923,
+          "user_seconds": 10.1,
+          "system_seconds": 0.66,
+          "max_rss_kib": 753160,
+          "exit_code": 0,
+          "log": "core-loop-test-opt-core-edit-9f2ff215ae-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 4,
+            "process_kinds": {
+              "blaze-engine": 4
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 8.3207,
+      "min_wall_seconds": 8.1762,
+      "max_wall_seconds": 10.1923,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/core-loop-test-opt-core-edit-9f2ff215ae.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 8.3207,
+        "min_wall_seconds": 8.1762,
+        "max_wall_seconds": 10.1923,
+        "median_user_seconds": 8.75,
+        "median_system_seconds": 0.56,
+        "median_max_rss_kib": 755148,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "codec-test-opt2",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-test",
+        "test-core",
+        "--offline",
+        "--config",
+        "profile.dev-test.package.shadowroom.opt-level=2",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "344b5ae1af",
+      "utc_started": "2026-11-13T07:43:21Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 99.0223,
+          "user_seconds": 160.66,
+          "system_seconds": 7.64,
+          "max_rss_kib": 1580288,
+          "exit_code": 0,
+          "log": "codec-test-opt2-unchanged-344b5ae1af--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 4,
+            "process_kinds": {
+              "blaze-engine": 4
+            }
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 2.6628,
+          "user_seconds": 2.5,
+          "system_seconds": 0.18,
+          "max_rss_kib": 76232,
+          "exit_code": 0,
+          "log": "codec-test-opt2-unchanged-344b5ae1af-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 8,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 7
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 4.6009,
+          "user_seconds": 3.9,
+          "system_seconds": 0.27,
+          "max_rss_kib": 76328,
+          "exit_code": 0,
+          "log": "codec-test-opt2-unchanged-344b5ae1af-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 7,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 6
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 2.7213,
+          "user_seconds": 2.55,
+          "system_seconds": 0.25,
+          "max_rss_kib": 76668,
+          "exit_code": 0,
+          "log": "codec-test-opt2-unchanged-344b5ae1af-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 7,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 6
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 2.7213,
+      "min_wall_seconds": 2.6628,
+      "max_wall_seconds": 4.6009,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/codec-test-opt2-unchanged-344b5ae1af.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 2.7213,
+        "min_wall_seconds": 2.6628,
+        "max_wall_seconds": 4.6009,
+        "median_user_seconds": 2.55,
+        "median_system_seconds": 0.25,
+        "median_max_rss_kib": 76328,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "linker-wild-fixed",
+      "scenario": "desktop-edit",
+      "warmup_edit": false,
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom",
+        "--",
+        "-C",
+        "linker-features=-lld",
+        "-C",
+        "link-arg=-B$PROJECT/.local/build-experiments-20261113/wild-bin/"
+      ],
+      "run_id": "adc6502ca4",
+      "utc_started": "2026-11-13T07:45:36Z",
+      "environment": {
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 5.2802,
+          "user_seconds": 4.86,
+          "system_seconds": 0.97,
+          "max_rss_kib": 721324,
+          "exit_code": 0,
+          "log": "linker-wild-fixed-desktop-edit-adc6502ca4--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 1.239,
+          "user_seconds": 0.76,
+          "system_seconds": 0.27,
+          "max_rss_kib": 590708,
+          "exit_code": 0,
+          "log": "linker-wild-fixed-desktop-edit-adc6502ca4-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 1.2358,
+          "user_seconds": 0.75,
+          "system_seconds": 0.28,
+          "max_rss_kib": 584796,
+          "exit_code": 0,
+          "log": "linker-wild-fixed-desktop-edit-adc6502ca4-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 1.2527,
+          "user_seconds": 0.75,
+          "system_seconds": 0.28,
+          "max_rss_kib": 583932,
+          "exit_code": 0,
+          "log": "linker-wild-fixed-desktop-edit-adc6502ca4-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 1.239,
+      "min_wall_seconds": 1.2358,
+      "max_wall_seconds": 1.2527,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/linker-wild-fixed-desktop-edit-adc6502ca4.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.239,
+        "min_wall_seconds": 1.2358,
+        "max_wall_seconds": 1.2527,
+        "median_user_seconds": 0.75,
+        "median_system_seconds": 0.28,
+        "median_max_rss_kib": 584796,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "app-no-debug",
+      "scenario": "desktop-edit",
+      "warmup_edit": false,
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom",
+        "--",
+        "-C",
+        "debuginfo=0"
+      ],
+      "run_id": "e4dce6a9b0",
+      "utc_started": "2026-11-13T07:45:45Z",
+      "environment": {
+        "LCMS2_STATIC": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 4.1216,
+          "user_seconds": 7.04,
+          "system_seconds": 0.85,
+          "max_rss_kib": 1110380,
+          "exit_code": 0,
+          "log": "app-no-debug-desktop-edit-e4dce6a9b0--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 1.715,
+          "user_seconds": 2.26,
+          "system_seconds": 0.62,
+          "max_rss_kib": 1113820,
+          "exit_code": 0,
+          "log": "app-no-debug-desktop-edit-e4dce6a9b0-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 1.7063,
+          "user_seconds": 2.29,
+          "system_seconds": 0.61,
+          "max_rss_kib": 1113092,
+          "exit_code": 0,
+          "log": "app-no-debug-desktop-edit-e4dce6a9b0-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 1.6606,
+          "user_seconds": 2.3,
+          "system_seconds": 0.58,
+          "max_rss_kib": 1114240,
+          "exit_code": 0,
+          "log": "app-no-debug-desktop-edit-e4dce6a9b0-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 1.7063,
+      "min_wall_seconds": 1.6606,
+      "max_wall_seconds": 1.715,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/app-no-debug-desktop-edit-e4dce6a9b0.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 1.7063,
+        "min_wall_seconds": 1.6606,
+        "max_wall_seconds": 1.715,
+        "median_user_seconds": 2.29,
+        "median_system_seconds": 0.61,
+        "median_max_rss_kib": 1113820,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "frontend-parallel-4",
+      "scenario": "desktop-edit",
+      "warmup_edit": false,
+      "command": [
+        "scripts/check-linux-local.sh",
+        "rustc",
+        "--locked",
+        "--offline",
+        "--profile",
+        "dev-fast",
+        "--bin",
+        "shadowroom",
+        "--",
+        "--jobs-frontend=4",
+        "-Zunstable-options"
+      ],
+      "run_id": "263775c40f",
+      "utc_started": "2026-11-13T07:45:54Z",
+      "environment": {
+        "LCMS2_STATIC": "1",
+        "RUSTC_BOOTSTRAP": "1"
+      },
+      "source_sha256": "0ac2a3ccbb4bdd1d4cbd999cd5a66584b6a20b9c9b50dba9623902bf1a92123b",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 65.5679,
+          "user_seconds": 293.28,
+          "system_seconds": 21.98,
+          "max_rss_kib": 1525992,
+          "exit_code": 0,
+          "log": "frontend-parallel-4-desktop-edit-263775c40f--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 4.155,
+          "user_seconds": 3.26,
+          "system_seconds": 0.94,
+          "max_rss_kib": 1128820,
+          "exit_code": 0,
+          "log": "frontend-parallel-4-desktop-edit-263775c40f-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 4.6151,
+          "user_seconds": 3.31,
+          "system_seconds": 0.91,
+          "max_rss_kib": 1136492,
+          "exit_code": 0,
+          "log": "frontend-parallel-4-desktop-edit-263775c40f-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 4.0991,
+          "user_seconds": 3.17,
+          "system_seconds": 0.93,
+          "max_rss_kib": 1128880,
+          "exit_code": 0,
+          "log": "frontend-parallel-4-desktop-edit-263775c40f-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 9,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 8
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 4.155,
+      "min_wall_seconds": 4.0991,
+      "max_wall_seconds": 4.6151,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/frontend-parallel-4-desktop-edit-263775c40f.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 4.155,
+        "min_wall_seconds": 4.0991,
+        "max_wall_seconds": 4.6151,
+        "median_user_seconds": 3.26,
+        "median_system_seconds": 0.93,
+        "median_max_rss_kib": 1128880,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "core-loop-test-opt2",
+      "scenario": "core-edit",
+      "warmup_edit": true,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--profile",
+        "dev-test",
+        "test-core",
+        "--offline",
+        "--config",
+        "profile.dev-test.package.shadowroom.opt-level=2",
+        "--lib",
+        "media::tests::scaled_jpeg_quality_preserves_late_icc_grayscale_and_all_orientations",
+        "--",
+        "--exact"
+      ],
+      "run_id": "30bc760d42",
+      "utc_started": "2026-11-13T07:49:35Z",
+      "environment": {},
+      "source_sha256": "758320b6eedd44558a81eeefe3a85d8bcc307ae73986430b8a40b32511433ca1",
+      "samples": [
+        {
+          "iteration": -1,
+          "warmup": true,
+          "wall_seconds": 48.6577,
+          "user_seconds": 145.86,
+          "system_seconds": 2.86,
+          "max_rss_kib": 1280616,
+          "exit_code": 0,
+          "log": "core-loop-test-opt2-core-edit-30bc760d42--1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 5.8299,
+          "user_seconds": 6.25,
+          "system_seconds": 0.61,
+          "max_rss_kib": 774548,
+          "exit_code": 0,
+          "log": "core-loop-test-opt2-core-edit-30bc760d42-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 5.6706,
+          "user_seconds": 5.88,
+          "system_seconds": 0.67,
+          "max_rss_kib": 754484,
+          "exit_code": 0,
+          "log": "core-loop-test-opt2-core-edit-30bc760d42-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 6.1662,
+          "user_seconds": 6.34,
+          "system_seconds": 0.63,
+          "max_rss_kib": 754480,
+          "exit_code": 0,
+          "log": "core-loop-test-opt2-core-edit-30bc760d42-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 5.8299,
+      "min_wall_seconds": 5.6706,
+      "max_wall_seconds": 6.1662,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/core-loop-test-opt2-core-edit-30bc760d42.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 1,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 5.8299,
+        "min_wall_seconds": 5.6706,
+        "max_wall_seconds": 6.1662,
+        "median_user_seconds": 6.25,
+        "median_system_seconds": 0.63,
+        "median_max_rss_kib": 754484,
+        "measured_samples_with_boundary_contention": 3
+      }
+    },
+    {
+      "label": "verify-mbx-wild-restore",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--linker",
+        "wild",
+        "build",
+        "--offline"
+      ],
+      "run_id": "793a0e6f20",
+      "utc_started": "2026-11-13T07:53:44Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/verify-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 36.8977,
+          "user_seconds": 51.18,
+          "system_seconds": 13.98,
+          "max_rss_kib": 1503568,
+          "exit_code": 0,
+          "log": "verify-mbx-wild-restore-unchanged-793a0e6f20-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 36.8977,
+      "min_wall_seconds": 36.8977,
+      "max_wall_seconds": 36.8977,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-mbx-wild-restore-unchanged-793a0e6f20.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 36.8977,
+        "min_wall_seconds": 36.8977,
+        "max_wall_seconds": 36.8977,
+        "median_user_seconds": 51.18,
+        "median_system_seconds": 13.98,
+        "median_max_rss_kib": 1503568,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "verify-core-tests",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "test-core",
+        "--offline"
+      ],
+      "run_id": "a24b7a092a",
+      "utc_started": "2026-11-13T07:54:47Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/verify-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 93.7069,
+          "user_seconds": 352.48,
+          "system_seconds": 13.28,
+          "max_rss_kib": 1138260,
+          "exit_code": 0,
+          "log": "verify-core-tests-unchanged-a24b7a092a-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 93.7069,
+      "min_wall_seconds": 93.7069,
+      "max_wall_seconds": 93.7069,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-core-tests-unchanged-a24b7a092a.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 93.7069,
+        "min_wall_seconds": 93.7069,
+        "max_wall_seconds": 93.7069,
+        "median_user_seconds": 352.48,
+        "median_system_seconds": 13.28,
+        "median_max_rss_kib": 1138260,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "verify-desktop-tests",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "test-desktop",
+        "--offline"
+      ],
+      "run_id": "1e77b0e623",
+      "utc_started": "2026-11-13T07:56:24Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/verify-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 14.9277,
+          "user_seconds": 9.29,
+          "system_seconds": 2.19,
+          "max_rss_kib": 956636,
+          "exit_code": 0,
+          "log": "verify-desktop-tests-unchanged-1e77b0e623-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 14.9277,
+      "min_wall_seconds": 14.9277,
+      "max_wall_seconds": 14.9277,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-desktop-tests-unchanged-1e77b0e623.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 14.9277,
+        "min_wall_seconds": 14.9277,
+        "max_wall_seconds": 14.9277,
+        "median_user_seconds": 9.29,
+        "median_system_seconds": 2.19,
+        "median_max_rss_kib": 956636,
+        "measured_samples_with_boundary_contention": 1
+      },
+      "validation_result": {
+        "passed": 39,
+        "ignored": 3,
+        "scope": "desktop tests"
+      }
+    },
+    {
+      "label": "verify-core-tests-warm",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "test-core",
+        "--offline"
+      ],
+      "run_id": "8b8210791d",
+      "utc_started": "2026-11-13T07:56:52Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/verify-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 8.8049,
+          "user_seconds": 15.15,
+          "system_seconds": 1.42,
+          "max_rss_kib": 566412,
+          "exit_code": 0,
+          "log": "verify-core-tests-warm-unchanged-8b8210791d-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 8.2224,
+          "user_seconds": 15.18,
+          "system_seconds": 1.39,
+          "max_rss_kib": 545520,
+          "exit_code": 0,
+          "log": "verify-core-tests-warm-unchanged-8b8210791d-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 8.056,
+          "user_seconds": 15.0,
+          "system_seconds": 1.34,
+          "max_rss_kib": 530728,
+          "exit_code": 0,
+          "log": "verify-core-tests-warm-unchanged-8b8210791d-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 8.2224,
+      "min_wall_seconds": 8.056,
+      "max_wall_seconds": 8.8049,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-core-tests-warm-unchanged-8b8210791d.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 8.2224,
+        "min_wall_seconds": 8.056,
+        "max_wall_seconds": 8.8049,
+        "median_user_seconds": 15.15,
+        "median_system_seconds": 1.39,
+        "median_max_rss_kib": 545520,
+        "measured_samples_with_boundary_contention": 0
+      },
+      "interpretation_note": "Practical current full core/integration-suite wall time with cached compilation and idle boundary snapshots. This is not a paired speedup comparison.",
+      "validation_result": {
+        "passed": 354,
+        "ignored": 32,
+        "scope": "core and integration tests"
+      }
+    },
+    {
+      "label": "verify-check-unchanged",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "check",
+        "--offline"
+      ],
+      "run_id": "201ef0b6eb",
+      "utc_started": "2026-11-13T07:59:22Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 4.1535,
+          "user_seconds": 0.48,
+          "system_seconds": 0.29,
+          "max_rss_kib": 112688,
+          "exit_code": 0,
+          "log": "verify-check-unchanged-unchanged-201ef0b6eb-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 3,
+            "process_kinds": {
+              "cargo": 2,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 3,
+            "process_kinds": {
+              "cargo": 2,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 4.7515,
+          "user_seconds": 0.47,
+          "system_seconds": 0.3,
+          "max_rss_kib": 112148,
+          "exit_code": 0,
+          "log": "verify-check-unchanged-unchanged-201ef0b6eb-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 3,
+            "process_kinds": {
+              "cargo": 2,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 4,
+            "process_kinds": {
+              "cargo": 3,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 4.1014,
+          "user_seconds": 0.48,
+          "system_seconds": 0.29,
+          "max_rss_kib": 112304,
+          "exit_code": 0,
+          "log": "verify-check-unchanged-unchanged-201ef0b6eb-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 4,
+            "process_kinds": {
+              "cargo": 3,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 2,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 1
+            },
+            "same_project_process_count": 2
+          }
+        }
+      ],
+      "median_wall_seconds": 4.1535,
+      "min_wall_seconds": 4.1014,
+      "max_wall_seconds": 4.7515,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-check-unchanged-unchanged-201ef0b6eb.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 4.1535,
+        "median_user_seconds": 0.48,
+        "median_system_seconds": 0.29,
+        "median_max_rss_kib": 112304,
+        "min_wall_seconds": 4.1014,
+        "max_wall_seconds": 4.7515,
+        "measured_samples_with_boundary_contention": 3
+      },
+      "interpretation_note": "Warm check during production release compilation and varying unrelated builds. No paired speedup claim."
+    },
+    {
+      "label": "verify-release",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "release",
+        "--offline"
+      ],
+      "run_id": "b6170caab8",
+      "utc_started": "2026-11-13T07:57:30Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 162.9148,
+          "user_seconds": 483.32,
+          "system_seconds": 8.7,
+          "max_rss_kib": 1664684,
+          "exit_code": 0,
+          "log": "verify-release-unchanged-b6170caab8-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 3,
+            "process_kinds": {
+              "cargo": 1,
+              "rustc": 2
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 162.9148,
+      "min_wall_seconds": 162.9148,
+      "max_wall_seconds": 162.9148,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-release-unchanged-b6170caab8.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 1,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 162.9148,
+        "median_user_seconds": 483.32,
+        "median_system_seconds": 8.7,
+        "median_max_rss_kib": 1664684,
+        "min_wall_seconds": 162.9148,
+        "max_wall_seconds": 162.9148,
+        "measured_samples_with_boundary_contention": 1
+      }
+    },
+    {
+      "label": "verify-wild-unchanged",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "--runner",
+        "mbx",
+        "--linker",
+        "wild",
+        "build",
+        "--offline"
+      ],
+      "run_id": "cbcb3c701b",
+      "utc_started": "2026-11-13T07:58:29Z",
+      "environment": {
+        "CARGO_TARGET_DIR": "$PROJECT/.local/build-experiments-20261113/verify-target"
+      },
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 0.6578,
+          "user_seconds": 0.4,
+          "system_seconds": 0.18,
+          "max_rss_kib": 112820,
+          "exit_code": 0,
+          "log": "verify-wild-unchanged-unchanged-cbcb3c701b-0.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 0.4767,
+          "user_seconds": 0.38,
+          "system_seconds": 0.15,
+          "max_rss_kib": 112620,
+          "exit_code": 0,
+          "log": "verify-wild-unchanged-unchanged-cbcb3c701b-1.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 0.4564,
+          "user_seconds": 0.37,
+          "system_seconds": 0.15,
+          "max_rss_kib": 112524,
+          "exit_code": 0,
+          "log": "verify-wild-unchanged-unchanged-cbcb3c701b-2.log",
+          "contention_before": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          },
+          "contention_after": {
+            "contention_detected": false,
+            "process_count": 0,
+            "process_kinds": {}
+          }
+        }
+      ],
+      "median_wall_seconds": 0.4767,
+      "min_wall_seconds": 0.4564,
+      "max_wall_seconds": 0.6578,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "source_report": ".local/build-experiments-20261113/verify-wild-unchanged-unchanged-cbcb3c701b.json",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "median_wall_seconds": 0.4767,
+        "median_user_seconds": 0.38,
+        "median_system_seconds": 0.15,
+        "median_max_rss_kib": 112620,
+        "min_wall_seconds": 0.4564,
+        "max_wall_seconds": 0.6578,
+        "measured_samples_with_boundary_contention": 0
+      },
+      "interpretation_note": "Production release compilation ran concurrently in the same checkout. The older boundary scanner excluded same-project compiler processes; empty snapshots do not establish an idle machine."
+    },
+    {
+      "label": "verify-release-unchanged",
+      "scenario": "unchanged",
+      "warmup_edit": false,
+      "command": [
+        "scripts/dev.sh",
+        "release",
+        "--offline"
+      ],
+      "run_id": "c37bf6dac9",
+      "utc_started": "2026-11-13T08:00:50Z",
+      "environment": {},
+      "source_sha256": null,
+      "samples": [
+        {
+          "iteration": 0,
+          "warmup": false,
+          "wall_seconds": 0.9734,
+          "user_seconds": 0.32,
+          "system_seconds": 0.19,
+          "max_rss_kib": 112412,
+          "exit_code": 0,
+          "log": "verify-release-unchanged-unchanged-c37bf6dac9-0.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        },
+        {
+          "iteration": 1,
+          "warmup": false,
+          "wall_seconds": 0.6024,
+          "user_seconds": 0.33,
+          "system_seconds": 0.17,
+          "max_rss_kib": 112616,
+          "exit_code": 0,
+          "log": "verify-release-unchanged-unchanged-c37bf6dac9-1.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        },
+        {
+          "iteration": 2,
+          "warmup": false,
+          "wall_seconds": 0.5193,
+          "user_seconds": 0.33,
+          "system_seconds": 0.14,
+          "max_rss_kib": 112964,
+          "exit_code": 0,
+          "log": "verify-release-unchanged-unchanged-c37bf6dac9-2.log",
+          "contention_before": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          },
+          "contention_after": {
+            "contention_detected": true,
+            "process_count": 1,
+            "process_kinds": {
+              "cargo": 1
+            }
+          }
+        }
+      ],
+      "median_wall_seconds": 0.6024,
+      "min_wall_seconds": 0.5193,
+      "max_wall_seconds": 0.9734,
+      "timing_notes": "Wall time covers the command, including waits. CPU/RSS figures cover /usr/bin/time descendants, not retained daemons; maximum RSS is not aggregate system memory. Other compiler processes are recorded at sample boundaries; retained idle daemons may also be listed.",
+      "summary": {
+        "status": "completed",
+        "successful_measured_sample_count": 3,
+        "warmup_sample_count": 0,
+        "failed_sample_count": 0,
+        "min_wall_seconds": 0.5193,
+        "max_wall_seconds": 0.9734,
+        "measured_samples_with_boundary_contention": 3,
+        "median_wall_seconds": 0.6024,
+        "median_user_seconds": 0.33,
+        "median_system_seconds": 0.17,
+        "median_max_rss_kib": 112616
+      },
+      "source_report": ".local/build-experiments-20261113/verify-release-unchanged-unchanged-c37bf6dac9.json",
+      "interpretation_note": "Unchanged release invocation with cached compilation; not a release compilation speedup comparison."
+    }
+  ],
+  "verification": {
+    "native_wild_smoke": {
+      "result": "PASS",
+      "checks": 11,
+      "seconds": 11.99,
+      "local_report": ".local/build-experiments-20261113/native-wild-smoke/report.json"
+    },
+    "mbx_source_error": {
+      "result": "PASS",
+      "invalid_source_exit": 101,
+      "expected_diagnostic": "E0308",
+      "invalid_seconds": 5.215,
+      "restored_exit": 0,
+      "restored_seconds": 3.766,
+      "source_restored": true,
+      "parent_source_and_lock_unchanged": true,
+      "local_log": ".local/build-experiments-20261113/cache-error-check.log"
+    },
+    "cargo_check": {
+      "result": "PASS",
+      "profile": "dev-fast",
+      "runner": "cargo",
+      "local_log": ".local/build-experiments-20261113/verify-cargo-check.log"
+    },
+    "runner_task_arguments": {
+      "result": "PASS",
+      "cases": 12
+    },
+    "python_helpers": {
+      "ruff": "PASS",
+      "format": "PASS",
+      "ty": "PASS"
+    },
+    "cargo_fmt": "PASS",
+    "production_release": {
+      "result": "PASS",
+      "runner": "cargo",
+      "profile": "release",
+      "both_binaries": true,
+      "existing_dependency_cache_rebuild_seconds": 162.9148,
+      "unchanged_median_seconds": 0.6024,
+      "settings": "ThinLTO; codegen-units=1; unchanged",
+      "speedup_claim": false
+    },
+    "shell_syntax": "PASS: every scripts/*.sh file checked separately",
+    "docs": "PASS: 30 Markdown files; 0 broken/private links",
+    "git_diff_check": "PASS",
+    "application_source_and_lock": "No changes to src/ or Cargo.lock"
+  },
+  "profiles_at_completion": {
+    "dev-fast": "dev defaults with line-tables-only app debug, no dependency debug, LTO off, incremental on",
+    "dev-perf": "dev-fast plus image/moxcms/zune-jpeg/jpeg-decoder opt-level=2",
+    "dev-test": "dev-perf plus shadowroom opt-level=2; development assertions and overflow checks inherited",
+    "historical_opt1_reports": [
+      "codec-test-opt",
+      "core-loop-test-opt",
+      "test-opt-populate"
+    ],
+    "historical_opt2_reports": "Labels ending opt2 used a command-line profile override; final dev-test now makes this opt-level=2 setting explicit in Cargo.toml."
+  }
+}
