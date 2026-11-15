@@ -771,8 +771,8 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
         frame_ms = [(f["present"] - f["render_start"]) / 1e6 for f in in_span]
         regions = {}
         for f in in_span:
-            for name, costs in (f.get("regions") or {}).items():
-                regions.setdefault(name, []).append(sum(costs) / 1e6)
+            for region, costs in (f.get("regions") or {}).items():
+                regions.setdefault(region, []).append(sum(costs) / 1e6)
         hidden = [f for f in dispatch_draws if span[0] <= f["render_start"] <= span[1]]
         render_ms = [(f["render_end"] - f["render_start"]) / 1e6 for f in in_span]
         table[name] = {
@@ -835,8 +835,8 @@ def print_report(result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--binary", required=True)
-    parser.add_argument("--photos", required=True)
+    parser.add_argument("--binary")
+    parser.add_argument("--photos")
     parser.add_argument("--output", required=True, help="new directory for the session, trace and report")
     parser.add_argument("--copies", type=int, default=8, help="copies of each photo (default 8)")
     parser.add_argument("--samples", type=int, default=40, help="taps per navigation scenario")
@@ -847,7 +847,19 @@ def main():
     parser.add_argument("--reduce-motion", type=int, choices=(0, 1), default=None,
                         help="set SHADOWROOM_REDUCE_MOTION for the app")
     parser.add_argument("--label", default="")
+    parser.add_argument("--reanalyse", action="store_true",
+                        help="re-read an existing --output directory instead of running the app")
     args = parser.parse_args()
+    if args.reanalyse:
+        out = Path(args.output)
+        raw = json.loads((out / "driver.json").read_text())
+        report = json.loads((out / "report.json").read_text())
+        report.update(analyse(raw["inputs"], raw["idle"], out / "trace.jsonl", raw["damage"], raw["refresh_hz"]))
+        (out / "report.json").write_text(json.dumps(report, indent=1))
+        print_report(report)
+        return
+    if not (args.binary and args.photos):
+        parser.error("--binary and --photos are required unless --reanalyse")
     driver = Driver(args)
     driver.loadavg_start = os.getloadavg()
     driver.prepare()
@@ -872,6 +884,9 @@ def main():
         "x_server": "private rootful Xwayland", "window": list(WINDOW), "photos": driver.photo_count,
         "xrandr": driver.xrandr.strip().splitlines()[:3],
     }
+    (driver.out / "driver.json").write_text(json.dumps(
+        {"inputs": driver.inputs, "idle": driver.idle, "damage": driver.damage.times,
+         "refresh_hz": driver.refresh_hz}))
     result = analyse(driver.inputs, driver.idle, driver.out / "trace.jsonl", driver.damage.times,
                      driver.refresh_hz)
     report.update(result)
