@@ -10855,7 +10855,8 @@ impl Workspace {
         // System feedback paints above every overlay so no scrim dims it.
         root = root
             .children(self.quit_prompt_view(cx))
-            .children(self.error_toast(cx));
+            .children(self.error_toast(cx))
+            .children(self.trace.probe());
         // A focused dialog control that is no longer drawn (its dialog closed
         // or its tab changed) hands focus back to the root, which owns `key()`.
         if self.dialog_focus.borrow().focus_is_stale(window) {

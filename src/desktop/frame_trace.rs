@@ -38,6 +38,9 @@ pub(super) fn now_ns() -> u64 {
 struct Recorder {
     out: BufWriter<File>,
     frames: u64,
+    /// Stamped by [`Trace::probe`] during this frame's prepaint and paint.
+    prepainted: u64,
+    painted: u64,
     last_flush: u64,
 }
 
@@ -72,6 +75,8 @@ impl Trace {
                 let mut recorder = Recorder {
                     out: BufWriter::with_capacity(64 * 1024, file),
                     frames: 0,
+                    prepainted: 0,
+                    painted: 0,
                     last_flush: now_ns(),
                 };
                 recorder.line(format_args!(
@@ -133,8 +138,12 @@ impl Trace {
         cx.defer(move |_| {
             let presented = now_ns();
             let mut recorder = recorder.borrow_mut();
+            let (prepainted, painted) = (
+                std::mem::take(&mut recorder.prepainted),
+                std::mem::take(&mut recorder.painted),
+            );
             recorder.line(format_args!(
-                r#"{{"k":"frame","n":{frame},"render_start":{started},"render_end":{rendered},"present":{presented},"view":"{}","overlay":"{}","textures":{},"poll":{}}}"#,
+                r#"{{"k":"frame","n":{frame},"render_start":{started},"render_end":{rendered},"prepainted":{prepainted},"painted":{painted},"present":{presented},"view":"{}","overlay":"{}","textures":{},"poll":{}}}"#,
                 info.view, info.overlay, info.textures, info.poll
             ));
             // Flush at most four times a second so tracing barely perturbs frames.
@@ -143,6 +152,24 @@ impl Trace {
                 let _ = recorder.out.flush();
             }
         });
+    }
+
+    /// An empty element for the end of the root: its prepaint and paint run
+    /// after layout and after every earlier sibling has painted, splitting a
+    /// frame into render, layout + prepaint, paint and present.
+    pub fn probe(&self) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement, Styled};
+        let recorder = self.0.clone()?;
+        let painted = recorder.clone();
+        Some(
+            gpui::canvas(
+                move |_, _, _| recorder.borrow_mut().prepainted = now_ns(),
+                move |_, _, _, _| painted.borrow_mut().painted = now_ns(),
+            )
+            .absolute()
+            .size_0()
+            .into_any_element(),
+        )
     }
 
     pub fn flush(&self) {
