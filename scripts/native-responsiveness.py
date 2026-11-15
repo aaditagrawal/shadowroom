@@ -552,6 +552,15 @@ class Driver:
         for i in range(min(steps, 20)):
             self.tap("p" if i % 2 == 0 else "x")
 
+        # Without auto-advance the decision changes on the photo in place.
+        self.scenario = "rate_in_place"
+        mcp.call("settings_set", {"settings": {"auto_advance": False}})
+        mcp.call("select", {"index": 1})
+        self.settle()
+        for i in range(min(steps, 20)):
+            self.tap(str(1 + i % 5))
+        mcp.call("settings_set", {"settings": {"auto_advance": True}})
+
         self.scenario = "zoom_toggle"
         mcp.call("select", {"index": 2})
         self.settle()
