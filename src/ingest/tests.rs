@@ -1236,3 +1236,51 @@ fn bench_history_lookup_per_scanned_group() {
         );
     }
 }
+
+#[test]
+fn throughput_ignores_paused_time_and_withholds_early_estimates() {
+    let start = std::time::Instant::now();
+    let mut rate = copy::Throughput::new(start);
+    // 10 MB/s for 6 s of copying.
+    for second in 1..=6u64 {
+        rate.sample(
+            second * 10_000_000,
+            Duration::ZERO,
+            start + Duration::from_secs(second),
+        );
+        if second < 5 {
+            assert_eq!(rate.eta(100_000_000), None, "estimating at {second}s");
+        }
+    }
+    let before = rate.eta(100_000_000).unwrap();
+    assert!((9..=11).contains(&before), "{before}");
+    // A 10-minute pause, then copying resumes at the same speed.
+    let paused = Duration::from_secs(600);
+    rate.sample(70_000_000, paused, start + paused + Duration::from_secs(7));
+    let after = rate.eta(100_000_000).unwrap();
+    assert!(
+        (after as f64 - before as f64).abs() <= before as f64 * 0.25,
+        "before {before} s, after {after} s"
+    );
+    assert!((rate.bytes_per_second() - 10_000_000.).abs() < 1_000_000.);
+}
+
+#[test]
+fn control_reports_time_spent_paused() {
+    let control = Control::default();
+    control.reset();
+    assert_eq!(control.paused_for(), Duration::ZERO);
+    control.pause();
+    thread::sleep(Duration::from_millis(20));
+    assert!(control.paused_for() >= Duration::from_millis(20));
+    control.resume();
+    let total = control.paused_for();
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(
+        control.paused_for(),
+        total,
+        "resumed time is not paused time"
+    );
+    control.reset();
+    assert_eq!(control.paused_for(), Duration::ZERO);
+}

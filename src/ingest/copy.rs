@@ -1302,9 +1302,12 @@ pub fn execute_with(
                     File::open(parent)?.sync_all()?;
                 }
             }
-            let started = Instant::now();
+            let mut rate = Throughput::new(Instant::now());
             let mut last_update = Instant::now() - Duration::from_secs(1);
-            let mut transferred = 0u64;
+            // `moved` is bytes actually read (the rate); `handled` also counts
+            // whole groups skipped or failed (the bar and time left).
+            let mut moved = 0u64;
+            let mut handled = 0u64;
             state = catalog.ingest_sequences()?;
             for planned in &plan.groups {
                 if control.is_cancelled() {
@@ -1369,6 +1372,8 @@ pub fn execute_with(
                         })
                     {
                         report.progress.skipped += 1;
+                        handled += planned.group.bytes();
+                        report.progress.transferred = handled;
                         if last_update.elapsed() >= Duration::from_millis(100) {
                             update(&report.progress);
                             last_update = Instant::now();
@@ -1392,6 +1397,7 @@ pub fn execute_with(
                         planned.letter,
                     )?
                 };
+                let group_start = handled;
                 let result = group_copy(
                     &named,
                     &plan.options,
@@ -1400,27 +1406,24 @@ pub fn execute_with(
                     control,
                     hooks,
                     |bytes, phase| {
-                        transferred += bytes;
+                        moved += bytes;
+                        handled += bytes;
                         // Phase changes are reported immediately; byte counts are throttled.
                         let phase_changed = report.progress.phase != phase;
                         report.progress.phase = phase;
-                        let elapsed = started.elapsed().as_secs_f64().max(0.001);
-                        report.progress.mb_per_second = transferred as f64 / elapsed / 1_000_000.;
-                        report.progress.eta_seconds = if transferred > 0 {
-                            Some(
-                                ((plan.bytes.saturating_sub(transferred)) as f64
-                                    / (transferred as f64 / elapsed))
-                                    as u64,
-                            )
-                        } else {
-                            None
-                        };
+                        report.progress.transferred = handled;
+                        rate.sample(moved, control.paused_for(), Instant::now());
+                        report.progress.mb_per_second = rate.bytes_per_second() / 1_000_000.;
+                        report.progress.eta_seconds = rate.eta(plan.bytes.saturating_sub(handled));
                         if phase_changed || last_update.elapsed() >= Duration::from_millis(100) {
                             update(&report.progress);
                             last_update = Instant::now();
                         }
                     },
                 );
+                // A group that stopped early still counts as handled in full.
+                handled = handled.max(group_start + named.group.bytes());
+                report.progress.transferred = handled;
                 match result {
                     Ok(Some(group)) => {
                         // Later names in this batch assume it commits; a failed batch
@@ -1492,6 +1495,61 @@ pub fn execute_with(
     finalize_report(&mut report, &roots[0], catalog, hooks);
     update(&report.progress);
     Ok(report)
+}
+
+/// Copy throughput over active (unpaused) time: an exponentially weighted
+/// average of one-second windows, so the rate follows the card reader and a
+/// pause never drags it down or inflates the time left.
+pub(crate) struct Throughput {
+    started: Instant,
+    window_at: f64,
+    window_bytes: u64,
+    average: Option<f64>,
+    active: f64,
+    moved: u64,
+}
+impl Throughput {
+    /// Weight of the newest one-second window.
+    const ALPHA: f64 = 0.2;
+    /// Time left is withheld until this much copying has been measured.
+    const SETTLE_SECONDS: f64 = 5.;
+    pub(crate) fn new(started: Instant) -> Self {
+        Self {
+            started,
+            window_at: 0.,
+            window_bytes: 0,
+            average: None,
+            active: 0.,
+            moved: 0,
+        }
+    }
+    /// Records `moved` bytes read so far, `paused` total pause time, at `now`.
+    pub(crate) fn sample(&mut self, moved: u64, paused: Duration, now: Instant) {
+        self.active = (now
+            .saturating_duration_since(self.started)
+            .saturating_sub(paused))
+        .as_secs_f64();
+        let window = self.active - self.window_at;
+        if window >= 1. {
+            let sample = moved.saturating_sub(self.window_bytes) as f64 / window;
+            self.average = Some(
+                self.average
+                    .map_or(sample, |a| Self::ALPHA * sample + (1. - Self::ALPHA) * a),
+            );
+            self.window_at = self.active;
+            self.window_bytes = moved;
+        }
+        self.moved = moved;
+    }
+    pub(crate) fn bytes_per_second(&self) -> f64 {
+        self.average
+            .unwrap_or_else(|| self.moved as f64 / self.active.max(0.001))
+    }
+    /// Seconds left for `remaining` bytes, or None while still estimating.
+    pub(crate) fn eta(&self, remaining: u64) -> Option<u64> {
+        let rate = self.bytes_per_second();
+        (self.active >= Self::SETTLE_SECONDS && rate > 0.).then(|| (remaining as f64 / rate) as u64)
+    }
 }
 
 /// History stays non-successful until the proposed outcome artifact verifies.
