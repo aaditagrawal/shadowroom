@@ -14,7 +14,10 @@ impl Purpose {
     fn title(&self) -> &'static str {
         match self {
             Self::Workspace { export: None, .. } => "Open photo folder",
-            Self::Workspace { .. } => "Choose export destination",
+            Self::Workspace {
+                export: Some(true), ..
+            } => "Export picks",
+            Self::Workspace { .. } => "Export XMP sidecars",
             Self::Ingest(0) => "Choose photo library",
             Self::Ingest(_) => "Choose backup destination",
             Self::Theme(_) => "Choose theme JSON",
@@ -343,7 +346,7 @@ impl Workspace {
     fn picker_button(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: &str,
         action: Action,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -356,7 +359,7 @@ impl Workspace {
             .border_color(self.border())
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
-            .child(label)
+            .child(label.to_owned())
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 window.focus(&this.focus);
@@ -365,8 +368,52 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Title, explanation and confirm label: exports say what they will
+    /// write and for how many photos, so Picks and XMP never look alike.
+    fn picker_copy(&self, purpose: &Purpose) -> (String, Option<String>, String) {
+        match purpose {
+            Purpose::Workspace {
+                export: Some(true), ..
+            } => {
+                let picks = self
+                    .photos
+                    .iter()
+                    .filter(|p| !p.trashed && p.flag == Flag::Pick)
+                    .count();
+                (
+                    format!("Export {} to a folder", plural(picks, "pick", "picks")),
+                    Some(
+                        "Copies each pick's files, with RAW+JPEG companions and sidecars. Your originals are not modified."
+                            .into(),
+                    ),
+                    "Export here".into(),
+                )
+            }
+            Purpose::Workspace {
+                export: Some(false),
+                ids,
+            } => {
+                let photos = if self.multi.is_empty() {
+                    format!("{} in this view", plural(ids.len(), "photo", "photos"))
+                } else {
+                    plural(ids.len(), "selected photo", "selected photos")
+                };
+                (
+                    format!("Export decision XMP for {photos}"),
+                    Some(
+                        "Writes new .xmp files with rating, label and flag. Your originals and their existing sidecars are not modified."
+                            .into(),
+                    ),
+                    format!("Write {}", plural(ids.len(), "sidecar", "sidecars")),
+                )
+            }
+            Purpose::Theme(_) => (purpose.title().into(), None, "Use theme".into()),
+            _ => (purpose.title().into(), None, "Use folder".into()),
+        }
+    }
     pub(super) fn picker_view(&self, cx: &Context<Self>) -> AnyElement {
         let state = self.folder_picker.as_ref().unwrap();
+        let (title, subtitle, confirm) = self.picker_copy(&state.purpose);
         let mut rows = div()
             .id("path-picker-entries")
             .flex_1()
@@ -433,8 +480,17 @@ impl Workspace {
             .child(
                 div()
                     .p(px(space::LG))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(state.purpose.title()),
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::XS))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .children(subtitle.map(|subtitle| {
+                        div()
+                            .text_size(px(11.))
+                            .text_color(self.muted())
+                            .whitespace_normal()
+                            .child(subtitle)
+                    })),
             )
             .child(
                 div()
@@ -529,16 +585,7 @@ impl Workspace {
                         .flex()
                         .gap(px(space::SM))
                         .child(self.picker_button("picker-cancel", "Cancel", Action::Cancel, cx))
-                        .child(self.picker_button(
-                            "picker-choose",
-                            if state.purpose.files() {
-                                "Use theme"
-                            } else {
-                                "Use folder"
-                            },
-                            Action::Choose,
-                            cx,
-                        )),
+                        .child(self.picker_button("picker-choose", &confirm, Action::Choose, cx)),
                 ),
         );
         div()
