@@ -740,8 +740,8 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
             last += 1
         sample.update({
             "deliver_ms": (app_t - item["sent"]) / 1e6,
-            "handle_ms": (handled[h] - app_t) / 1e6 if h < len(handled) else None,
-            "wait_ms": (frame["render_start"] - (handled[h] if h < len(handled) else app_t)) / 1e6,
+            "handle_ms": (handled[h] - app_t) / 1e6 if item["kind"] != "drag" and h < len(handled) else None,
+            "wait_ms": (frame["render_start"] - (handled[h] if item["kind"] != "drag" and h < len(handled) else app_t)) / 1e6,
             "render_ms": (frame["render_end"] - frame["render_start"]) / 1e6,
             "cpu_ms": frame.get("cpu_ns", 0) / 1e6,
             **split(frame),
