@@ -51,9 +51,11 @@ can also be changed through the palette's **Theme Source** commands.
 
 Menus, dialogs and the command palette fade in over 120 ms, starting at 30%
 opacity so they are readable on the first frame. Status-bar notices, the error
-toast and the trailing decision note fade in over 150 ms. A decision changed on
-the photo you are looking at (with automatic advance off) settles in from 60%
-over 120 ms. Navigation, photo changes, zoom and pan are never animated, and
+toast and the trailing decision note fade in over 150 ms; a notice that replaces
+one already showing appears at once, so rapid decisions do not flicker. The
+on-photo decision chip settles in from 60% over 120 ms when a photo on screen
+gets its first decision (with automatic advance off); later changes update it
+at once. Navigation, photo changes, zoom and pan are never animated, and
 everything closes instantly.
 
 **Preferences → Appearance → Reduce motion** turns these fades off. Fades are

@@ -2,11 +2,11 @@
 //!
 //! Menus, dialogs and the palette fade in over 120 ms; status notices, the
 //! error toast and the trailing decision note over 150 ms; the on-photo
-//! decision chip settles over 120 ms when the shown photo's decision changes.
-//! Photo changes, navigation and anything else on the culling path are never
-//! animated, and every entrance starts visible enough to read on its first
-//! frame, so a fade never delays a keypress's visible result. Exits are
-//! instant. GPUI 0.2.2 has no layout-independent transform for elements, so
+//! decision chip settles over 120 ms when it appears for a photo's first
+//! decision. A notice that replaces a visible one, a changed decision and
+//! anything else on the culling path (navigation, photo changes, zoom, pan)
+//! never animates, so rapid culling neither flickers nor draws extra frames,
+//! and every entrance is readable on its first frame. Exits are instant. GPUI 0.2.2 has no layout-independent transform for elements, so
 //! there is no scale; a rise would move the modal scrim with its surface.
 //!
 //! Each animation frame is a full workspace frame: GPUI's `AnimationElement`
@@ -25,14 +25,14 @@ use std::{
         OnceLock,
         atomic::{AtomicU8, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Menus, dialogs and the command palette.
 pub(super) const OVERLAY: Duration = Duration::from_millis(120);
 /// Status notices, the error toast and the trailing decision note.
 pub(super) const NOTICE: Duration = Duration::from_millis(150);
-/// The on-photo decision chip when the decision changes in place.
+/// The on-photo decision chip when it appears in place.
 pub(super) const CHIP: Duration = Duration::from_millis(120);
 
 /// Platform preference: 0 unknown, 1 motion allowed, 2 reduce motion.
@@ -198,6 +198,21 @@ impl Workspace {
                 move |this, t| this.opacity(from + (1. - from) * t),
             )
             .into_any_element()
+    }
+
+    /// Opacity of an entrance that began at `started`, for elements whose
+    /// callers keep styling them (the on-photo chips). While it runs, the
+    /// frame asks GPUI for the next one, as `AnimationElement` does.
+    pub(super) fn entrance_opacity(&self, started: Instant, duration: Duration, from: f32) -> f32 {
+        if self.reduce_motion() {
+            return 1.;
+        }
+        let t = started.elapsed().as_secs_f32() / duration.as_secs_f32();
+        if t >= 1. {
+            return 1.;
+        }
+        self.feedback.animating.set(true);
+        from + (1. - from) * ease_out(t)
     }
 
     /// [`Self::fade_in`] for a full-window overlay (scrim and surface). It

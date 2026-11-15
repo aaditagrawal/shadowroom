@@ -873,6 +873,8 @@ def main():
     parser.add_argument("--reduce-motion", type=int, choices=(0, 1), default=None,
                         help="set SHADOWROOM_REDUCE_MOTION for the app")
     parser.add_argument("--label", default="")
+    parser.add_argument("--keep-session", action="store_true",
+                        help="keep the private profile, photo copies and caches after the run")
     parser.add_argument("--reanalyse", action="store_true",
                         help="re-read an existing --output directory instead of running the app")
     args = parser.parse_args()
@@ -901,6 +903,9 @@ def main():
     finally:
         driver.quit()
         driver.stop_x()
+        if not args.keep_session:
+            # The photo copies and preview caches are large; keep the trace and report.
+            shutil.rmtree(driver.session, ignore_errors=True)
     report["originals_intact"] = driver.originals_intact()
     report["environment"] = {
         "platform": platform.platform(), "machine": platform.machine(), "python": platform.python_version(),

@@ -6796,7 +6796,7 @@ impl Workspace {
                                 .child(photo.filename.clone()),
                         )
                     })
-                    .children(chip),
+                    .children(chip.map(|chip| chip.flex_shrink_0())),
             )
         });
         // What the previous frame now carries, briefly, after auto-advance.
@@ -6808,7 +6808,7 @@ impl Workspace {
                     .left(px(8.))
                     .right(px(8.))
                     .flex()
-                    .child(chip)
+                    .child(chip.max_w_full())
             }))
         });
         let details = match quality_note {
@@ -10918,6 +10918,9 @@ impl Workspace {
             window.focus(&self.focus);
         }
         self.trim_display_cache();
+        if self.feedback.animating.take() {
+            window.request_animation_frame();
+        }
         // Client-side decorations (Wayland, composited X11): transparent resize
         // margin around a 1px framed window. Server/macOS decorations need none.
         let Decorations::Client { tiling } = window.window_decorations() else {

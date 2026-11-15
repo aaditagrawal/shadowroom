@@ -53,7 +53,8 @@ The raw data includes process resident memory sampled every 100 ms,
 starting after readiness. Peak RSS in the table comes from Linux's kernel
 high-water counter. It includes allocations outside the media pipeline. The
 512 MiB preview budget is not a cap on total RSS, native codecs, or GPU memory.
-GPU memory and frame times were not measured.
+GPU memory was not measured; frame times and input latency were measured later,
+in [Human interface responsiveness](#human-interface-responsiveness-2026-11-16).
 
 All runs exited normally, preserved source hashes and mtimes, and completed the
 12-photo reverse loupe pass without additional source reads or decodes. Benchmark
