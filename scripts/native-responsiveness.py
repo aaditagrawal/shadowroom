@@ -747,7 +747,11 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
         last = fi
         while last + 1 < len(frames) and frames[last + 1]["render_start"] < limit:
             last += 1
+        # Loupe/compare: when the current photo first showed a full preview.
+        sharp = next((f for f in frames[fi:last + 1] if f.get("photo") in ("fit", "full")), None)
         sample.update({
+            "first_frame_photo": frame.get("photo"),
+            "input_to_sharp_ms": (sharp["present"] - item["sent"]) / 1e6 if sharp else None,
             "deliver_ms": (app_t - item["sent"]) / 1e6,
             "handle_ms": (handled[h] - app_t) / 1e6 if item["kind"] != "drag" and h < len(handled) else None,
             "wait_ms": (frame["render_start"] - (handled[h] if item["kind"] != "drag" and h < len(handled) else app_t)) / 1e6,
@@ -792,6 +796,8 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
             "input_to_present_ms": summary([r["input_to_present_ms"] for r in good]),
             "input_to_damage_ms": summary([r["input_to_damage_ms"] for r in good]),
             "input_to_last_frame_ms": summary([r["input_to_last_frame_ms"] for r in good]),
+            "input_to_sharp_ms": summary([r["input_to_sharp_ms"] for r in good if r["view"] != "grid"]),
+            "first_frame_sharp": sum(1 for r in good if r.get("first_frame_photo") in ("fit", "full")),
             "next_frame_render_ms": summary([r["render_ms"] for r in good]),
             "next_frame_draw_present_ms": summary([r["frame_ms"] for r in good]),
             "all_frames": len(in_span),

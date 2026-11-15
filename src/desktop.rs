@@ -10599,6 +10599,22 @@ impl Render for Workspace {
                 },
                 overlay: self.top_overlay().map_or("none", Overlay::trace_name),
                 textures: self.visible_textures.len(),
+                photo: self.selected_id().map_or("none", |id| {
+                    // Sharpest texture of the current photo this frame drew
+                    // (keys add 4 for focus-peaking copies).
+                    match self
+                        .visible_textures
+                        .iter()
+                        .filter(|key| key.0 == id)
+                        .map(|key| key.1 % 4)
+                        .max()
+                    {
+                        Some(0) => "thumbnail",
+                        Some(1) => "fit",
+                        Some(_) => "full",
+                        None => "none",
+                    }
+                }),
                 poll: poll_render,
             };
             self.trace.end(trace_started, info, cx);

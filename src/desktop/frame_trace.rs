@@ -101,6 +101,8 @@ pub(super) struct FrameInfo {
     pub overlay: &'static str,
     /// Photo textures the frame placed (grid cells, filmstrip, loupe panes).
     pub textures: usize,
+    /// Sharpest texture drawn for the current photo: none, thumbnail, fit, full.
+    pub photo: &'static str,
     /// The repaint was requested by the background poll rather than input.
     pub poll: bool,
 }
@@ -201,7 +203,7 @@ impl Trace {
                 regions.push_str(&format!(r#""{name}":[{layout},{prepaint},{paint}]"#));
             }
             recorder.line(format_args!(
-                r#"{{"k":"frame","n":{frame},"render_start":{started},"render_end":{rendered},"prepainted":{},"painted":{},"present":{presented},"cpu_ns":{},"presented":{},"view":"{}","overlay":"{}","textures":{},"poll":{},"regions":{{{regions}}}}}"#,
+                r#"{{"k":"frame","n":{frame},"render_start":{started},"render_end":{rendered},"prepainted":{},"painted":{},"present":{presented},"cpu_ns":{},"presented":{},"view":"{}","overlay":"{}","textures":{},"photo":"{}","poll":{},"regions":{{{regions}}}}}"#,
                 pending.prepainted,
                 pending.painted,
                 pending.cpu_painted.saturating_sub(pending.cpu_start),
@@ -209,6 +211,7 @@ impl Trace {
                 info.view,
                 info.overlay,
                 info.textures,
+                info.photo,
                 info.poll
             ));
             // Flush at most four times a second so tracing barely perturbs frames.
