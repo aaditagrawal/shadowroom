@@ -18,6 +18,23 @@ pub(super) mod space {
     pub const XXL: f32 = 32.;
 }
 
+/// Five-step mono type scale. Roles, not sizes: hierarchy also comes from
+/// weight (MEDIUM never reflows in Geist Mono) and colour.
+/// MICRO is for glyph-like text only (thumbnail badges, keycaps, axis ticks);
+/// readable copy never goes below LABEL.
+pub(super) mod text {
+    /// Thumbnail badges, keycaps, histogram axis ticks.
+    pub const MICRO: f32 = 10.;
+    /// Section headers, captions, secondary rows, status bar.
+    pub const LABEL: f32 = 11.;
+    /// UI default: rows, buttons, tabs.
+    pub const BODY: f32 = 12.;
+    /// Inspector filename, dialog subheads.
+    pub const TITLE: f32 = 13.;
+    /// Dialog and empty-state titles.
+    pub const DISPLAY: f32 = 16.;
+}
+
 pub(super) const CONTROL_HEIGHT: f32 = 28.;
 pub(super) const COMPACT_CONTROL_HEIGHT: f32 = 24.;
 pub(super) const ROW_HEIGHT: f32 = 32.;
@@ -165,9 +182,10 @@ mod tests {
 
 pub(super) const FILM_WIDTH: f32 = 96.;
 pub(super) const FILM_HEIGHT: f32 = 64.;
-pub(super) const FILM_GAP: f32 = space::XS;
-// Image + selection border + inner ring, plus a conservative burst run allowance.
-pub(super) const FILM_CELL_BUDGET: f32 = FILM_WIDTH + 6. + FILM_GAP + 2. * space::TINY;
+// One constant gap, the same as the grid's inner padding rhythm; the selection
+// ring is drawn inside the image, so every cell has the same outer box.
+pub(super) const FILM_GAP: f32 = space::SM;
+pub(super) const FILM_CELL_BUDGET: f32 = FILM_WIDTH + FILM_GAP;
 
 pub(super) const GRID_GAP: f32 = space::MD;
 pub(super) const GRID_CELL_MIN_WIDTH: f32 = 208.;

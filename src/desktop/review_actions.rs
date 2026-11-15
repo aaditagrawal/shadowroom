@@ -59,7 +59,7 @@ impl ImageAction {
             Self::Compare => "compare",
             Self::Pick => "pick",
             Self::Reject => "reject",
-            Self::Reset => "unflagged",
+            Self::Reset => "reset",
             Self::Trash | Self::PermanentDelete => "trash",
         }
     }
@@ -125,12 +125,11 @@ impl Workspace {
         self.read_ahead();
     }
 
+    /// Enter/L open the outlined (selected) photo. The pointer can rest on a
+    /// different cell, and arrow navigation recentres the grid under it, so
+    /// following the hover made Enter land on a photo the user never chose.
+    /// Double-click opens the photo under the pointer.
     pub(super) fn activate_review(&mut self, cx: &mut gpui::Context<Self>) {
-        if self.mode == ViewMode::Grid && self.multi.len() <= 1 {
-            if let Some(position) = self.catalog_hover.and_then(|id| self.visible_position(id)) {
-                self.select(position, false, false, cx);
-            }
-        }
         self.change_photo_view(ViewMode::Loupe, true, cx);
     }
 

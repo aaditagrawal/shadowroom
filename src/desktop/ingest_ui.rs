@@ -1359,7 +1359,7 @@ impl Workspace {
                                             .right(px(4.))
                                             .px(px(space::XS))
                                             .bg(this.panel())
-                                            .text_size(px(10.))
+                                            .text_size(px(ui::text::MICRO))
                                             .child(badge),
                                     );
                                 }
@@ -1419,7 +1419,7 @@ impl Workspace {
                                         .child(
                                             div()
                                                 .px(px(space::SM))
-                                                .text_size(px(10.))
+                                                .text_size(px(ui::text::LABEL))
                                                 .text_color(this.muted())
                                                 .child(cell.detail),
                                         )
@@ -1591,7 +1591,7 @@ impl Workspace {
     }
     fn ingest_hint(&self, hint: &str) -> Div {
         div()
-            .text_size(px(10.))
+            .text_size(px(ui::text::LABEL))
             .line_height(px(14.))
             .text_color(self.muted())
             .child(hint.to_owned())
@@ -1786,7 +1786,7 @@ impl Workspace {
                                 .when(!option.detail.is_empty(), |s| {
                                     s.child(
                                         div()
-                                            .text_size(px(10.))
+                                            .text_size(px(ui::text::LABEL))
                                             .text_color(self.muted())
                                             .overflow_hidden()
                                             .text_ellipsis()
@@ -1880,7 +1880,7 @@ impl Workspace {
                             .flex_shrink_0()
                             .flex()
                             .items_center()
-                            .text_size(px(10.))
+                            .text_size(px(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(group),
                     )
@@ -1954,7 +1954,7 @@ impl Workspace {
                         .gap(px(space::XS))
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(px(ui::text::LABEL))
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .whitespace_nowrap()

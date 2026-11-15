@@ -39,8 +39,8 @@ the source or histogram.
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
 Ctrl/Cmd-click toggles individual frames. Import checkboxes toggle independently.
 With zero or one selected photo, **Enter/L** opens Review across the current
-folder and filters, starting at the hovered photo when available or the active
-photo otherwise. With two or more selected photos, **Enter/L** freezes that
+folder and filters, starting at the selected (outlined) photo, never at the
+photo under the pointer. With two or more selected photos, **Enter/L** freezes that
 selection for Review navigation. Compare also constrains a multiple selection.
 Decisions in Review/Compare affect the current frame. Double-click and the
 **Show in review** context action always open the full current collection.
