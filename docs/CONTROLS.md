@@ -24,11 +24,14 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
-| Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports |
+| Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports. With unsaved decisions it asks first; a second press quits anyway from the recovery journal |
+| Escape | Dismiss the error notice when one is showing (nothing else that press); otherwise close the topmost menu, dialog or Import |
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
 
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
+
+The loupe shows the current photo's flag, stars and label at its top-left. When a decision moves on to another frame (automatic advance, or the photo leaving the filtered view), the previous frame's decision appears briefly at the bottom-left of the photo, and the status bar names it with an **Undo** button for a few seconds. The status bar reports other completed actions the same way (undo/redo, pinning, focus peaking, resolved bursts, duplicate scans, Trash, imports with **Reveal**, exports with **Reveal**, ejects), then returns to the photo count.
 
 Zoom ranges from 12.5% to 800%; the **−** and **+** buttons change magnification,
 and **Z** restores 100% or Fit. Adjacent frames retain zoom and pan. Focus peaking

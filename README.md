@@ -160,7 +160,8 @@ Catalog, settings, and caches use the operating system's local application-data
 directories. A disconnected drive does not remove its catalog entries; cached
 previews can remain available offline. The footer distinguishes pending, failed,
 and saved changes. Normal quit waits for saves and accepted exports; failed writes
-remain visible for retry. See [recovery and durability](docs/RECOVERY.md).
+remain visible for retry, and quitting with them offers Retry, Cancel or Quit
+Anyway (restored from the recovery journal at next launch). See [recovery and durability](docs/RECOVERY.md).
 
 Ratings, flags, and labels do not edit source photographs. Decisions remain in
 the local catalog until you explicitly export XMP to a chosen destination; there
