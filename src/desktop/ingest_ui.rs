@@ -2889,23 +2889,24 @@ impl Workspace {
             self.text_edit.focus(&self.import_ui.fields[field]);
         }
     }
-    pub(super) fn ingest_preferences(&self, cx: &gpui::Context<Self>) -> AnyElement {
+    pub(super) fn ingest_preferences(
+        &self,
+        window: &Window,
+        cx: &gpui::Context<Self>,
+    ) -> AnyElement {
         let settings = self.preference_settings();
+        // Keyboard focus (Preferences tab order: body controls are index 2).
+        let focusable = |element: Stateful<Div>, key: &str, cmd: Cmd| {
+            self.focusable(element, key, 2, true, FocusTarget::button(cmd), window, cx)
+                .into_any_element()
+        };
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .pt(px(space::LG))
-                    .pb(px(space::SM))
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Import"),
-            )
-            .child(
-                self.preference_row(
-                    "On card insertion",
-                    "ingest_on_insert",
+            .child(self.preference_row(
+                "On card insertion",
+                "ingest_on_insert",
+                focusable(
                     self.button(
                         "pref-ingest-insert",
                         &settings.ingest_on_insert,
@@ -2913,14 +2914,15 @@ impl Workspace {
                         Cmd::Ingest("insert".into()),
                         false,
                         cx,
-                    )
-                    .into_any_element(),
+                    ),
+                    "pref-ingest-insert",
+                    Cmd::Ingest("insert".into()),
                 ),
-            )
-            .child(
-                self.preference_row(
-                    "Day begins",
-                    "ingest_day_start_hour",
+            ))
+            .child(self.preference_row(
+                "Day begins",
+                "ingest_day_start_hour",
+                focusable(
                     self.button(
                         "pref-ingest-day",
                         &format!("{:02}:00", settings.ingest_day_start_hour),
@@ -2928,14 +2930,15 @@ impl Workspace {
                         Cmd::Ingest("day".into()),
                         false,
                         cx,
-                    )
-                    .into_any_element(),
+                    ),
+                    "pref-ingest-day",
+                    Cmd::Ingest("day".into()),
                 ),
-            )
-            .child(
-                self.preference_row(
-                    "Eject after import",
-                    "eject_after_ingest (explicit opt-in)",
+            ))
+            .child(self.preference_row(
+                "Eject after import",
+                "eject_after_ingest (explicit opt-in)",
+                focusable(
                     self.button(
                         "pref-ingest-eject",
                         &settings.eject_after_ingest.to_string(),
@@ -2943,14 +2946,15 @@ impl Workspace {
                         Cmd::Ingest("auto_eject".into()),
                         settings.eject_after_ingest,
                         cx,
-                    )
-                    .into_any_element(),
+                    ),
+                    "pref-ingest-eject",
+                    Cmd::Ingest("auto_eject".into()),
                 ),
-            )
-            .child(
-                self.preference_row(
-                    "Current volume",
-                    "Remember allow / deny for auto discovery",
+            ))
+            .child(self.preference_row(
+                "Current volume",
+                "Remember allow / deny for auto discovery",
+                focusable(
                     self.button(
                         "pref-ingest-remember",
                         "Toggle allow / deny",
@@ -2958,10 +2962,11 @@ impl Workspace {
                         Cmd::Ingest("remember".into()),
                         false,
                         cx,
-                    )
-                    .into_any_element(),
+                    ),
+                    "pref-ingest-remember",
+                    Cmd::Ingest("remember".into()),
                 ),
-            )
+            ))
             .child(div().child(format!(
                 "Library: {}",
                 settings.ingest_library_root.display()
@@ -2970,13 +2975,17 @@ impl Workspace {
                 "Folder: {} · File: {}",
                 settings.ingest_folder_template, settings.ingest_file_template
             )))
-            .child(self.button(
+            .child(focusable(
+                self.button(
+                    "pref-ingest-configure",
+                    "Configure destinations and templates…",
+                    "folder-opened",
+                    Cmd::Ingest("show".into()),
+                    false,
+                    cx,
+                ),
                 "pref-ingest-configure",
-                "Configure destinations and templates…",
-                "folder-opened",
                 Cmd::Ingest("show".into()),
-                false,
-                cx,
             ))
             .into_any_element()
     }

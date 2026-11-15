@@ -20,7 +20,7 @@ impl Purpose {
             Self::Workspace { .. } => "Export XMP sidecars",
             Self::Ingest(0) => "Choose photo library",
             Self::Ingest(_) => "Choose backup destination",
-            Self::Theme(_) => "Choose theme JSON",
+            Self::Theme(_) => "Import Zed Theme",
         }
     }
     fn files(&self) -> bool {
@@ -348,23 +348,18 @@ impl Workspace {
         id: &'static str,
         label: &str,
         action: Action,
+        kind: ButtonKind,
+        disabled: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let hover = self.hover_bg();
-        div()
-            .id(id)
-            .px(px(space::MD))
-            .py(px(space::SM))
-            .border_1()
-            .border_color(self.border())
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover))
-            .child(label.to_owned())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                window.focus(&this.focus);
-                this.picker_action(action, cx);
-            }))
+        self.dialog_button(id, label, kind, disabled)
+            .when(!disabled, |s| {
+                s.on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    window.focus(&this.focus);
+                    this.picker_action(action, cx);
+                }))
+            })
             .into_any_element()
     }
 
@@ -459,47 +454,79 @@ impl Workspace {
             );
         }
         if state.entries.is_empty() && !state.loading {
-            rows = rows.child(div().p(px(space::LG)).text_color(self.muted()).child(
-                if state.purpose.files() {
-                    "No folders or theme JSON files"
-                } else {
-                    "No subfolders. You can choose this folder."
-                },
-            ));
-        }
-        let mut body = div()
-            .id("path-picker")
-            .w(px(720.))
-            .max_w_full()
-            .h(px((self.workspace_size.1 - 48.).clamp(180., 600.)))
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(self.border())
-            .bg(self.bg())
-            .child(
+            rows = rows.child(
                 div()
                     .p(px(space::LG))
                     .flex()
                     .flex_col()
                     .gap(px(space::XS))
-                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                    .children(subtitle.map(|subtitle| {
-                        div()
-                            .text_size(px(11.))
-                            .text_color(self.muted())
-                            .whitespace_normal()
-                            .child(subtitle)
-                    })),
-            )
+                    .text_color(self.muted())
+                    .when(state.purpose.files(), |s| {
+                        s.child(div().text_color(self.text()).child("No theme files here"))
+                            .child("Zed keeps installed themes in ~/.config/zed/themes")
+                    })
+                    .when(!state.purpose.files(), |s| {
+                        s.child("No subfolders. You can choose this folder.")
+                    }),
+            );
+        }
+        // A theme import needs a .json file: a typed path or a selected file.
+        let theme_ready = !state.purpose.files() || {
+            let json = |path: &Path| {
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            };
+            if state.address_focused {
+                json(Path::new(state.address.trim()))
+            } else {
+                state
+                    .selected
+                    .and_then(|index| state.entries.get(index))
+                    .is_some_and(|entry| !entry.directory && json(&entry.path))
+            }
+        };
+        // Nested over Preferences, the theme picker is narrower than its parent.
+        let width = if state.purpose.files() {
+            dialog::DIALOG_LARGE - dialog::NESTED_INSET
+        } else {
+            dialog::DIALOG_LARGE
+        };
+        let mut body = self
+            .modal_surface("path-picker", width)
+            .h(px((self.workspace_size.1 - 48.).clamp(180., 600.)))
+            .child(self.modal_header(title, None, cx))
+            .children(subtitle.map(|subtitle| {
+                div()
+                    .px(px(ui::DIALOG_INSET))
+                    .pt(px(space::MD))
+                    .text_size(px(ui::text::LABEL))
+                    .text_color(self.muted())
+                    .whitespace_normal()
+                    .child(subtitle)
+            }))
             .child(
                 div()
                     .px(px(space::LG))
-                    .pb(px(space::MD))
+                    .py(px(space::MD))
                     .flex()
                     .gap(px(space::SM))
-                    .child(self.picker_button("picker-home", "Home", Action::Home, cx))
-                    .child(self.picker_button("picker-up", "Up", Action::Up, cx))
+                    .child(self.picker_button(
+                        "picker-home",
+                        "Home",
+                        Action::Home,
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    ))
+                    .child(self.picker_button(
+                        "picker-up",
+                        "Up",
+                        Action::Up,
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    ))
                     .child(
                         div()
                             .id("picker-address")
@@ -530,7 +557,14 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .child(self.picker_button("picker-go", "Go", Action::Go, cx)),
+                    .child(self.picker_button(
+                        "picker-go",
+                        "Go",
+                        Action::Go,
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    )),
             )
             .child(rows);
         if state.loading {
@@ -570,11 +604,7 @@ impl Workspace {
             );
         }
         body = body.child(
-            div()
-                .p(px(space::LG))
-                .flex()
-                .items_center()
-                .justify_between()
+            self.modal_footer()
                 .child(
                     div()
                         .text_color(self.muted())
@@ -584,18 +614,25 @@ impl Workspace {
                     div()
                         .flex()
                         .gap(px(space::SM))
-                        .child(self.picker_button("picker-cancel", "Cancel", Action::Cancel, cx))
-                        .child(self.picker_button("picker-choose", &confirm, Action::Choose, cx)),
+                        .child(self.picker_button(
+                            "picker-cancel",
+                            "Cancel",
+                            Action::Cancel,
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        ))
+                        .child(self.picker_button(
+                            "picker-choose",
+                            &confirm,
+                            Action::Choose,
+                            ButtonKind::Primary,
+                            !theme_ready,
+                            cx,
+                        )),
                 ),
         );
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000088))
-            .flex()
-            .items_center()
-            .justify_center()
+        self.modal_scrim(Overlay::FolderPicker)
             .p(px(space::LG))
             .child(body)
             .into_any_element()

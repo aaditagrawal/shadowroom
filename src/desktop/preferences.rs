@@ -1,7 +1,37 @@
 //! Preference edits stay private until Apply, including imported theme families.
-use super::{Cmd, Settings, Theme, Workspace, persist_theme_source, read_theme_family};
-use gpui::{Context, PathPromptOptions};
+use super::{
+    Cmd, PreferencesSection, Settings, Theme, Workspace, persist_theme_source, read_theme_family,
+};
+use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 use serde_json::{Value, json};
+
+/// Preferences tabs in display (and Ctrl+Tab) order.
+pub(super) const SECTIONS: [(PreferencesSection, &str); 6] = [
+    (PreferencesSection::Appearance, "Appearance"),
+    (PreferencesSection::Culling, "Culling"),
+    (PreferencesSection::Import, "Import"),
+    (PreferencesSection::Performance, "Performance"),
+    (PreferencesSection::Controller, "Controller"),
+    (PreferencesSection::Help, "Help"),
+];
+
+/// The tab that shows a top-level settings key, for unsaved-change dots.
+pub(super) fn section_for(key: &str) -> PreferencesSection {
+    match key {
+        "auto_advance"
+        | "trash_mode"
+        | "grouping_mode"
+        | "burst_gap_ms"
+        | "visual_threshold"
+        | "auto_discover_drives" => PreferencesSection::Culling,
+        "memory_budget_mb" | "cache_budget_mb" => PreferencesSection::Performance,
+        "show_getting_started" => PreferencesSection::Help,
+        key if key.starts_with("ingest_") || key == "eject_after_ingest" => {
+            PreferencesSection::Import
+        }
+        _ => PreferencesSection::Appearance,
+    }
+}
 
 pub(super) struct Draft {
     pub id: u64,
@@ -11,6 +41,9 @@ pub(super) struct Draft {
     pub imports: Vec<String>,
     pub applying: bool,
     close_after_apply: bool,
+    /// Esc, the close button or an outside click asked to leave with unsaved
+    /// changes; the footer shows "Discard N changes?" until answered.
+    pub discard_prompt: bool,
 }
 
 impl Workspace {
@@ -36,6 +69,93 @@ impl Workspace {
     pub(super) fn close_preferences(&mut self) {
         self.preferences = false;
         self.preferences_draft = None;
+    }
+
+    /// Esc, the close button, Ctrl+, and an outside click. A clean draft
+    /// closes; unsaved changes ask first (Keep Editing is the default), and a
+    /// second dismissal answers Keep Editing. Only Cancel discards at once.
+    pub(super) fn dismiss_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &mut self.preferences_draft {
+            Some(draft) if draft.applying => {}
+            Some(draft) if draft.discard_prompt => draft.discard_prompt = false,
+            Some(draft) if draft.changed() => {
+                draft.discard_prompt = true;
+                let keep = self.dialog_handle("prefs-keep-editing", 3, cx);
+                window.focus(&keep);
+            }
+            _ => self.close_preferences(),
+        }
+    }
+
+    /// Keyboard operation of Preferences. Tab/Shift+Tab move focus through the
+    /// tabs, controls and footer; arrows choose within a group; Space activates
+    /// the focused control; Return activates a focused button or else is the
+    /// default (Apply & Close, or Keep Editing while the discard prompt shows);
+    /// Ctrl+Tab / Ctrl+PageDown switch tabs and Ctrl/Cmd+S applies.
+    pub(super) fn preferences_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let m = event.keystroke.modifiers;
+        let primary = m.control || m.platform;
+        match key {
+            "tab" | "pagedown" | "pageup" if primary && !m.alt => {
+                let back = key == "pageup" || (key == "tab" && m.shift);
+                let index = SECTIONS
+                    .iter()
+                    .position(|(section, _)| *section == self.preferences_section)
+                    .unwrap_or(0);
+                let next = if back {
+                    (index + SECTIONS.len() - 1) % SECTIONS.len()
+                } else {
+                    (index + 1) % SECTIONS.len()
+                };
+                self.preferences_section = SECTIONS[next].0;
+                self.focus_visible = true;
+                let tab = self.dialog_handle(&format!("prefs-tab-{next}"), 1, cx);
+                window.focus(&tab);
+            }
+            "tab" if !m.alt => {
+                self.focus_visible = true;
+                if m.shift {
+                    window.focus_prev();
+                } else {
+                    window.focus_next();
+                }
+            }
+            "s" if primary && !m.shift && !m.alt => self.execute(Cmd::ApplyPreferences, window, cx),
+            "left" | "up" | "right" | "down" if !primary && !m.alt => {
+                self.focus_visible = true;
+                let delta = if matches!(key, "left" | "up") { -1 } else { 1 };
+                self.move_in_group(delta, window, cx);
+            }
+            "space" if !primary && !m.alt => {
+                self.activate_focused(window, cx);
+            }
+            "enter" if !m.alt => {
+                let handled = self.focused_button(window) && self.activate_focused(window, cx);
+                if !handled {
+                    let prompt = self
+                        .preferences_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.discard_prompt);
+                    self.execute(
+                        if prompt {
+                            Cmd::KeepEditingPreferences
+                        } else {
+                            Cmd::ApplyClosePreferences
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn finish_preferences(&mut self, patch: &Value) {
@@ -137,7 +257,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose Zed theme JSON".into()),
+            prompt: Some("Import Zed Theme".into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = prompt.await {
@@ -178,6 +298,7 @@ impl Draft {
             imports: Vec::new(),
             applying: false,
             close_after_apply: false,
+            discard_prompt: false,
         }
     }
 
@@ -194,6 +315,24 @@ impl Draft {
 
     pub fn changed(&self) -> bool {
         self.settings != self.baseline || !self.imports.is_empty()
+    }
+
+    /// Top-level settings keys this draft would commit.
+    pub fn changed_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = match self.patch() {
+            Value::Object(map) => map.into_iter().map(|(key, _)| key).collect(),
+            _ => Vec::new(),
+        };
+        if keys.is_empty() && !self.imports.is_empty() {
+            // An imported theme family is a change even if it matches the theme.
+            keys.push("theme".into());
+        }
+        keys
+    }
+
+    /// Unsaved changes shown in the footer and the discard prompt.
+    pub fn changed_count(&self) -> usize {
+        self.changed_keys().len()
     }
 
     pub fn import(&mut self, source: String, themes: Vec<Theme>) {
@@ -329,6 +468,37 @@ mod tests {
         draft.edit(&Cmd::Memory(active.memory_budget_mb), None);
         assert!(!draft.changed());
         assert_eq!(draft.patch(), json!({}));
+    }
+
+    #[test]
+    fn changed_keys_count_edits_and_map_to_their_tabs() {
+        let active = Settings::default();
+        let mut draft = Draft::new(&active, &[Theme::dark(), Theme::light()]);
+        assert_eq!(draft.changed_count(), 0);
+        draft.edit(&Cmd::Font("DM Sans".into()), None);
+        assert_eq!(draft.changed_count(), 1);
+        draft.edit(&Cmd::Group("off".into()), None);
+        draft.edit(&Cmd::Memory(128), None);
+        assert_eq!(draft.changed_count(), 3);
+        let sections: Vec<_> = draft
+            .changed_keys()
+            .iter()
+            .map(|key| section_for(key))
+            .collect();
+        assert!(sections.contains(&PreferencesSection::Appearance));
+        assert!(sections.contains(&PreferencesSection::Culling));
+        assert!(sections.contains(&PreferencesSection::Performance));
+        assert_eq!(
+            section_for("ingest_day_start_hour"),
+            PreferencesSection::Import
+        );
+        assert_eq!(
+            section_for("eject_after_ingest"),
+            PreferencesSection::Import
+        );
+        assert_eq!(section_for("theme_mode"), PreferencesSection::Appearance);
+        draft.edit(&Cmd::Font(active.interface_font.clone()), None);
+        assert_eq!(draft.changed_count(), 2, "reverting an edit clears it");
     }
 
     #[test]

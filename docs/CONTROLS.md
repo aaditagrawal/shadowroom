@@ -58,15 +58,23 @@ it.
 
 Delete uses **Preferences → Culling → Trash destination**: **OS Trash** by
 default, or optional **In-app** Trash. Shift+Delete always requests permanent
-deletion. Each action opens a confirmation with photo/file counts, source
-locations, and destination. **Cancel is selected initially: Enter cancels, Tab
-then Enter confirms, and Escape cancels.** Restore OS-trashed files with your file
+deletion. Each action opens a confirmation naming the photo (or the count),
+with thumbnails, file counts, source locations and destination, and a warning
+when the selection includes picks or photos rated 3 stars and up. Permanent
+deletion is marked with an error-coloured warning, a "can't be undone" callout
+and a filled red confirm button. **Cancel is selected initially: Enter cancels,
+Tab then Enter confirms, and Escape cancels.** Restore OS-trashed files with your file
 manager; app Restore/Undo applies only to in-app Trash. Physical deletion cannot
 be undone in Shadowroom and clears decision Undo history after files change.
 See [Trash and duplicates](DUPLICATES_TRASH.md) for grouping and partial failures.
 
 Text fields show a blinking caret, support arrows, Home/End, Shift selection,
 Backspace/Delete, and Ctrl/Cmd+A/C/X/V. Tab changes import or network-host fields.
+
+In **Preferences**, Tab/Shift+Tab move focus, arrows choose within a group, Space
+activates, Return is **Apply & Close** (or activates a focused button),
+Ctrl+Tab/Ctrl+PageDown switch sections, Cmd/Ctrl+S applies and Escape closes
+(asking first when there are unsaved changes). See [Themes and preferences](THEMES.md).
 
 `src/controls.rs` defines the shared keyboard/controller commands and bindings. The desktop also handles Review entry, context menus, and deletion gestures. Dedicated F13–F24 shortcuts provide a keyboard-layout-independent controller layer:
 

@@ -155,6 +155,8 @@ impl Theme {
                 ("shadowroom.label.blue", "#82abe0"),
                 ("shadowroom.label.purple", "#c497d0"),
                 ("shadowroom.label.text", "#0f0f0f"),
+                ("shadowroom.focus_ring", "#5b9bd5"),
+                ("shadowroom.scrim.modal", "#00000099"),
             ],
         )
     }
@@ -208,6 +210,8 @@ impl Theme {
                 ("shadowroom.label.blue", "#2560b0"),
                 ("shadowroom.label.purple", "#8a3fa6"),
                 ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.focus_ring", "#3979b4"),
+                ("shadowroom.scrim.modal", "#1f2a3a59"),
             ],
         )
     }
@@ -217,6 +221,8 @@ impl Theme {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
+        // A repeated key would silently override an earlier, reviewed value.
+        debug_assert_eq!(colors.len(), pairs.len(), "duplicate colour key in {name}");
         for (key, source) in [
             ("text.placeholder", "text.muted"),
             ("icon.placeholder", "icon.muted"),

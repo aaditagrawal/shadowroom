@@ -735,42 +735,33 @@ impl Workspace {
     }
     pub(super) fn quit_prompt_view(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let prompt = self.feedback.quit_prompt.as_ref()?;
-        let border = self.c("border.variant", "#333333");
-        let hover = self.c("element.hover", "#303030");
-        let action = |id: &'static str, label: &'static str, keys: &'static str| {
-            div()
-                .id(id)
-                .h(px(ui::CONTROL_HEIGHT))
-                .px(px(space::MD))
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .occlude()
-                .border_1()
-                .border_color(border)
-                .hover(move |s| s.bg(hover))
-                .child(label)
-                .tooltip(self.tip(label, keys))
-        };
-        let cancel =
-            action("quit-cancel", "Cancel", "Esc").on_click(cx.listener(|this, _, _, cx| {
+        let cancel = self
+            .dialog_button("quit-cancel", "Cancel", ButtonKind::Secondary, false)
+            .tooltip(self.tip("Cancel", "Esc"))
+            .on_click(cx.listener(|this, _, _, cx| {
                 this.feedback.quit_prompt = None;
                 cx.notify();
             }));
-        let quit = action("quit-anyway", "Quit Anyway", "⌘Q")
-            .when(prompt.error.is_some(), |s| s.opacity(0.5))
-            .text_color(self.c("error", "#d46a6a"))
-            .on_click(cx.listener(|this, _, _, cx| this.quit_anyway(cx)));
-        let retry = action("quit-retry", "Retry", "Enter")
-            .bg(self.selected_bg())
-            .border_color(self.c("border.focused", "#5b9bd5"))
+        let quit = self
+            .dialog_button(
+                "quit-anyway",
+                "Quit Anyway",
+                ButtonKind::DestructiveQuiet,
+                prompt.error.is_some(),
+            )
+            .tooltip(self.tip("Quit Anyway", "⌘Q"))
+            .when(prompt.error.is_none(), |s| {
+                s.on_click(cx.listener(|this, _, _, cx| this.quit_anyway(cx)))
+            });
+        let retry = self
+            .dialog_button("quit-retry", "Retry", ButtonKind::Primary, false)
+            .tooltip(self.tip("Retry", "Enter"))
             .on_click(cx.listener(|this, _, window, cx| this.quit_prompt_retry(window, cx)));
         // Platform order: macOS puts the destructive choice apart on the left;
         // GNOME keeps Cancel on the left and the default on the right.
         let buttons = if cfg!(target_os = "macos") {
             div()
+                .flex_1()
                 .flex()
                 .items_center()
                 .gap(px(space::SM))
@@ -780,6 +771,7 @@ impl Workspace {
                 .child(retry)
         } else {
             div()
+                .flex_1()
                 .flex()
                 .items_center()
                 .gap(px(space::SM))
@@ -788,32 +780,29 @@ impl Workspace {
                 .child(quit)
                 .child(retry)
         };
-        let frame = div()
-            .id("quit-prompt")
-            .w(px(480.))
-            .max_w_full()
-            .p(px(space::XL))
-            .flex()
-            .flex_col()
-            .gap(px(space::MD))
-            .border_1()
-            .border_color(border)
-            .bg(self.c("elevated_surface.background", "#1b1b1b"))
-            .occlude()
-            .child(div().text_size(px(16.)).child(prompt.title()))
+        let frame = self
+            .modal_surface("quit-prompt", dialog::DIALOG_SMALL)
+            .child(self.modal_header(prompt.title(), None, cx))
             .child(
                 div()
-                    .text_color(self.muted())
-                    .whitespace_normal()
-                    .child(prompt.body()),
+                    .p(px(ui::DIALOG_INSET))
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::MD))
+                    .child(
+                        div()
+                            .text_color(self.muted())
+                            .whitespace_normal()
+                            .child(prompt.body()),
+                    )
+                    .children(prompt.error.as_ref().map(|error| {
+                        div()
+                            .text_color(self.c("error", "#d46a6a"))
+                            .whitespace_normal()
+                            .child(error.clone())
+                    })),
             )
-            .children(prompt.error.as_ref().map(|error| {
-                div()
-                    .text_color(self.c("error", "#d46a6a"))
-                    .whitespace_normal()
-                    .child(error.clone())
-            }))
-            .child(div().pt(px(space::SM)).child(buttons));
+            .child(self.modal_footer().child(buttons));
         Some(
             div()
                 .absolute()
@@ -823,7 +812,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .p(px(space::LG))
-                .bg(rgba(0x00000088))
+                .bg(self.c("shadowroom.scrim.modal", "#00000099"))
                 .child(frame)
                 .into_any_element(),
         )

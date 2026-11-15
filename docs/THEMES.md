@@ -11,10 +11,24 @@ own sections so a large theme collection does not bury other settings.
 
 Preferences use a separate draft. Choices do not change the running app or write
 the settings file until you click **Apply** or **Apply & Close**. **Apply** saves
-and leaves preferences open; **Apply & Close** saves and closes them. **Cancel**,
-Escape, the close button, or clicking outside discards only the unapplied changes
-since the last successful Apply. Switching sections keeps the draft. Imported
-theme files are staged and installed only when applied.
+and leaves preferences open; **Apply & Close** (the default, Return) saves and
+closes them. The footer counts unsaved changes, each edited section shows a dot
+on its tab, and **Apply** is disabled while nothing has changed. **Cancel**
+discards the unapplied changes at once. With unsaved changes, Escape, the close
+button, Cmd/Ctrl+, or clicking outside first asks **Discard N changes?** with
+**Keep Editing** as the default; without changes they simply close. Switching
+sections keeps the draft. Imported theme files are staged and installed only
+when applied. macOS names the dialog **Settings**; Linux keeps **Preferences**.
+
+Preferences work entirely from the keyboard. Tab and Shift+Tab move through the
+section tabs, the controls and the footer buttons; a 2 px focus ring
+(`shadowroom.focus_ring`, defaulting to `border.focused`) appears only after
+keyboard navigation. Each choice group and the theme list is one Tab stop:
+arrows choose the neighbouring option. Space activates the focused control,
+Return activates a focused button and is otherwise **Apply & Close**,
+Ctrl+Tab or Ctrl+PageDown/PageUp switches sections, and Cmd/Ctrl+S applies.
+Grouping options that do not apply (Burst gap with Grouping Off, Similarity
+with Off or Time) are dimmed and inert.
 
 The theme list groups Dark and Light palettes, with background/accent/text
 swatches and a separate bounded scroll area. Installed Zed themes are discovered
@@ -112,6 +126,12 @@ Zed's [documented settings](https://zed.dev/docs/themes) accept a fixed theme na
 The desktop stores its choice in preferences as `theme_mode` (`manual`, `system`, or `zed`), with `theme_light` and `theme_dark` for appearance-specific choices. Manual uses the chosen family; system follows the current window appearance; Zed follows the parsed Zed selection. Built-in themes embedded inside the Zed binary, such as One Dark, may not have a corresponding installed JSON file. The watcher reports a missing selected name explicitly; import its family to follow it exactly. It does not relabel an approximate palette as that theme.
 
 ## Role fallbacks and contrast
+
+Dialogs share one frame: an elevated surface with a 13 px title bar, a single
+modal scrim `shadowroom.scrim.modal` (dark `#00000099`, light `#1f2a3a59`) drawn
+only behind the topmost dialog so nested dialogs never darken twice, and one
+button hierarchy: an accent-filled default, outlined secondary actions, and
+error-coloured destructive actions (filled only when irreversible).
 
 Built-in appearance fallbacks cover canonical Zed text/icon/placeholder/disabled/accent roles, main/panel/elevated/title/status/toolbar/tab surfaces, active and disabled elements, ghost elements, focused borders, search/drop highlights, scrollbars and semantic status backgrounds/borders. Invalid present colors use the same fallback path as absent/null colors. Valid external colors and alpha retain their original values.
 
