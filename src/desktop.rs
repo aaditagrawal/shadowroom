@@ -8,6 +8,7 @@ mod help;
 mod ingest_ui;
 mod layout;
 mod preferences;
+mod prefetch;
 mod review_actions;
 mod scrollbar;
 mod text_input;
@@ -10746,8 +10747,9 @@ impl Workspace {
                     viewer = viewer.child(self.compare_placeholder(cx));
                 }
             }
+            viewer = viewer.child(self.photo_view(photo, false, window, cx));
             viewer
-                .child(self.photo_view(photo, false, window, cx))
+                .children(self.neighbour_textures(cx))
                 .into_any_element()
         };
         let mut main = div()
