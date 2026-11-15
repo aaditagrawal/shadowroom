@@ -41,6 +41,96 @@ struct Confirmation {
     destination: String,
     permanent: bool,
     preserved: Vec<PathBuf>,
+    /// What is being deleted, frozen with the plan: photo ids in path order
+    /// (for thumbnails), the file name of a single photo, and how many keepers
+    /// (picks, or photos rated 3 stars and up) the batch contains.
+    subject: Subject,
+}
+
+#[derive(Default)]
+struct Subject {
+    ids: Vec<i64>,
+    name: Option<String>,
+    picks: usize,
+    rated: usize,
+}
+impl Subject {
+    fn of(photos: &[Photo]) -> Self {
+        Self {
+            ids: photos.iter().map(|p| p.id).collect(),
+            name: match photos {
+                [photo] => photo
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+                _ => None,
+            },
+            picks: photos.iter().filter(|p| p.flag == Flag::Pick).count(),
+            rated: photos
+                .iter()
+                .filter(|p| p.flag != Flag::Pick && p.rating >= 3)
+                .count(),
+        }
+    }
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+impl Confirmation {
+    /// "Move “03-forest.jpg” to Trash?" / "Permanently delete 3 photos?"
+    fn title(&self) -> String {
+        let what = match &self.subject.name {
+            Some(name) if self.photos == 1 => format!("“{name}”"),
+            _ => count(self.photos, "photo", "photos"),
+        };
+        if self.permanent {
+            format!("Permanently delete {what}?")
+        } else {
+            format!("Move {what} to Trash?")
+        }
+    }
+
+    fn confirm_label(&self) -> String {
+        if self.permanent {
+            format!(
+                "Delete {} permanently",
+                count(self.photos, "photo", "photos")
+            )
+        } else {
+            "Move to Trash".into()
+        }
+    }
+
+    /// "3 files", or "3 photos · 5 files (RAW+JPEG pairs and sidecars)".
+    fn files_line(&self) -> String {
+        if self.files == self.photos {
+            count(self.files, "file", "files")
+        } else {
+            format!(
+                "{} · {} (RAW+JPEG pairs and sidecars)",
+                count(self.photos, "photo", "photos"),
+                count(self.files, "file", "files")
+            )
+        }
+    }
+
+    /// "Includes 2 picks and 1 photo rated 3★ or higher", when any.
+    fn keepers_warning(&self) -> Option<String> {
+        let picks = (self.subject.picks > 0).then(|| count(self.subject.picks, "pick", "picks"));
+        let rated = (self.subject.rated > 0).then(|| {
+            format!(
+                "{} rated 3★ or higher",
+                count(self.subject.rated, "photo", "photos")
+            )
+        });
+        match (picks, rated) {
+            (None, None) => None,
+            (Some(one), None) | (None, Some(one)) => Some(format!("Includes {one}")),
+            (Some(picks), Some(rated)) => Some(format!("Includes {picks} and {rated}")),
+        }
+    }
 }
 
 enum Action {
@@ -188,6 +278,7 @@ impl Workspace {
         self.error = None;
         self.palette = false;
         self.image_context = None;
+        let subject = Subject::of(&photos);
         if !permanent && self.settings.trash_mode == "in_app" {
             let mut sources: Vec<_> = photos.iter().map(|p| p.location_display()).collect();
             sources.sort();
@@ -206,6 +297,7 @@ impl Workspace {
                     action: Action::InApp(ids),
                     permanent: false,
                     preserved: Vec::new(),
+                    subject,
                 },
             );
             return;
@@ -237,6 +329,7 @@ impl Workspace {
                                 permanent,
                                 preserved: plan.preserved_shared_sidecars.clone(),
                                 action: Action::Files(plan),
+                                subject,
                             },
                         );
                     }
@@ -360,35 +453,85 @@ impl Workspace {
         true
     }
 
-    pub(super) fn deletion_view(&self, cx: &Context<Self>) -> AnyElement {
-        let mut content = div().flex().flex_col().gap(px(space::MD));
-        if let Some(c) = self.deletion.confirmation() {
-            content = content
-                .child(div().text_size(px(18.)).child(if c.permanent {
-                    "Permanently delete selected photos?"
-                } else {
-                    "Move selected photos to Trash?"
-                }))
-                .child(format!(
-                    "{} {} · {} {}{}",
-                    c.photos,
-                    if c.photos == 1 { "photo" } else { "photos" },
-                    c.files,
-                    if c.files == 1 { "file" } else { "files" },
-                    if matches!(c.action, Action::InApp(_)) {
-                        " kept in place"
-                    } else {
-                        " including paired images and sidecars"
-                    }
-                ))
-                .child(div().font_weight(FontWeight::MEDIUM).child("From"));
-            let mut sources = div()
-                .id("deletion-sources")
-                .max_h(px(180.))
+    /// Up to six thumbnails of the photos being deleted, with "+N" for the rest.
+    fn deletion_thumbnails(&mut self, ids: &[i64], cx: &mut Context<Self>) -> Div {
+        const SHOWN: usize = 6;
+        let mut row = div().flex().items_center().gap(px(space::XS));
+        for id in ids.iter().take(SHOWN) {
+            let Some(&index) = self.photo_index.get(id) else {
+                continue;
+            };
+            self.request_preview(&self.photos[index], PreviewKind::Thumbnail);
+            let texture = self.texture(index, PreviewKind::Thumbnail, cx);
+            let mut cell = div()
+                .w(px(64.))
+                .h(px(48.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .overflow_hidden()
+                .bg(self.canvas_bg());
+            cell = match texture {
+                Some((texture, ..)) => {
+                    cell.child(img(texture).size_full().object_fit(ObjectFit::Contain))
+                }
+                None => cell.child(icon("camera", self.icon_muted())),
+            };
+            row = row.child(cell);
+        }
+        if ids.len() > SHOWN {
+            row = row.child(
+                div()
+                    .px(px(space::SM))
+                    .text_color(self.muted())
+                    .child(format!("+{}", ids.len() - SHOWN)),
+            );
+        }
+        row
+    }
+
+    pub(super) fn deletion_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let ids = self
+            .deletion
+            .confirmation()
+            .map(|c| c.subject.ids.clone())
+            .unwrap_or_default();
+        let thumbnails = (!ids.is_empty()).then(|| self.deletion_thumbnails(&ids, cx));
+        let error = self.c("error", "#d46a6a");
+        let warning = self.c("warning", "#e0b341");
+        let surface = self.modal_surface("deletion-confirmation", dialog::DIALOG_MEDIUM);
+        let surface = if let Some(c) = self.deletion.confirmation() {
+            let focus_ring = |button: Stateful<Div>, focused: bool| {
+                // Enter activates the selected button: its ring is always shown.
+                button
+                    .relative()
+                    .when(focused, |s| s.child(self.focus_ring_overlay()))
+            };
+            let mut body = div()
+                .id("deletion-body")
+                .flex_1()
+                .min_h(px(0.))
                 .overflow_y_scroll()
+                .p(px(ui::DIALOG_INSET))
                 .flex()
                 .flex_col()
-                .gap(px(space::XS));
+                .gap(px(space::MD))
+                .when_some(thumbnails, |s, row| s.child(row))
+                .child(c.files_line())
+                .when_some(c.keepers_warning(), |s, text| {
+                    s.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .text_color(warning)
+                            .child(icon("warning", warning).size(px(12.)))
+                            .child(text),
+                    )
+                })
+                .child(div().font_weight(FontWeight::MEDIUM).child("From"));
+            let mut sources = div().flex().flex_col().gap(px(space::XS));
             for source in &c.sources {
                 sources = sources.child(div().whitespace_normal().child(source.clone()));
             }
@@ -406,59 +549,134 @@ impl Workspace {
                     );
                 }
             }
-            content=content.child(sources).child(div().font_weight(FontWeight::MEDIUM).child("To")).child(c.destination.clone())
-                .child(div().text_color(self.muted()).child(if c.permanent {"This permanently removes files from disk. Shadowroom cannot undo this."} else if matches!(c.action,Action::InApp(_)) {"Only the catalog changes. Restore from in-app Trash or Undo."} else {"Restore through your operating system’s Trash. If trash is unavailable, the operation fails without permanent deletion."}))
-                .child(div().text_size(px(11.)).text_color(self.muted()).child("Cancel is selected by default. Tab switches buttons; Enter activates the selected button."))
-                .child(div().flex().justify_end().gap(px(space::SM))
-                    .child(self.button("cancel-deletion","Cancel","",Cmd::CancelDelete,!self.deletion.confirm_focused,cx))
-                    .child(self.button("confirm-deletion",if c.permanent {"Delete permanently"} else {"Move to Trash"},"trash",Cmd::ConfirmDelete,self.deletion.confirm_focused,cx)));
-        } else {
-            content = content.child(if self.deletion.executing() {
-                "Deleting confirmed files…"
+            body = body.child(sources);
+            body = if c.permanent {
+                // Irreversible: an error-tinted callout instead of a destination.
+                body.child(
+                    div()
+                        .p(px(space::MD))
+                        .border_1()
+                        .border_color(error)
+                        .bg(self.c("error.background", "#d46a6a1a"))
+                        .text_color(self.text())
+                        .whitespace_normal()
+                        .child("This can't be undone. Files are removed from disk and bypass the Trash."),
+                )
             } else {
-                "Checking selected files…"
-            });
-            if !self.deletion.executing() {
-                content = content.child(self.button(
-                    "cancel-deletion",
-                    "Cancel",
-                    "",
-                    Cmd::CancelDelete,
-                    true,
+                body.child(div().font_weight(FontWeight::MEDIUM).child("To"))
+                    .child(c.destination.clone())
+                    .child(div().text_color(self.muted()).child(
+                        if matches!(c.action, Action::InApp(_)) {
+                            "Only the catalog changes. Restore from in-app Trash or Undo."
+                        } else {
+                            "Restore through your operating system’s Trash. If trash is unavailable, the operation fails without permanent deletion."
+                        },
+                    ))
+            };
+            let confirm_focused = self.deletion.confirm_focused;
+            surface
+                .child(
+                    self.modal_header(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .min_w(px(0.))
+                            .when(c.permanent, |s| s.child(icon("warning", error)))
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(c.title()),
+                            ),
+                        Some(("close-deletion", Cmd::CancelDelete)),
+                        cx,
+                    ),
+                )
+                .child(body)
+                .child(
+                    self.modal_footer()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(11.))
+                                .text_color(self.muted())
+                                .child("Cancel is the default. Tab switches; Enter activates."),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(space::SM))
+                                .child(focus_ring(
+                                    self.action_button(
+                                        "cancel-deletion",
+                                        "Cancel",
+                                        Cmd::CancelDelete,
+                                        ButtonKind::Secondary,
+                                        false,
+                                        cx,
+                                    ),
+                                    !confirm_focused,
+                                ))
+                                .child(focus_ring(
+                                    self.action_button(
+                                        "confirm-deletion",
+                                        &c.confirm_label(),
+                                        Cmd::ConfirmDelete,
+                                        if c.permanent {
+                                            ButtonKind::Destructive
+                                        } else {
+                                            ButtonKind::DestructiveQuiet
+                                        },
+                                        false,
+                                        cx,
+                                    ),
+                                    confirm_focused,
+                                )),
+                        ),
+                )
+        } else {
+            let executing = self.deletion.executing();
+            surface
+                .child(self.modal_header(
+                    if executing {
+                        "Deleting confirmed files…"
+                    } else {
+                        "Checking selected files…"
+                    },
+                    None,
                     cx,
-                ));
-            }
-        }
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000088))
-            .flex()
-            .items_center()
-            .justify_center()
+                ))
+                .when(!executing, |s| {
+                    s.child(
+                        self.modal_footer().justify_end().child(
+                            self.action_button(
+                                "cancel-deletion",
+                                "Cancel",
+                                Cmd::CancelDelete,
+                                ButtonKind::Secondary,
+                                false,
+                                cx,
+                            )
+                            .relative()
+                            .child(self.focus_ring_overlay()),
+                        ),
+                    )
+                })
+        };
+        self.modal_scrim(Overlay::Deletion)
             .p(px(space::XL))
-            .child(
-                div()
-                    .id("deletion-confirmation")
-                    .occlude()
-                    .w(px(620.))
-                    .max_w_full()
-                    .max_h_full()
-                    .overflow_y_scroll()
-                    .p(px(space::XL))
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
-                    .border_1()
-                    .border_color(self.border())
-                    .child(content),
-            )
+            .child(surface)
             .into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Confirmation, DeletionMode, DeletionPlan, Photo, State};
+    use super::{Action, Confirmation, DeletionMode, DeletionPlan, Flag, Photo, State, Subject};
 
     fn in_app(ids: Vec<i64>) -> Confirmation {
         Confirmation {
@@ -469,6 +687,7 @@ mod tests {
             permanent: false,
             preserved: Vec::new(),
             action: Action::InApp(ids),
+            subject: Default::default(),
         }
     }
 
@@ -486,6 +705,51 @@ mod tests {
             ),
             ..in_app(Vec::new())
         }
+    }
+
+    #[test]
+    fn confirmation_copy_names_the_subject_and_warns_about_keepers() {
+        let photo = |id, name: &str, flag, rating| Photo {
+            id,
+            path: format!("/shoot/{name}").into(),
+            flag,
+            rating,
+            ..Default::default()
+        };
+        let single = Confirmation {
+            subject: Subject::of(&[photo(1, "03-forest.jpg", Flag::None, 0)]),
+            ..in_app(vec![1])
+        };
+        assert_eq!(single.title(), "Move “03-forest.jpg” to Trash?");
+        assert_eq!(single.files_line(), "1 file");
+        assert_eq!(single.keepers_warning(), None);
+        let batch = [
+            photo(1, "a.jpg", Flag::Pick, 0),
+            photo(2, "b.jpg", Flag::Pick, 5),
+            photo(3, "c.jpg", Flag::None, 5),
+        ];
+        let mut many = Confirmation {
+            subject: Subject::of(&batch),
+            files: 5,
+            ..in_app(vec![1, 2, 3])
+        };
+        assert_eq!(many.title(), "Move 3 photos to Trash?");
+        assert_eq!(
+            many.files_line(),
+            "3 photos · 5 files (RAW+JPEG pairs and sidecars)"
+        );
+        assert_eq!(
+            many.keepers_warning().as_deref(),
+            Some("Includes 2 picks and 1 photo rated 3★ or higher")
+        );
+        many.permanent = true;
+        assert_eq!(many.title(), "Permanently delete 3 photos?");
+        assert_eq!(many.confirm_label(), "Delete 3 photos permanently");
+        let one = Confirmation {
+            permanent: true,
+            ..in_app(vec![1])
+        };
+        assert_eq!(one.confirm_label(), "Delete 1 photo permanently");
     }
 
     #[test]
