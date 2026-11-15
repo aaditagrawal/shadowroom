@@ -9,3 +9,5 @@ __pycache__/
 node_modules/
 /assets/icons/tools/contact-sheet.png
 /assets/icons/tools/contact-sheet.svg
+
+/.claude/
