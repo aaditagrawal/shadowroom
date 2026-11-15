@@ -6,18 +6,27 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 
 | Shortcut | Action |
 | --- | --- |
-| Left / Right | Previous / next photograph |
+| Left / Right | Previous / next photograph; at either end the status bar says "First photo" / "Last photo" |
 | Shift+Down / Shift+Up | Extend / shrink selection by a grid row, keeping the original anchor |
+| Home / End | First / last photograph; Shift extends a Catalog selection. Home re-centres a zoomed photo |
+| Page Up / Page Down | One screen of Catalog rows (Shift extends the selection); nine frames in Review |
 | `[` / `]` | Previous / next group |
 | `P` / `X` / `U` | Pick / reject / clear flag |
 | `0`–`5` | Set star rating; zero clears it |
 | `R` | Reset stars and pick/reject together without advancing; keep color label |
-| `G` / `L` (or `E`) / `C` | Grid / loupe / compare |
-| Enter in Catalog | Enter Review; a selection of two or more photos limits navigation to that set |
+| `6`–`9` | Red / yellow / green / blue label; the key of the label a photo already has clears it, without advancing |
+| `G` / `L` (or `E`) / `C` / `S` | Grid / loupe / compare / survey |
+| Enter or Space in Catalog | Enter Review; a selection of two or more photos limits navigation (and Survey) to that set |
 | Double-click a Catalog photo | Review the full current collection at that photo |
-| `Z` or Space | Toggle fit / 100% zoom |
-| `=` / `-` | Zoom in / out |
-| Ctrl/Cmd + scroll | Zoom in / out; plain scroll pans while zoomed |
+| `Z` or Space | Toggle fit / 100% zoom, centred on the point under the pointer when it rests on the photo |
+| Click the photo | At Fit, 100% centred where you clicked; when zoomed, back to Fit |
+| `=` / `-` | Zoom in / out; in Catalog, larger / smaller thumbnails |
+| Ctrl/Cmd + scroll | Zoom in / out around the pointer; plain scroll pans while zoomed |
+| Alt/Option + arrows | Pan a zoomed photo by a third of the view |
+| `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
+| Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
+| Tab / Shift+Tab | Focus mode (hide side panels); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
+| Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
 | `F` | Toggle cyan focus peaking in Review and Compare |
 | `F1` | Open Getting Started |
 | `H` / `I` | Toggle histogram / inspector |
@@ -25,16 +34,31 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Ctrl+O or Cmd+O | Open a folder |
 | Ctrl+, or Cmd+, | Settings |
 | Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports. With unsaved decisions it asks first; a second press quits anyway from the recovery journal |
-| Escape | Dismiss the error notice when one is showing (nothing else that press); otherwise close the topmost menu, dialog or Import |
+| Escape | Dismiss the error notice when one is showing (nothing else that press); otherwise close the topmost menu, dialog or Import, then cancel a held batch decision, collapse a Catalog multi-selection, return zoom to Fit and leave Focus mode, one step per press |
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
+
+Automatic advance has no bare-letter shortcut, so a stray key can't change how decisions move: use Shift+A or the toggle in the bottom bar, which also shows your position (`2 / 7`). The status bar confirms each change. When the bar is narrow it drops, in order, the **Reset** label, the reviewed count, the zoom −/+ buttons, Pin and Survey, and finally the Pick/Reject words; the keycaps, position, auto-advance and zoom stay. In Catalog the bar shows an **S / M / L** thumbnail-size control instead of loupe zoom and focus peaking.
+
+A decision on 50 or more selected photos is confirmed in the status bar with its count and **Undo**. A decision on 1,000 or more photos first asks above the grid: Enter applies it and Escape cancels. With several photos selected the bar and inspector show what the photos share: a flag is highlighted only when every photo has it (a partial mark when some do), and stars read "mixed" when ratings differ.
 
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
 
 The loupe shows the current photo's flag, stars and label at its top-left. When a decision moves on to another frame (automatic advance, or the photo leaving the filtered view), the previous frame's decision appears briefly at the bottom-left of the photo, and the status bar names it with an **Undo** button for a few seconds. The status bar reports other completed actions the same way (undo/redo, pinning, focus peaking, resolved bursts, duplicate scans, Trash, imports with **Reveal**, exports with **Reveal**, ejects), then returns to the photo count.
 
-Zoom ranges from 12.5% to 800%; the **−** and **+** buttons change magnification,
-and **Z** restores 100% or Fit. Adjacent frames retain zoom and pan. Focus peaking
+Zoom ranges from 12.5% to 800%; the zoom button shows the actual magnification
+at Fit (for example **Fit 45%**), the **−** and **+** buttons change it, and **Z**
+restores 100% or Fit. While zoomed, a navigator at the photo's bottom-right shows
+where the view sits in the frame; click or drag it to move. Adjacent frames retain
+zoom and pan. In Compare, arrows skip the reference frame, so the two panes never
+show the same photo, and each pane is labelled on the picture with its role, file
+and decision; the active pane's label is underlined. Small windows give the photo
+room: below 1280 px wide, Review, Compare and Survey hide the sidebar (and below
+1100 px, Compare and Survey also hide the inspector) without changing your panel
+settings; Ctrl/Cmd+B brings the sidebar back. Survey (`S`) shows a frozen Catalog
+selection of two or more photos (**Selection · 4 photos**), otherwise the current
+burst, otherwise up to nine neighbouring frames (**Neighbours**); its header's
+**⇧P Keep this · reject undecided** button acts on exactly those frames. Focus peaking
 highlights abrupt luminance edges in the displayed preview, including both Compare
 panes. It is a visual aid, not an automatic sharpness verdict, and never changes
 the source or histogram.

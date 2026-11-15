@@ -5,9 +5,36 @@ use super::NoticeKind;
 use shadowroom::duplicates::{DuplicateScanState, ScanPhase};
 use shadowroom::model::{ColorLabel, Flag};
 
-/// A count with its noun: "1 photo", "0 photos", "2 duplicate sets".
+/// A count with its noun: "1 photo", "0 photos", "50,112 photos".
 pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
+    format!("{} {}", count(n), if n == 1 { one } else { many })
+}
+
+/// A count with comma thousands separators: "7", "2,113", "50,112".
+pub(super) fn count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A grouping gap in words: "0.5 s", "2 s", "60 min".
+pub(super) fn duration(ms: u64) -> String {
+    if ms < 60_000 {
+        let seconds = ms as f64 / 1000.;
+        if ms.is_multiple_of(1000) {
+            format!("{seconds:.0} s")
+        } else {
+            format!("{seconds:.1} s")
+        }
+    } else {
+        format!("{} min", (ms + 30_000) / 60_000)
+    }
 }
 
 /// Rating-threshold wording for the filter menu and smart collection.
@@ -39,6 +66,56 @@ pub(super) fn decision_summary(flag: Flag, rating: u8, label: ColorLabel) -> Str
     } else {
         parts.join(" · ")
     }
+}
+
+/// What a batch decision does, as a verb phrase and its object:
+/// ("Reject", "Rejected", " · ★★"), used by the question and the outcome.
+fn batch_parts(
+    rating: Option<u8>,
+    flag: Option<Flag>,
+    label: Option<ColorLabel>,
+) -> (&'static str, &'static str, String) {
+    match (rating, flag, label) {
+        (Some(0), Some(Flag::None), None) => ("Reset", "Reset", String::new()),
+        (None, Some(Flag::Pick), None) => ("Pick", "Picked", String::new()),
+        (None, Some(Flag::Reject), None) => ("Reject", "Rejected", String::new()),
+        (None, Some(Flag::None), None) => {
+            ("Clear the flag of", "Cleared the flag of", String::new())
+        }
+        (Some(0), None, None) => (
+            "Clear the rating of",
+            "Cleared the rating of",
+            String::new(),
+        ),
+        (Some(r), None, None) => ("Rate", "Rated", format!(" {}", super::stars(r))),
+        (None, None, Some(ColorLabel::None)) => {
+            ("Clear the label of", "Cleared the label of", String::new())
+        }
+        (None, None, Some(l)) => ("Label", "Labelled", format!(" {}", l.as_str())),
+        _ => ("Change", "Changed", String::new()),
+    }
+}
+
+/// "Reject 1,200 photos?" before a held batch decision is applied.
+pub(super) fn batch_question(
+    rating: Option<u8>,
+    flag: Option<Flag>,
+    label: Option<ColorLabel>,
+    n: usize,
+) -> String {
+    let (verb, _, object) = batch_parts(rating, flag, label);
+    format!("{verb} {}{object}?", plural(n, "photo", "photos"))
+}
+
+/// "Rejected 1,200 photos" after a large batch decision.
+pub(super) fn batch_done(
+    rating: Option<u8>,
+    flag: Option<Flag>,
+    label: Option<ColorLabel>,
+    n: usize,
+) -> String {
+    let (_, done, object) = batch_parts(rating, flag, label);
+    format!("{done} {}{object}", plural(n, "photo", "photos"))
 }
 
 /// Which photos an action touched: the file name for one, a count otherwise.
@@ -285,6 +362,44 @@ mod tests {
             "2 duplicate sets"
         );
         assert_eq!(plural(1, "file", "files"), "1 file");
+    }
+
+    #[test]
+    fn batch_decisions_ask_and_report_with_counts() {
+        assert_eq!(
+            batch_question(None, Some(Flag::Reject), None, 1_200),
+            "Reject 1,200 photos?"
+        );
+        assert_eq!(
+            batch_done(None, Some(Flag::Reject), None, 1_200),
+            "Rejected 1,200 photos"
+        );
+        assert_eq!(batch_done(Some(3), None, None, 60), "Rated 60 photos ★★★");
+        assert_eq!(
+            batch_done(None, None, Some(ColorLabel::Red), 2),
+            "Labelled 2 photos Red"
+        );
+        assert_eq!(
+            batch_question(Some(0), Some(Flag::None), None, 51),
+            "Reset 51 photos?"
+        );
+    }
+
+    #[test]
+    fn grouping_gaps_read_in_units() {
+        assert_eq!(duration(500), "0.5 s");
+        assert_eq!(duration(2_000), "2 s");
+        assert_eq!(duration(3_600_000), "60 min");
+    }
+
+    #[test]
+    fn large_counts_are_grouped() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1_000), "1,000");
+        assert_eq!(count(50_112), "50,112");
+        assert_eq!(count(1_234_567), "1,234,567");
+        assert_eq!(plural(50_112, "photo", "photos"), "50,112 photos");
     }
 
     #[test]

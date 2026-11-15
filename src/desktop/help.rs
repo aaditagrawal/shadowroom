@@ -28,11 +28,11 @@ impl Workspace {
             ),
             (
                 "3. Cull, then rate your keepers",
-                "Use P to pick, X to reject and U to clear the flag. Keys 0–5 set stars; repeating a rating or flag keeps that decision. R resets stars and pick/reject together, keeps the color label and never auto-advances. Use Unreviewed for a first pass, then Picks for keeper ratings. Shift+A toggles auto-advance; Ctrl/Cmd+Z undoes a decision, including a reset.",
+                "Use P to pick, X to reject and U to clear the flag. Keys 0–5 set stars; repeating a rating or flag keeps that decision. R resets stars and pick/reject together, keeps the color label and never auto-advances. Use Unreviewed for a first pass, then Picks for keeper ratings. The bottom bar shows your position (2 / 7) and the auto-advance toggle; Shift+A toggles it. Ctrl/Cmd+Z undoes a decision, including a reset. A decision on 1,000 or more selected photos waits for Enter.",
             ),
             (
                 "4. Inspect fine detail",
-                "Left/Right switches frames and preserves zoom and pan. Z or Space toggles Fit / 100%; + and − change magnification. Drag or scroll to pan; Ctrl/Cmd+scroll zooms. B pins a reference, C compares, Tab changes the active pane, and linked pans move together. F toggles cyan focus peaking, a detail aid rather than a focus guarantee.",
+                "Left/Right switches frames and preserves zoom and pan. Click the photo, or press Z or Space with the pointer on it, to see 100% right there; click again or press Esc for Fit. - and = change magnification, and Ctrl/Cmd+scroll zooms around the pointer. Drag, scroll, Alt/Option+arrows or the navigator inset move the view; Home re-centres it. B pins a reference and C compares: in Compare, B keeps the better frame as the reference and brings in the next one, Shift+B swaps the panes, Tab changes the active pane and Shift+C links or unlinks their pans. F toggles cyan focus peaking, a detail aid rather than a focus guarantee.",
             ),
             (
                 "Fast previews and caching",
@@ -44,7 +44,7 @@ impl Workspace {
             ),
             (
                 "Color labels",
-                "Labels are your own categories, not a universal meaning or rating standard. For example, red can mean retouch and green can mean delivery-ready. Keys 6–9 assign red, yellow, green and blue; the inspector also offers purple and clear. Export XMP explicitly when you want to carry decisions into another editor.",
+                "Labels are your own categories, not a universal meaning or rating standard. For example, red can mean retouch and green can mean delivery-ready. Keys 6–9 assign red, yellow, green and blue; pressing the key of the label a photo already has clears it without moving on. The inspector also offers purple and clear. Export XMP explicitly when you want to carry decisions into another editor.",
             ),
             (
                 "Image actions",
@@ -93,8 +93,11 @@ impl Workspace {
                             .border_color(self.border())
                             .child(div().font_weight(FontWeight::MEDIUM).child("Quick keys"))
                             .child("←/→ Navigate · P Pick · X Reject · U Clear flag · 0–5 Stars · R Reset")
-                            .child("G Catalog · L Review · C Compare · S Survey · B Pin reference")
-                            .child("Z Fit/100% · +/− Zoom · F Focus peaking · H Histogram · I Inspector")
+                            .child(format!(
+                                "G Catalog · L Review · C Compare · S Survey · B Pin reference · {} Swap",
+                                shortcut("⇧B")
+                            ))
+                            .child("Z/Space or click Fit/100% · -/= Zoom · Alt+arrows Pan · F Peaking · H Histogram")
                             .child(
                                 div()
                                     .text_color(self.muted())
@@ -119,14 +122,28 @@ impl Workspace {
                                 self.settings.show_getting_started,
                                 cx,
                             ))
-                            .child(self.action_button(
-                                "guide-done",
-                                "Start culling",
-                                Cmd::Close,
-                                ButtonKind::Primary,
-                                false,
-                                cx,
-                            )),
+                            .child(if self.photos.is_empty() {
+                                // An empty library's next step is adding photos.
+                                self.dialog_button(
+                                    "guide-done",
+                                    "Add Photos…",
+                                    ButtonKind::Primary,
+                                    false,
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.execute(Cmd::Close, window, cx);
+                                    this.execute(Cmd::Import, window, cx);
+                                }))
+                            } else {
+                                self.action_button(
+                                    "guide-done",
+                                    "Start culling",
+                                    Cmd::Close,
+                                    ButtonKind::Primary,
+                                    false,
+                                    cx,
+                                )
+                            }),
                     ),
             )
             .into_any_element()

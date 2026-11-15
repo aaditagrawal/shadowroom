@@ -1,4 +1,5 @@
 mod copy;
+mod culling;
 mod deletion_ui;
 mod dialog;
 mod feedback;
@@ -67,6 +68,7 @@ impl AssetSource for Assets {
                 "../assets/icons/shadowroom/view-compare.svg"
             )),
             "zoom" => Some(include_bytes!("../assets/icons/zoom-in.svg")),
+            "zoom-out" => Some(include_bytes!("../assets/icons/shadowroom/zoom-out.svg")),
             "graph" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
             "histogram" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
             "undo" => Some(include_bytes!("../assets/icons/discard.svg")),
@@ -264,6 +266,20 @@ enum Cmd {
     LabelFilter(ColorLabel),
     BurstsOnly,
     RatedAtLeast(u8),
+    /// Catalog thumbnail size S / M / L (0–2), and a step through them.
+    GridSize(usize),
+    GridSizeStep(i8),
+    /// Compare: exchange reference and candidate.
+    SwapPanes,
+    /// Z / Space: 100% at the pointer, or back to Fit.
+    ZoomAtPointer,
+    /// Pan a zoomed photo by a third of the view (x, y).
+    PanStep(i8, i8),
+    ApplyBulk,
+    CancelBulk,
+    ClearScope,
+    /// Whole library: no scope, collection, label, rating or burst filter.
+    ClearFilters,
 }
 struct PaletteItem {
     title: String,
@@ -969,7 +985,7 @@ pub struct Workspace {
     decision_membership_changed: bool,
     bursts: BurstIndex,
     duplicate_slots: HashMap<i64, (usize, usize, usize)>,
-    survey_cache: Option<((bool, usize), Arc<SurveySummary>)>,
+    survey_cache: Option<(SurveyKey, Arc<SurveySummary>)>,
     filtered: Vec<usize>,
     selected: usize,
     multi: HashSet<i64>,
@@ -1097,7 +1113,186 @@ pub struct Workspace {
     poll_render: bool,
     _automation_wake: Option<Task<()>>,
     _shutdown: Subscription,
+    /// Catalog thumbnail size: 0 = S, 1 = M, 2 = L (`settings.extra.grid_size`).
+    grid_size: usize,
+    /// Painted image geometry per pane ([reference, current]) from the last
+    /// frame, so pointer zoom and keyboard pan can map screen to image.
+    pane_geometry: Rc<Cell<[PaneGeometry; 2]>>,
+    /// The zoom navigator of this pane is being dragged.
+    navigator_drag: Option<bool>,
+    /// A batch decision over many photos waiting for Enter (CAT-11).
+    pending_bulk: Option<PendingBulk>,
+    /// Counts for the current folder scope; `counts` stays library-wide.
+    scope_counts: Option<CollectionCounts>,
+    /// With a rating filter: in-scope counts of photos it lets through.
+    rated_counts: Option<CollectionCounts>,
+    /// Bumped whenever a photo's decision changes; keys derived caches.
+    decision_epoch: u64,
+    selection_summary_cache: RefCell<Option<((usize, usize, u64), SelectionSummary)>>,
+    /// The guide opened by itself at launch; closing it stops that.
+    startup_guide: bool,
+    /// One-time notices already shown this session.
+    shown_hints: HashSet<&'static str>,
+    window_title: String,
+    /// The user reopened a dock that small-window fitting had hidden:
+    /// [library, inspector] stay until hidden again.
+    dock_override: [bool; 2],
 }
+
+/// Image placement in one photo pane, measured while painting.
+#[derive(Clone, Copy, Debug, Default)]
+struct PaneGeometry {
+    bounds: Bounds<Pixels>,
+    /// Texture size in pixels.
+    width: u32,
+    height: u32,
+    /// Source pixels per texture pixel (a reduced preview refines in place).
+    source_scale: f32,
+    scale_factor: f32,
+}
+impl PaneGeometry {
+    fn valid(&self) -> bool {
+        self.width > 0 && self.height > 0 && f32::from(self.bounds.size.width) > 0.
+    }
+    /// Logical pixels per texture pixel at Fit.
+    fn fit_scale(&self) -> f32 {
+        (f32::from(self.bounds.size.width) / self.width as f32)
+            .min(f32::from(self.bounds.size.height) / self.height as f32)
+    }
+    /// Logical pixels per texture pixel at a zoom factor (1 = 100% of source).
+    fn zoom_scale(&self, factor: f32) -> f32 {
+        factor * self.source_scale / self.scale_factor.max(0.01)
+    }
+    /// Image position (0–1 per axis) under a window point for a given scale
+    /// and pan, clamped to the image.
+    fn image_point(&self, at: Point<Pixels>, scale: f32, pan: [f32; 2]) -> [f32; 2] {
+        let size = [
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        ];
+        let start = [
+            f32::from(self.bounds.origin.x),
+            f32::from(self.bounds.origin.y),
+        ];
+        let image = [self.width as f32 * scale, self.height as f32 * scale];
+        let at = [f32::from(at.x), f32::from(at.y)];
+        std::array::from_fn(|i| {
+            let origin = if image[i] > size[i] {
+                start[i] - (image[i] - size[i]) * pan[i]
+            } else {
+                start[i] + (size[i] - image[i]) / 2.
+            };
+            ((at[i] - origin) / image[i].max(1.)).clamp(0., 1.)
+        })
+    }
+    /// The pan that puts image point `u` at pane offset `target` (logical
+    /// px from the pane origin) at `scale`.
+    fn pan_for(&self, u: [f32; 2], target: [f32; 2], scale: f32) -> [f32; 2] {
+        let size = [
+            f32::from(self.bounds.size.width),
+            f32::from(self.bounds.size.height),
+        ];
+        let image = [self.width as f32 * scale, self.height as f32 * scale];
+        std::array::from_fn(|i| {
+            if image[i] > size[i] {
+                ((u[i] * image[i] - target[i]) / (image[i] - size[i])).clamp(0., 1.)
+            } else {
+                0.5
+            }
+        })
+    }
+    fn contains(&self, at: Point<Pixels>) -> bool {
+        self.valid() && self.bounds.contains(&at)
+    }
+}
+
+/// A decision on more photos than the confirmation threshold, held until
+/// Enter applies it or Escape cancels.
+#[derive(Clone, Debug)]
+struct PendingBulk {
+    rating: Option<u8>,
+    flag: Option<Flag>,
+    label: Option<ColorLabel>,
+    count: usize,
+}
+
+/// Decisions of a multi-selection, for mixed-state display (CAT-10).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct SelectionSummary {
+    count: usize,
+    /// Pick, Reject, None.
+    flags: [usize; 3],
+    /// Photos per star count, 0–5.
+    ratings: [usize; 6],
+    labels: [usize; 6],
+}
+impl SelectionSummary {
+    fn add(&mut self, p: &Photo) {
+        self.count += 1;
+        self.flags[match p.flag {
+            Flag::Pick => 0,
+            Flag::Reject => 1,
+            Flag::None => 2,
+        }] += 1;
+        self.ratings[usize::from(p.rating.min(5))] += 1;
+        self.labels[label_index(p.label)] += 1;
+    }
+    /// The flag every member shares, if any.
+    fn common_flag(&self) -> Option<Flag> {
+        [Flag::Pick, Flag::Reject, Flag::None]
+            .into_iter()
+            .zip(self.flags)
+            .find(|&(_, n)| n == self.count)
+            .map(|(flag, _)| flag)
+    }
+    fn common_rating(&self) -> Option<u8> {
+        (0..=5u8).find(|&r| self.ratings[usize::from(r)] == self.count)
+    }
+    fn common_label(&self) -> Option<ColorLabel> {
+        [
+            ColorLabel::None,
+            ColorLabel::Red,
+            ColorLabel::Yellow,
+            ColorLabel::Green,
+            ColorLabel::Blue,
+            ColorLabel::Purple,
+        ]
+        .into_iter()
+        .find(|&l| self.labels[label_index(l)] == self.count)
+    }
+    fn has_flag(&self, flag: Flag) -> bool {
+        self.flags[match flag {
+            Flag::Pick => 0,
+            Flag::Reject => 1,
+            Flag::None => 2,
+        }] > 0
+    }
+}
+
+/// What Survey shows: a review selection, the burst, or the neighbours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurveyKey {
+    /// The frozen Catalog selection being reviewed (its length).
+    Selection(usize),
+    /// A burst or duplicate set: (duplicates view, group index).
+    Group(bool, usize),
+    /// Frames around the current one when it has no group (first position).
+    Neighbours(usize),
+}
+impl SurveyKey {
+    fn label(self, len: usize) -> Option<String> {
+        match self {
+            Self::Selection(_) => Some(format!("Selection · {}", plural(len, "photo", "photos"))),
+            Self::Neighbours(_) => Some(format!("Neighbours · {}", plural(len, "photo", "photos"))),
+            Self::Group(..) => None,
+        }
+    }
+}
+
+/// A batch decision this large asks for Enter first (CAT-11).
+const BULK_CONFIRM_AT: usize = 1000;
+/// A batch decision this large is confirmed with a counted Undo notice.
+const BULK_NOTICE_AT: usize = 50;
 
 impl Workspace {
     fn new(cx: &mut gpui::Context<Self>, import: Option<PathBuf>, window: AnyWindowHandle) -> Self {
@@ -1218,6 +1413,11 @@ impl Workspace {
         let inspector_info =
             settings.extra.get("inspector_tab").and_then(Value::as_str) == Some("info");
         let getting_started = settings.show_getting_started;
+        let grid_size = match settings.extra.get("grid_size").and_then(Value::as_str) {
+            Some("s") => 0,
+            Some("l") => 2,
+            _ => 1,
+        };
         let mut workspace = Self {
             focus: cx.focus_handle(),
             library_resize_focus: cx.focus_handle(),
@@ -1361,6 +1561,18 @@ impl Workspace {
             poll_render: false,
             _automation_wake: None,
             _shutdown: shutdown_subscription,
+            grid_size,
+            pane_geometry: Rc::new(Cell::new([PaneGeometry::default(); 2])),
+            navigator_drag: None,
+            pending_bulk: None,
+            scope_counts: None,
+            rated_counts: None,
+            decision_epoch: 0,
+            selection_summary_cache: RefCell::new(None),
+            startup_guide: getting_started,
+            shown_hints: HashSet::new(),
+            window_title: String::new(),
+            dock_override: [false; 2],
         };
         if let Some(server) = &workspace.automation {
             match UiInbox::new(server.requests.clone()) {
@@ -1485,6 +1697,27 @@ impl Workspace {
         } else {
             self.selected_photo()
         }
+    }
+    /// Decisions across a multi-selection of two or more photos. Large
+    /// selections are summarised once per selection/decision change.
+    fn selection_summary(&self) -> Option<SelectionSummary> {
+        if self.multi.len() < 2 {
+            return None;
+        }
+        let key = (self.multi.len(), self.selected, self.decision_epoch);
+        if let Some((cached, summary)) = &*self.selection_summary_cache.borrow()
+            && *cached == key
+        {
+            return Some(summary.clone());
+        }
+        let mut summary = SelectionSummary::default();
+        for id in &self.multi {
+            if let Some(&i) = self.photo_index.get(id) {
+                summary.add(&self.photos[i]);
+            }
+        }
+        *self.selection_summary_cache.borrow_mut() = Some((key, summary.clone()));
+        Some(summary)
     }
     fn selected_id(&self) -> Option<i64> {
         self.selected_photo().map(|p| p.id)
@@ -2216,6 +2449,9 @@ impl Workspace {
         }
     }
     fn accepts_photo(&self, p: &Photo) -> bool {
+        p.rating >= self.min_rating && self.accepts_ignoring_rating(p)
+    }
+    fn accepts_ignoring_rating(&self, p: &Photo) -> bool {
         self.filter.accepts(p)
             && (self.mode == ViewMode::Grid
                 || self.review_folder != self.scope
@@ -2224,7 +2460,6 @@ impl Workspace {
                     .as_ref()
                     .is_none_or(|ids| ids.contains(&p.id)))
             && (!self.duplicates_only || self.duplicate_ids.contains(&p.id))
-            && p.rating >= self.min_rating
             && self.scope.as_ref().is_none_or(|s| p.matches_scope(s))
             && self.label_filter.is_none_or(|l| p.label == l)
             && (!self.bursts_only || self.bursts.unresolved.contains(&p.id))
@@ -2249,7 +2484,18 @@ impl Workspace {
         let mut filtered = std::mem::take(&mut self.filtered);
         filtered.clear();
         let mut reviewed = 0;
+        // Sidebar counts follow the folder scope; the same pass collects them.
+        let mut scoped = self.scope.as_ref().map(|_| CollectionCounts::default());
+        let mut rated = (self.min_rating > 0).then(CollectionCounts::default);
         filtered.extend(self.photos.iter().enumerate().filter_map(|(i, p)| {
+            if self.scope.as_ref().is_none_or(|s| p.matches_scope(s)) {
+                if let Some(counts) = &mut scoped {
+                    counts.adjust(Decision::from(p), true);
+                }
+                if let Some(counts) = rated.as_mut().filter(|_| p.rating >= self.min_rating) {
+                    counts.adjust(Decision::from(p), true);
+                }
+            }
             if !self.accepts_photo(p) {
                 return None;
             }
@@ -2268,6 +2514,9 @@ impl Workspace {
             });
         }
         index_filtered_positions(&mut self.filtered_positions, self.photos.len(), &filtered);
+        self.scope_counts = scoped;
+        self.rated_counts = rated;
+        self.decision_epoch = self.decision_epoch.wrapping_add(1);
         self.filtered_reviewed = reviewed;
         self.filtered = filtered;
         self.retain_selection(keep);
@@ -2436,17 +2685,57 @@ impl Workspace {
             );
         }
     }
+    /// Moves through the view; at either end a notice says so, since a held
+    /// arrow or a dial detent that does nothing looks like a missed key.
     fn navigate(&mut self, delta: isize, cx: &mut gpui::Context<Self>) {
+        let before = self.selected;
+        self.navigate_quietly(delta, cx);
+        if delta == 0 || self.filtered.is_empty() || self.selected != before {
+            return;
+        }
+        let len = self.filtered.len();
+        let last = delta > 0;
+        let unreviewed = len - self.filtered_reviewed.min(len);
+        let mut text = if last {
+            format!("Last photo · {} of {}", copy::count(len), copy::count(len))
+        } else {
+            format!("First photo · 1 of {}", copy::count(len))
+        };
+        let current_unreviewed = self
+            .selected_photo()
+            .is_some_and(|p| Filter::Unrated.accepts(p));
+        if unreviewed > usize::from(current_unreviewed) {
+            text.push_str(&format!(
+                " · {} unreviewed · {} finds them",
+                copy::count(unreviewed),
+                shortcut(if last { "Shift ←" } else { "Shift →" })
+            ));
+        }
+        self.announce(text, Tone::Info);
+    }
+    fn navigate_quietly(&mut self, delta: isize, cx: &mut gpui::Context<Self>) {
         self.catalog_hover = None;
         if self.filtered.is_empty() {
             return;
         }
         self.media.cancel_pending();
         self.navigation_direction = delta.signum();
-        self.selected = self
-            .selected
-            .saturating_add_signed(delta)
-            .min(self.filtered.len() - 1);
+        let len = self.filtered.len();
+        let mut target = self.selected.saturating_add_signed(delta).min(len - 1);
+        // Compare never shows the reference against itself: step over it.
+        if self.mode == ViewMode::Compare
+            && delta != 0
+            && target != self.selected
+            && self.reference.and_then(|id| self.visible_position(id)) == Some(target)
+        {
+            let next = target as isize + delta.signum();
+            target = if (0..len as isize).contains(&next) {
+                next as usize
+            } else {
+                self.selected
+            };
+        }
+        self.selected = target;
         self.multi.clear();
         if self.mode == ViewMode::Grid {
             if let Some(id) = self.selected_id() {
@@ -2456,8 +2745,8 @@ impl Workspace {
         self.selection_anchor = self.selected_id();
         self.settings.last_photo_id = self.selected_id();
         self.save_navigation();
-        self.grid_scroll
-            .scroll_to_item(self.selected / self.grid_cols(), ScrollStrategy::Center);
+        // The grid moves only when the selection leaves the viewport.
+        self.reveal_grid_row(self.selected / self.grid_cols(), false);
         self.read_ahead();
         cx.notify();
     }
@@ -2539,12 +2828,28 @@ impl Workspace {
             let accepted_before = self.accepts_photo(&self.photos[i]);
             let reviewed_before = !Filter::Unrated.accepts(&self.photos[i]);
             self.counts.adjust(before, false);
+            let in_scope = self
+                .scope
+                .as_ref()
+                .is_none_or(|s| self.photos[i].matches_scope(s));
             let p = &mut self.photos[i];
             p.rating = d.rating;
             p.flag = d.flag;
             p.label = d.label;
             p.trashed = d.trashed;
             self.counts.adjust(*d, true);
+            if let Some(counts) = self.scope_counts.as_mut().filter(|_| in_scope) {
+                counts.adjust(before, false);
+                counts.adjust(*d, true);
+            }
+            if let Some(counts) = self.rated_counts.as_mut().filter(|_| in_scope) {
+                if before.rating >= self.min_rating {
+                    counts.adjust(before, false);
+                }
+                if d.rating >= self.min_rating {
+                    counts.adjust(*d, true);
+                }
+            }
             if before.trashed != d.trashed {
                 adjust_folder(&mut self.folders, &p.folder_key(), !d.trashed);
             }
@@ -2574,6 +2879,7 @@ impl Workspace {
                 }
             }
         }
+        self.decision_epoch = self.decision_epoch.wrapping_add(1);
         self.save_revisions.stage(decisions.iter().map(|d| d.id));
         for d in &decisions {
             self.unsaved.insert(d.id, *d);
@@ -2604,11 +2910,22 @@ impl Workspace {
         allow_advance: bool,
         cx: &mut gpui::Context<Self>,
     ) {
-        let ids = if self.multi.is_empty() {
-            self.review_photo().map(|p| p.id).into_iter().collect()
-        } else {
-            self.multi.clone()
-        };
+        let count = self.decision_targets().len();
+        if self.hold_bulk(count, rating, flag, label) {
+            cx.notify();
+            return;
+        }
+        self.decide_now(rating, flag, label, allow_advance, cx);
+    }
+    fn decide_now(
+        &mut self,
+        rating: Option<u8>,
+        flag: Option<Flag>,
+        label: Option<ColorLabel>,
+        allow_advance: bool,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let ids = self.decision_targets();
         let before = self.decisions_for(&ids);
         let after: Vec<_> = before
             .iter()
@@ -2642,9 +2959,19 @@ impl Workspace {
         {
             self.navigate(1, cx);
         }
-        // The decided frame is no longer on screen (auto-advance, or the
-        // decision filtered it out): confirm what it now carries.
-        if old.is_some() && self.selected_id() != old {
+        // A batch larger than a screenful is confirmed with its count, so a
+        // stray key after Select All is visible and one Undo away.
+        if after.len() >= BULK_NOTICE_AT {
+            self.announce_action(
+                copy::batch_done(rating, flag, label, after.len()),
+                Tone::Info,
+                "Undo",
+                Cmd::Undo,
+                "⌘Z",
+            );
+        } else if old.is_some() && self.selected_id() != old {
+            // The decided frame is no longer on screen (auto-advance, or the
+            // decision filtered it out): confirm what it now carries.
             self.confirm_decision(&after, (rating, flag, label));
         }
         cx.notify();
@@ -2851,7 +3178,59 @@ impl Workspace {
         if !matches!(cmd, Cmd::RatingFilter | Cmd::Close) {
             self.rating_filter_open = false;
         }
+        // A held batch decision is answered by Enter/Apply or Escape/Cancel;
+        // doing anything else drops it.
+        if !matches!(
+            cmd,
+            Cmd::ApplyBulk | Cmd::CancelBulk | Cmd::Close | Cmd::DismissError | Cmd::Quit
+        ) && self.pending_bulk.take().is_some()
+        {
+            self.announce("Batch decision cancelled", Tone::Info);
+        }
         match cmd {
+            Cmd::GridSize(size) => {
+                self.grid_size = size.min(ui::GRID_SIZES.len() - 1);
+                self.settings
+                    .extra
+                    .insert("grid_size".into(), json!(["s", "m", "l"][self.grid_size]));
+                self.save_settings();
+                self.reveal_grid_row(self.selected / self.grid_cols().max(1), true);
+            }
+            Cmd::GridSizeStep(step) => {
+                let size = self
+                    .grid_size_index()
+                    .saturating_add_signed(step as isize)
+                    .min(ui::GRID_SIZES.len() - 1);
+                self.execute(Cmd::GridSize(size), window, cx);
+                return;
+            }
+            Cmd::SwapPanes => {
+                if self.mode == ViewMode::Compare {
+                    self.swap_panes(cx);
+                }
+            }
+            Cmd::ZoomAtPointer => self.toggle_zoom_at_pointer(window),
+            Cmd::PanStep(dx, dy) => {
+                if !self.pan_step(f32::from(dx), f32::from(dy)) && !self.zoom {
+                    self.hint_once(
+                        "pan-keys",
+                        "Zoom in first · Z or Space · then Alt+arrows pan",
+                    );
+                }
+            }
+            Cmd::ApplyBulk => self.apply_bulk(cx),
+            Cmd::CancelBulk => {
+                if self.pending_bulk.take().is_some() {
+                    self.announce("Batch decision cancelled", Tone::Info);
+                }
+            }
+            Cmd::ClearScope => {
+                let id = self.selected_id();
+                self.scope = None;
+                self.reference_focus = false;
+                self.rebuild(id);
+            }
+            Cmd::ClearFilters => self.clear_filters(),
             Cmd::Trash(trashed) => {
                 if trashed {
                     self.request_deletion(false, cx);
@@ -3024,6 +3403,8 @@ impl Workspace {
                 self.getting_started = true;
             }
             Cmd::StartupGuide(enabled) => {
+                // An explicit choice: closing the guide no longer clears it.
+                self.startup_guide = false;
                 self.settings.show_getting_started = enabled;
                 self.save_settings();
             }
@@ -3051,6 +3432,16 @@ impl Workspace {
                 }
                 if self.getting_started {
                     self.getting_started = false;
+                    // The guide opened by itself once; F1 and ? keep it close.
+                    if std::mem::take(&mut self.startup_guide) && self.settings.show_getting_started
+                    {
+                        self.settings.show_getting_started = false;
+                        self.save_settings();
+                        self.announce(
+                            "Getting Started won't open at launch · F1 or ? shows it",
+                            Tone::Info,
+                        );
+                    }
                     cx.notify();
                     return;
                 }
@@ -3069,10 +3460,30 @@ impl Workspace {
                     self.dismiss_preferences(window, cx);
                 } else if self.add_host.is_some() {
                     self.add_host = None;
-                } else {
+                } else if self.pending_bulk.take().is_some() {
+                    self.announce("Batch decision cancelled", Tone::Info);
+                } else if self.import_ui.open {
                     self.cancel_ingest_resize();
                     self.import_ui.active_field = None;
                     self.import_ui.open = false;
+                    self.error = None;
+                } else if self.mode == ViewMode::Grid && self.multi.len() > 1 {
+                    // Escape steps out of modes one at a time: a batch
+                    // selection collapses to the outlined photo first…
+                    self.multi.clear();
+                    if let Some(id) = self.selected_id() {
+                        self.multi.insert(id);
+                        self.selection_anchor = Some(id);
+                    }
+                } else if self.zoom && self.mode != ViewMode::Grid {
+                    // …then zoom returns to Fit, then Focus mode ends.
+                    self.zoom = false;
+                    self.read_ahead();
+                } else if self.focus_mode {
+                    self.focus_mode = false;
+                } else {
+                    self.cancel_ingest_resize();
+                    self.import_ui.active_field = None;
                     self.error = None;
                 }
             }
@@ -3090,7 +3501,34 @@ impl Workspace {
             }
             Cmd::Flag(f) => self.decide(None, Some(f), None, true, cx),
             Cmd::ResetDecision => self.decide(Some(0), Some(Flag::None), None, false, cx),
-            Cmd::Label(l) => self.decide(None, None, Some(l), true, cx),
+            Cmd::Label(l) => {
+                // The active label's key clears it, in place: fixing a label
+                // never moves on to another photo.
+                let ids = self.decision_targets();
+                let all_have = !ids.is_empty()
+                    && l != ColorLabel::None
+                    && ids.iter().all(|id| {
+                        self.photo_index
+                            .get(id)
+                            .is_some_and(|&i| self.photos[i].label == l)
+                    });
+                if all_have || l == ColorLabel::None {
+                    self.decide(None, None, Some(ColorLabel::None), false, cx);
+                    if let Some(subject) = (ids.len() < BULK_NOTICE_AT)
+                        .then(|| {
+                            let first = ids.iter().next().copied();
+                            first
+                                .and_then(|id| self.photo_index.get(&id))
+                                .map(|&i| copy::subject(ids.len(), Some(&self.photos[i].filename)))
+                        })
+                        .flatten()
+                    {
+                        self.announce(format!("Label cleared · {subject}"), Tone::Info);
+                    }
+                } else {
+                    self.decide(None, None, Some(l), true, cx);
+                }
+            }
             Cmd::Undo => {
                 if let Some(d) = self.history.undo() {
                     let id = d.first().map(|d| d.id);
@@ -3127,12 +3565,19 @@ impl Workspace {
                     }
                 }
             }
-            Cmd::View(mode) => self.change_photo_view(mode, mode == ViewMode::Compare, cx),
+            Cmd::View(mode) => self.change_photo_view(
+                mode,
+                matches!(mode, ViewMode::Compare | ViewMode::Survey),
+                cx,
+            ),
             Cmd::ReviewSelection => self.activate_review(cx),
             Cmd::ClearReviewSubset => {
                 self.review_subset = None;
                 self.rebuild(self.selected_id());
                 self.read_ahead();
+            }
+            Cmd::Pin if self.mode == ViewMode::Compare && self.filtered.len() > 1 => {
+                self.promote_candidate(cx);
             }
             Cmd::Pin => {
                 self.reference = self.selected_id();
@@ -3181,7 +3626,9 @@ impl Workspace {
                 );
             }
             Cmd::Inspector => {
-                self.inspector = self.focus_mode || !self.inspector || self.docks.inspector == 0.;
+                let hidden = self.docks.inspector == 0.;
+                self.inspector = self.focus_mode || !self.inspector || hidden;
+                self.dock_override[1] = self.inspector && hidden;
                 self.focus_mode = false;
                 self.dock_priority = DockSide::Inspector;
                 self.settings.show_inspector = self.inspector;
@@ -3205,9 +3652,16 @@ impl Workspace {
             }
             Cmd::Histogram => self.histogram = !self.histogram,
             Cmd::PreviewDetails => self.preview_details = !self.preview_details,
-            Cmd::Focus => self.focus_mode = !self.focus_mode,
+            Cmd::Focus => {
+                self.focus_mode = !self.focus_mode;
+                if self.focus_mode {
+                    self.hint_once("focus-mode", "Focus mode · Esc or Shift+Tab to exit");
+                }
+            }
             Cmd::Sidebar => {
-                self.sidebar = self.focus_mode || !self.sidebar || self.docks.library == 0.;
+                let hidden = self.docks.library == 0.;
+                self.sidebar = self.focus_mode || !self.sidebar || hidden;
+                self.dock_override[0] = self.sidebar && hidden;
                 self.focus_mode = false;
                 self.dock_priority = DockSide::Library;
                 self.settings.show_sidebar = self.sidebar;
@@ -3227,11 +3681,13 @@ impl Workspace {
                 match side {
                     DockSide::Library => {
                         self.sidebar = true;
+                        self.dock_override[0] = true;
                         self.settings.show_sidebar = true;
                         window.focus(&self.library_resize_focus);
                     }
                     DockSide::Inspector => {
                         self.inspector = true;
+                        self.dock_override[1] = true;
                         self.settings.show_inspector = true;
                         window.focus(&self.inspector_resize_focus);
                     }
@@ -3290,8 +3746,9 @@ impl Workspace {
                 self.save_settings();
             }
             Cmd::Filter(f) => {
+                // Collections compose with the folder scope and a label filter
+                // (breadcrumb chips show and clear each one).
                 self.duplicates_only = false;
-                self.label_filter = None;
                 self.bursts_only = false;
                 self.reference_focus = false;
                 let id = self.selected_id();
@@ -3342,6 +3799,18 @@ impl Workspace {
             Cmd::AutoAdvance => {
                 self.settings.auto_advance = !self.settings.auto_advance;
                 self.save_settings();
+                self.announce(
+                    format!(
+                        "Auto-advance {} · {} toggles",
+                        if self.settings.auto_advance {
+                            "on"
+                        } else {
+                            "off"
+                        },
+                        shortcut("Shift A")
+                    ),
+                    Tone::Info,
+                );
             }
             Cmd::SetAutoAdvance(enabled) => {
                 self.settings.auto_advance = enabled;
@@ -3395,6 +3864,17 @@ impl Workspace {
                 if self.compare_sync {
                     self.pans[0] = self.pans[1];
                 }
+                self.announce(
+                    if self.compare_sync {
+                        format!(
+                            "Panes linked · pan and zoom together · {}",
+                            shortcut("Shift C")
+                        )
+                    } else {
+                        format!("Panes unlinked · {} relinks", shortcut("Shift C"))
+                    },
+                    Tone::Info,
+                );
             }
             Cmd::Unreviewed(direction) => {
                 let mut position = self.selected as isize + direction;
@@ -3406,14 +3886,30 @@ impl Workspace {
                     position += direction;
                 }
             }
+            Cmd::ResolveBurst if self.mode == ViewMode::Grid => {
+                self.announce(
+                    format!("{} keeps one frame from Review or Survey", shortcut("⇧P")),
+                    Tone::Warning,
+                );
+            }
             Cmd::ResolveBurst => {
                 if let Some(id) = self.review_photo().map(|p| p.id) {
-                    let group = self
-                        .group_lookup
-                        .get(&id)
-                        .and_then(|g| self.groups.get(*g))
-                        .cloned()
-                        .unwrap_or_else(|| vec![id]);
+                    // Survey acts on what it shows (a selection or the
+                    // neighbours); Review on the photo's burst.
+                    let group = if self.mode == ViewMode::Survey {
+                        self.survey_members()
+                    } else {
+                        self.group_lookup
+                            .get(&id)
+                            .and_then(|g| self.groups.get(*g))
+                            .cloned()
+                    }
+                    .unwrap_or_else(|| vec![id]);
+                    if group.len() < 2 {
+                        self.announce("This photo isn't part of a burst", Tone::Warning);
+                        cx.notify();
+                        return;
+                    }
                     let group: HashSet<_> = group
                         .into_iter()
                         .filter(|member| {
@@ -3731,8 +4227,29 @@ impl Workspace {
                 "zoom",
                 Cmd::Zoom,
             ),
-            item("Zoom In", "View", "+", "zoom", Cmd::ZoomStep(1)),
-            item("Zoom Out", "View", "−", "zoom", Cmd::ZoomStep(-1)),
+            item("Zoom In", "View", "=", "zoom", Cmd::ZoomStep(1)),
+            item("Zoom Out", "View", "-", "zoom-out", Cmd::ZoomStep(-1)),
+            item(
+                "Thumbnail Size: Small",
+                "Catalog",
+                "",
+                "grid",
+                Cmd::GridSize(0),
+            ),
+            item(
+                "Thumbnail Size: Medium",
+                "Catalog",
+                "",
+                "grid",
+                Cmd::GridSize(1),
+            ),
+            item(
+                "Thumbnail Size: Large",
+                "Catalog",
+                "",
+                "grid",
+                Cmd::GridSize(2),
+            ),
             item(
                 "Focus Peaking",
                 "View · cyan fine-detail highlights",
@@ -3754,9 +4271,9 @@ impl Workspace {
                 "files",
                 Cmd::GettingStarted,
             ),
-            item("Toggle Catalog", "View", "⌘B", "panel-left", Cmd::Sidebar),
+            item("Toggle Sidebar", "View", "⌘B", "panel-left", Cmd::Sidebar),
             item(
-                "Resize Catalog",
+                "Resize Sidebar",
                 "Layout · Left/Right adjust width; Enter collapses",
                 "",
                 "panel-left",
@@ -3815,17 +4332,37 @@ impl Workspace {
             item(
                 "Toggle Focus Mode",
                 "View · hide side panels",
-                "Tab",
+                "Shift Tab",
                 "focus",
                 Cmd::Focus,
             ),
-            item("Pin as Reference", "Compare", "B", "pin", Cmd::Pin),
+            item(
+                "Pin as Reference",
+                "Compare · in Compare, the candidate becomes the reference",
+                "B",
+                "pin",
+                Cmd::Pin,
+            ),
+            item(
+                "Swap Panes",
+                "Compare · exchange reference and candidate",
+                "Shift B",
+                "compare",
+                Cmd::SwapPanes,
+            ),
             item(
                 "Toggle Synced Pan",
                 "Compare",
-                "",
+                "Shift C",
                 "sync-pan",
                 Cmd::CompareSync,
+            ),
+            item(
+                "Clear All Filters",
+                "Filter · whole library, no folder, label or rating filter",
+                "",
+                "library",
+                Cmd::ClearFilters,
             ),
             item(
                 "Show All Photos",
@@ -3971,8 +4508,8 @@ impl Workspace {
                 } else {
                     format!("Label {label:?}")
                 },
-                "Review",
-                "",
+                "Review · the active label's key clears it",
+                label_key(label),
                 "symbol-color",
                 Cmd::Label(label),
             ));
@@ -4257,10 +4794,32 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if key == "tab" && self.mode == ViewMode::Compare {
+        // A held batch decision waits for Enter (Escape cancels via Close).
+        if self.bulk_key(event, window, cx) {
+            return;
+        }
+        if key == "tab" && !modifiers.shift && self.mode == ViewMode::Compare {
             // Only toggle onto a reference pane that is actually shown.
             self.reference_focus = !self.reference_focus && self.reference_available();
             cx.notify();
+            return;
+        }
+        // Alt/Option+arrows pan a zoomed photo; plain arrows keep changing photo.
+        if modifiers.alt
+            && !primary
+            && self.mode != ViewMode::Grid
+            && matches!(key, "up" | "down" | "left" | "right")
+        {
+            let (dx, dy) = match key {
+                "left" => (-1, 0),
+                "right" => (1, 0),
+                "up" => (0, -1),
+                _ => (0, 1),
+            };
+            self.execute(Cmd::PanStep(dx, dy), window, cx);
+            return;
+        }
+        if !primary && !modifiers.alt && self.jump_key(key, modifiers.shift, cx) {
             return;
         }
         if modifiers.shift
@@ -4281,8 +4840,7 @@ impl Workspace {
                 .saturating_add_signed(delta)
                 .min(self.filtered.len() - 1);
             self.select(target, false, true, cx);
-            self.grid_scroll
-                .scroll_to_item(target / self.grid_cols(), ScrollStrategy::Center);
+            self.reveal_grid_row(target / self.grid_cols(), false);
             return;
         }
         if modifiers.shift && !primary {
@@ -4291,6 +4849,10 @@ impl Workspace {
                 "right" => Some(Cmd::Unreviewed(1)),
                 "left" => Some(Cmd::Unreviewed(-1)),
                 "p" => Some(Cmd::ResolveBurst),
+                "b" => Some(Cmd::SwapPanes),
+                "c" => Some(Cmd::CompareSync),
+                // Focus mode from every view, Compare included (Tab switches panes there).
+                "tab" => Some(Cmd::Focus),
                 _ => None,
             };
             if let Some(command) = command {
@@ -4317,7 +4879,18 @@ impl Workspace {
                 C::Grid => Cmd::View(ViewMode::Grid),
                 C::Loupe => Cmd::ReviewSelection,
                 C::Compare => Cmd::View(ViewMode::Compare),
-                C::ToggleZoom => Cmd::Zoom,
+                // In Catalog, zoom keys size thumbnails and Space opens Review;
+                // they never change loupe zoom behind the user's back.
+                C::ToggleZoom if self.mode == ViewMode::Grid => {
+                    if key == "space" {
+                        Cmd::ReviewSelection
+                    } else {
+                        return;
+                    }
+                }
+                C::ZoomIn if self.mode == ViewMode::Grid => Cmd::GridSizeStep(1),
+                C::ZoomOut if self.mode == ViewMode::Grid => Cmd::GridSizeStep(-1),
+                C::ToggleZoom => Cmd::ZoomAtPointer,
                 C::ZoomIn => Cmd::ZoomStep(1),
                 C::ZoomOut => Cmd::ZoomStep(-1),
                 C::ToggleHistogram => Cmd::Histogram,
@@ -4387,8 +4960,10 @@ impl Workspace {
                 "l" | "f19" | "enter" => Some(Cmd::ReviewSelection),
                 "c" | "f20" => Some(Cmd::View(ViewMode::Compare)),
                 "s" => Some(Cmd::View(ViewMode::Survey)),
-                "z" | "f21" | "space" => Some(Cmd::Zoom),
+                "z" | "f21" | "space" if self.mode != ViewMode::Grid => Some(Cmd::ZoomAtPointer),
                 "f" => Some(Cmd::FocusPeaking),
+                "+" | "=" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(1)),
+                "-" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(-1)),
                 "+" | "=" => Some(Cmd::ZoomStep(1)),
                 "-" => Some(Cmd::ZoomStep(-1)),
                 "h" | "f22" => Some(Cmd::Histogram),
@@ -4397,7 +4972,8 @@ impl Workspace {
                 "[" | "f23" => Some(Cmd::PreviousGroup),
                 "]" | "f24" => Some(Cmd::NextGroup),
                 "b" => Some(Cmd::Pin),
-                "a" => Some(Cmd::AutoAdvance),
+                // Auto-advance is Shift+A only (controls.rs): a stray bare A
+                // must never change how decisions move.
                 "6" => Some(Cmd::Label(ColorLabel::Red)),
                 "7" => Some(Cmd::Label(ColorLabel::Yellow)),
                 "8" => Some(Cmd::Label(ColorLabel::Green)),
@@ -5273,7 +5849,10 @@ impl Workspace {
     fn title_bar(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         let mac = cfg!(target_os = "macos");
         let csd = !mac && matches!(window.window_decorations(), Decorations::Client { .. });
-        let narrow = f32::from(window.viewport_size().width) < 1120.;
+        let viewport = f32::from(window.viewport_size().width);
+        // The redundant wordmark goes first; tab labels only when truly tight.
+        let narrow = viewport < 1120.;
+        let tabs_iconic = viewport < 900.;
         let mut views = div().h_full().flex().items_center().gap(px(space::XS));
         for (mode, label, glyph, key) in [
             (ViewMode::Grid, "Catalog", "grid", "G"),
@@ -5290,7 +5869,7 @@ impl Workspace {
                         label.to_lowercase()
                     )))
                     .h_full()
-                    .px(px(if narrow { space::SM } else { space::MD }))
+                    .px(px(if tabs_iconic { space::SM } else { space::MD }))
                     .flex()
                     .flex_shrink_0()
                     .items_center()
@@ -5314,7 +5893,7 @@ impl Workspace {
                             self.icon_muted()
                         },
                     ))
-                    .when(!narrow, |s| s.child(label))
+                    .when(!tabs_iconic, |s| s.child(label))
                     .tooltip(self.tip(&format!("{label} view"), key))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.execute(Cmd::View(mode), window, cx)
@@ -5361,14 +5940,16 @@ impl Workspace {
                             self.docks.library > 0.,
                             cx,
                         )
-                        .tooltip(self.tip("Toggle catalog", "⌘B")),
+                        .tooltip(self.tip("Toggle sidebar", "⌘B")),
                     )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Shadowroom"),
-                    ),
+                    .when(!narrow, |s| {
+                        s.child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Shadowroom"),
+                        )
+                    }),
             )
             .child(views)
             .child(
@@ -5398,7 +5979,22 @@ impl Workspace {
                         )
                         .tooltip(self.tip("Getting Started · workflow and shortcuts", "F1")),
                     )
-                    .child(
+                    .child(if self.photos.is_empty() {
+                        // Nothing to export yet: present but inert (CAT-21).
+                        div()
+                            .id("title-export")
+                            .h(px(ui::CONTROL_HEIGHT))
+                            .px(px(if narrow { 0. } else { space::MD }))
+                            .when(narrow, |s| s.w(px(ui::CONTROL_HEIGHT)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(space::SM))
+                            .text_color(self.c("text.disabled", "#5c5c5c"))
+                            .child(icon("export", self.c("text.disabled", "#5c5c5c")))
+                            .when(!narrow, |s| s.child("Export"))
+                            .tooltip(self.tip("Export picks… · add photos first", ""))
+                    } else {
                         self.button(
                             "title-export",
                             if narrow { "" } else { "Export" },
@@ -5411,8 +6007,8 @@ impl Workspace {
                         .px(px(if narrow { 0. } else { space::MD }))
                         .bg(self.selected_bg())
                         .when(narrow, |s| s.w(px(ui::CONTROL_HEIGHT)))
-                        .tooltip(self.tip("Export picks…", "⇧E")),
-                    ),
+                        .tooltip(self.tip("Export picks…", "⇧E"))
+                    }),
             );
         if mac {
             bar = bar.on_click(|event, window, _| {
@@ -5476,16 +6072,19 @@ impl Workspace {
         bar.into_any_element()
     }
     fn sidebar(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let picks = self.counts.picks;
-        let unrated = self.counts.unrated;
-        let rejects = self.counts.rejects;
+        // Counts follow the folder scope, so they agree with the breadcrumb.
+        let counts = self.scope_counts.as_ref().unwrap_or(&self.counts);
+        let picks = counts.picks;
+        let unrated = counts.unrated;
+        let rejects = counts.rejects;
         let hover = self.hover_bg();
         let row = |id: ElementId,
                    glyph: &'static str,
                    label: String,
                    count: Option<usize>,
                    active: bool| {
-            let count = count.filter(|n| *n > 0 || label == "Unreviewed");
+            // One zero rule: no "0" except on the collection being viewed.
+            let count = count.filter(|n| *n > 0 || active);
             div()
                 .id(id)
                 .h(px(ui::ROW_HEIGHT))
@@ -5527,7 +6126,7 @@ impl Workspace {
                         div()
                             .text_size(px(11.))
                             .text_color(self.muted())
-                            .child(n.to_string()),
+                            .child(copy::count(n)),
                     )
                 })
         };
@@ -5562,46 +6161,67 @@ impl Workspace {
                         .tooltip(self.tip("Add a folder to the catalog", "⌘O")),
                     ),
             )
-            .child(self.section("Catalog"));
+            .child(self.section("Library"));
         for (n, (f, g, count)) in [
-            (Filter::All, "library", self.counts.all),
+            (Filter::All, "library", counts.all),
             (Filter::Picks, "pick", picks),
             (Filter::Unrated, "unflagged", unrated),
             (Filter::Rejects, "reject", rejects),
-            (Filter::Trash, "trash", self.counts.trash),
+            (Filter::Trash, "trash", counts.trash),
         ]
         .into_iter()
         .enumerate()
         {
-            let active = self.filter == f
-                && self.scope.is_none()
-                && !self.duplicates_only
-                && self.label_filter.is_none()
-                && !self.bursts_only
-                && (f != Filter::All || self.min_rating == 0);
+            // Every constraint in effect marks its row (Picks and Red both).
+            let active = !self.duplicates_only
+                && if f == Filter::All {
+                    self.filter == Filter::All
+                        && self.scope.is_none()
+                        && self.label_filter.is_none()
+                        && !self.bursts_only
+                        && self.min_rating == 0
+                } else {
+                    self.filter == f
+                };
+            // Under a rating filter: "0 of 1", what the filter lets through.
+            let rated = self
+                .rated_counts
+                .as_ref()
+                .filter(|_| f != Filter::Trash)
+                .map(|rc| match f {
+                    Filter::All => rc.all,
+                    Filter::Picks => rc.picks,
+                    Filter::Unrated => rc.unrated,
+                    _ => rc.rejects,
+                });
             body = body.child(
                 row(
                     ("collection", n).into(),
                     g,
                     collection_label(f).into(),
-                    Some(count),
+                    if rated.is_some() { None } else { Some(count) },
                     active,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.scope = None;
-                    this.duplicates_only = false;
-                    this.label_filter = None;
-                    this.bursts_only = false;
-                    this.reference_focus = false;
-                    this.filter = f;
-                    if f == Filter::Trash {
-                        this.min_rating = 0;
-                        this.settings.min_rating = 0;
-                    }
-                    this.settings.filter = format!("{f:?}").to_lowercase();
-                    this.save_settings();
-                    this.rebuild(this.selected_id());
-                    cx.notify();
+                .when_some(rated.filter(|_| count > 0 || active), |s, rated| {
+                    s.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(self.muted())
+                            .child(format!("{} of {}", copy::count(rated), copy::count(count))),
+                    )
+                })
+                // A collection composes with the folder and label in view;
+                // "All photos" means the whole library.
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.execute(
+                        if f == Filter::All {
+                            Cmd::ClearFilters
+                        } else {
+                            Cmd::Filter(f)
+                        },
+                        window,
+                        cx,
+                    );
                 })),
             );
         }
@@ -5622,8 +6242,8 @@ impl Workspace {
                 cx.listener(|this, _, window, cx| this.execute(Cmd::ShowDuplicates, window, cx)),
             ),
         );
-        body = body.child(self.section("Selections"));
-        let rated = self.counts.rated;
+        body = body.child(self.section("Smart filters"));
+        let rated = counts.rated;
         body = body.child(
             row(
                 "smart-rated".into(),
@@ -5667,7 +6287,7 @@ impl Workspace {
         .into_iter()
         .enumerate()
         {
-            let count = self.counts.labels[label_index(label)];
+            let count = counts.labels[label_index(label)];
             if count == 0 && self.label_filter != Some(label) {
                 continue;
             }
@@ -5712,7 +6332,7 @@ impl Workspace {
                         div()
                             .text_size(px(11.))
                             .text_color(self.muted())
-                            .child(count.to_string()),
+                            .child(copy::count(count)),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.execute(Cmd::LabelFilter(label), window, cx)
@@ -5903,49 +6523,46 @@ impl Workspace {
             .into_any_element()
     }
     /// Pane toolbar: breadcrumb on the left, view filters on the right.
-    fn review_extras_fit(&self) -> bool {
-        self.center_size.0 >= ui::REVIEW_EXTRAS_MIN_WIDTH + 100.
-    }
     fn filters(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let name = self
-            .scope
-            .as_ref()
-            .map(|s| self.scope_display(s))
-            .unwrap_or_else(|| {
-                if self.duplicates_only {
-                    "Duplicates".into()
-                } else if self.bursts_only {
-                    "Unresolved bursts".into()
-                } else if let Some(label) = self.label_filter {
-                    format!("{label:?} label")
-                } else {
-                    collection_label(self.filter).to_string()
-                }
-            });
+        // The breadcrumb names every constraint actually narrowing the view,
+        // each removable on its own (CAT-04).
+        let constraints = self.constraints();
+        let chips = constraints.len();
+        let chip_width = (self.center_size.0 * 0.3).clamp(96., 200.);
         let mut crumb = div()
+            .id("breadcrumb")
             .flex()
             .flex_1()
             .min_w(px(0.))
             .items_center()
-            .gap(px(space::SM))
-            .whitespace_nowrap()
-            .child(
+            .gap(px(space::XS))
+            .overflow_hidden()
+            .whitespace_nowrap();
+        if chips == 0 {
+            crumb = crumb.child(
                 div()
                     .id("breadcrumb-scope")
-                    .max_w(px((self.center_size.0 * 0.35).min(200.)))
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_normal()
-                    .line_clamp(1)
-                    .tooltip(self.tip(&name, ""))
-                    .child(name),
+                    .flex_shrink_0()
+                    .pr(px(space::XS))
+                    .child(collection_label(Filter::All)),
             );
+        }
+        for constraint in constraints {
+            crumb = crumb.child(self.constraint_chip(constraint, chip_width, cx));
+        }
+        if chips >= 2 {
+            crumb = crumb.child(
+                self.compact_button("clear-filters", "Clear", "", Cmd::ClearFilters, false, cx)
+                    .px(px(space::SM))
+                    .text_color(self.muted())
+                    .tooltip(self.tip("Show the whole library", "")),
+            );
+        }
         if self.mode != ViewMode::Grid && self.review_folder == self.scope {
             if let Some(ids) = &self.review_subset {
                 crumb = crumb.child(self.toggle_button(
                     "clear-review-subset",
-                    &format!("{} selected · Show full folder", ids.len()),
+                    &format!("{} selected · Show full folder", copy::count(ids.len())),
                     "",
                     Cmd::ClearReviewSubset,
                     true,
@@ -5957,8 +6574,10 @@ impl Workspace {
             (ViewMode::Grid, _) | (_, None) => {
                 crumb = crumb.child(
                     div()
+                        .flex_shrink_0()
+                        .pl(px(space::XS))
                         .text_color(self.muted())
-                        .child(self.filtered.len().to_string()),
+                        .child(copy::count(self.filtered.len())),
                 );
             }
             (_, Some(photo)) => {
@@ -5967,6 +6586,7 @@ impl Workspace {
                         svg()
                             .path("chevron")
                             .size(px(12.))
+                            .flex_shrink_0()
                             .text_color(self.icon_muted()),
                     )
                     .child(
@@ -6009,6 +6629,27 @@ impl Workspace {
             .tooltip(self.tip("Filter by minimum rating", ""));
         let grouping = self.settings.grouping_mode.clone();
         let grouped = grouping != "off";
+        let (group_label, group_tip) = match grouping.as_str() {
+            "time" => (
+                format!("Time · {}", copy::duration(self.settings.burst_gap_ms)),
+                format!(
+                    "Grouped by time gap ({}) · click to turn off",
+                    copy::duration(self.settings.burst_gap_ms)
+                ),
+            ),
+            "visual" => (
+                "Similar".to_owned(),
+                "Grouped by visual similarity · click to turn off".to_owned(),
+            ),
+            _ if grouped => (
+                format!("Bursts · {}", copy::duration(self.settings.burst_gap_ms)),
+                format!(
+                    "Grouped into bursts ({} gap) · click to turn off",
+                    copy::duration(self.settings.burst_gap_ms)
+                ),
+            ),
+            _ => (String::new(), "Group bursts".to_owned()),
+        };
         div()
             .h(px(TOOLBAR_HEIGHT))
             .flex_shrink_0()
@@ -6022,14 +6663,6 @@ impl Workspace {
             .border_b_1()
             .border_color(self.border())
             .child(crumb)
-            .when(!self.review_extras_fit() && self.multi.len() > 1, |toolbar| {
-                toolbar.child(
-                    div().id("compact-selection-count").flex_shrink_0()
-                        .text_size(px(ui::text::LABEL)).text_color(self.text())
-                        .child(format!("{} selected", self.multi.len()))
-                        .tooltip(self.tip("Decisions apply to every selected photo, including those outside the viewport", "")),
-                )
-            })
             .when(self.duplicates_only, |row| {
                 let running = self
                     .duplicate_scan
@@ -6054,34 +6687,31 @@ impl Workspace {
                     )),
                 )
             })
-            .child(
-                self.toggle_button(
-                    "header-group",
-                    if grouped && !self.compact {
-                        grouping.as_str()
-                    } else {
-                        ""
-                    },
-                    "group",
-                    Cmd::Group(if grouped {
-                        "off".into()
-                    } else {
-                        "burst".into()
-                    }),
-                    grouped,
-                    cx,
-                )
-                .tooltip(self.tip(
-                    if grouped {
-                        "Grouping on · click to turn off"
-                    } else {
-                        "Group bursts"
-                    },
-                    "",
-                )),
-            )
-            .child(self.control_divider())
-            .child(ratings)
+            // An empty library has nothing to group or filter (CAT-21).
+            .when(!self.photos.is_empty(), |toolbar| {
+                toolbar
+                    .child(
+                        self.toggle_button(
+                            "header-group",
+                            if grouped && !self.compact {
+                                group_label.as_str()
+                            } else {
+                                ""
+                            },
+                            "group",
+                            Cmd::Group(if grouped {
+                                "off".into()
+                            } else {
+                                "burst".into()
+                            }),
+                            grouped,
+                            cx,
+                        )
+                        .tooltip(self.tip(&group_tip, "")),
+                    )
+                    .child(self.control_divider())
+                    .child(ratings)
+            })
             .child(
                 self.toggle_button(
                     "toolbar-info",
@@ -6091,7 +6721,7 @@ impl Workspace {
                     self.docks.inspector > 0.,
                     cx,
                 )
-                .tooltip(self.tip("Toggle photo panel", "I")),
+                .tooltip(self.tip("Toggle inspector", "I")),
             )
             .into_any_element()
     }
@@ -6519,8 +7149,8 @@ impl Workspace {
             } else {
                 transparent_black()
             })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.reference_focus = reference;
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.click_photo(reference, event);
                 cx.notify();
             }))
             .on_mouse_down(
@@ -6568,7 +7198,8 @@ impl Workspace {
                 format!("Fit · {w} × {h}{origin}")
             };
             quality.push_str(match color_status {
-                ColorStatus::ConvertedToSrgb => " · converted to sRGB",
+                // Routine conversion is in Info → Preview details.
+                ColorStatus::ConvertedToSrgb => "",
                 ColorStatus::AssumedSrgb => " · assumed sRGB",
                 ColorStatus::InvalidProfile(_) => " · invalid ICC profile",
             });
@@ -6584,10 +7215,21 @@ impl Workspace {
             let pane_size = std::rc::Rc::new(std::cell::Cell::new(size(px(1.), px(1.))));
             let measured = pane_size.clone();
             let fit_scales = self.fit_scales.clone();
+            let geometry = self.pane_geometry.clone();
+            let navigator_image = image.clone();
             pane = pane.child(
                 gpui::canvas(
                     move |bounds, window, _| {
                         measured.set(bounds.size);
+                        let mut panes = geometry.get();
+                        panes[if reference { 0 } else { 1 }] = PaneGeometry {
+                            bounds,
+                            width: w,
+                            height: h,
+                            source_scale,
+                            scale_factor: window.scale_factor(),
+                        };
+                        geometry.set(panes);
                         let mut scales = fit_scales.get();
                         scales[if reference { 0 } else { 1 }] = (f32::from(bounds.size.width)
                             / w as f32)
@@ -6648,14 +7290,16 @@ impl Workspace {
                             let delta = event.delta.pixel_delta(px(24.));
                             if event.modifiers.control || event.modifiers.platform {
                                 if f32::from(delta.y).abs() > 0. {
-                                    this.execute(
-                                        Cmd::ZoomStep(if delta.y > px(0.) { 1 } else { -1 }),
-                                        window,
-                                        cx,
+                                    this.scroll_zoom(
+                                        reference,
+                                        event.position,
+                                        if delta.y > px(0.) { 1 } else { -1 },
                                     );
+                                    cx.notify();
                                 }
                                 return;
                             }
+                            let _ = window;
                             let size = scroll_size.get();
                             this.pan_photo(reference, delta, size, w, h, scale);
                             cx.notify();
@@ -6670,6 +7314,13 @@ impl Workspace {
                             }
                         }),
                     );
+                let g = self.pane_geometry.get()[usize::from(!reference)];
+                let larger = !g.valid()
+                    || w as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.width) + 1.
+                    || h as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.height) + 1.;
+                if larger {
+                    pane = pane.child(self.navigator(reference, navigator_image, w, h, cx));
+                }
                 let drag_size = pane_size.clone();
                 pane =
                     pane.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -6684,15 +7335,16 @@ impl Workspace {
                     }));
             } else {
                 pane = pane.on_scroll_wheel(cx.listener(
-                    |this, event: &ScrollWheelEvent, window, cx| {
+                    move |this, event: &ScrollWheelEvent, _, cx| {
                         if event.modifiers.control || event.modifiers.platform {
                             let delta = event.delta.pixel_delta(px(24.));
                             if delta.y != px(0.) {
-                                this.execute(
-                                    Cmd::ZoomStep(if delta.y > px(0.) { 1 } else { -1 }),
-                                    window,
-                                    cx,
+                                this.scroll_zoom(
+                                    reference,
+                                    event.position,
+                                    if delta.y > px(0.) { 1 } else { -1 },
                                 );
+                                cx.notify();
                             }
                         }
                     },
@@ -6719,15 +7371,28 @@ impl Workspace {
             );
         }
         let compare = self.mode == ViewMode::Compare;
-        // The frame's own decision rides on the photo, next to the Compare role.
+        // The frame's own decision rides on the photo, next to the Compare role,
+        // anchored to the picture's painted edge (last frame's geometry).
         let chip = self.decision_chip(photo);
+        let (inset_x, inset_y) = {
+            let g = self.pane_geometry.get()[usize::from(!reference)];
+            if g.valid() && !self.zoom {
+                let fit = g.fit_scale();
+                (
+                    ((f32::from(g.bounds.size.width) - g.width as f32 * fit) / 2.).max(0.),
+                    ((f32::from(g.bounds.size.height) - g.height as f32 * fit) / 2.).max(0.),
+                )
+            } else {
+                (0., 0.)
+            }
+        };
         let pane = pane.when(compare || chip.is_some(), |pane| {
             pane.child(
                 div()
                     .absolute()
-                    .top(px(8.))
-                    .left(px(8.))
-                    .right(px(8.))
+                    .top(px(inset_y.floor() + space::SM))
+                    .left(px(inset_x.floor() + space::SM))
+                    .right(px(inset_x.floor() + space::SM))
                     .flex()
                     .items_start()
                     .gap(px(space::XS))
@@ -6743,7 +7408,18 @@ impl Workspace {
                                 .gap(px(space::SM))
                                 .bg(self.scrim())
                                 .text_size(px(ui::text::LABEL))
-                                .text_color(self.scrim_text())
+                                .text_color(if active {
+                                    self.scrim_text()
+                                } else {
+                                    self.scrim_muted()
+                                })
+                                // The pane that decisions apply to is underlined.
+                                .border_b_2()
+                                .border_color(if active {
+                                    self.scrim_accent()
+                                } else {
+                                    transparent_black()
+                                })
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .child(div().text_color(self.scrim_muted()).child(if reference {
@@ -6836,15 +7512,30 @@ impl Workspace {
             self.pans[1 - index] = self.pans[index];
         }
     }
-    /// Columns that keep grid cells near 240 logical px wide.
+    /// The Catalog thumbnail size in effect: the chosen S / M / L, or S when
+    /// the centre pane is too narrow for more than two larger columns.
+    fn grid_size_index(&self) -> usize {
+        if self.center_size.0 < ui::GRID_SMALL_CENTER {
+            0
+        } else {
+            self.grid_size.min(ui::GRID_SIZES.len() - 1)
+        }
+    }
+    /// (minimum cell width, image height, row height) for the Catalog grid.
+    fn grid_metrics(&self) -> (f32, f32, f32) {
+        let (cell, image) = ui::GRID_SIZES[self.grid_size_index()];
+        (cell, image, image + ui::GRID_ROW_CHROME)
+    }
+    /// Columns that keep grid cells at least the chosen size wide.
     fn grid_cols(&self) -> usize {
         ((self.center_size.0 - scrollbar::WIDTH - 2. * ui::PANEL_INSET + ui::GRID_GAP)
-            / (ui::GRID_CELL_MIN_WIDTH + ui::GRID_GAP))
+            / (self.grid_metrics().0 + ui::GRID_GAP))
             .floor()
             .clamp(1., 64.) as usize
     }
     fn grid(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         let cols = self.grid_cols();
+        let (_, image_height, row_height) = self.grid_metrics();
         let rows = self.filtered.len().div_ceil(cols);
         let handle = self.grid_scroll.clone();
         // Equal cells (placeholders share the box), so the well width is known
@@ -6867,7 +7558,7 @@ impl Workspace {
                 range
                     .map(|row| {
                         let mut line = div()
-                            .h(px(ui::GRID_ROW_HEIGHT))
+                            .h(px(row_height))
                             .w_full()
                             .min_w(px(0.))
                             .flex()
@@ -6893,8 +7584,7 @@ impl Workspace {
                                 // frame's badges sit on the photo, not in the letterbox.
                                 let mut frame = div().relative().flex_shrink_0();
                                 if let Some((texture, width, height, _, _, _)) = texture {
-                                    let (w, h) =
-                                        contained(well_w, ui::GRID_IMAGE_HEIGHT, width, height);
+                                    let (w, h) = contained(well_w, image_height, width, height);
                                     frame = frame.w(px(w)).h(px(h)).child(
                                         div().size_full().opacity(dim).child(
                                             img(texture).size_full().object_fit(ObjectFit::Contain),
@@ -6983,7 +7673,7 @@ impl Workspace {
                                     );
                                 }
                                 let image = div()
-                                    .h(px(ui::GRID_IMAGE_HEIGHT))
+                                    .h(px(image_height))
                                     .w_full()
                                     .relative()
                                     .bg(this.well_bg())
@@ -7120,33 +7810,66 @@ impl Workspace {
     }
     /// Burst survey: every frame of the current burst at once, so the
     /// sharpest or best-timed frame can be chosen without paging.
-    fn survey_summary(&mut self, id: i64) -> Option<Arc<SurveySummary>> {
-        let key = (
-            self.duplicates_only,
-            if self.duplicates_only {
-                *self.duplicate_lookup.get(&id)?
-            } else {
-                *self.group_lookup.get(&id)?
-            },
-        );
+    /// Frames for Survey, in view order: a reviewed selection of two or more
+    /// photos first, else the current burst, else up to nine neighbours.
+    fn survey_summary(&mut self, id: i64) -> Option<(SurveyKey, Arc<SurveySummary>)> {
+        let selection = self.review_subset.is_some()
+            && self.review_folder == self.scope
+            && self.filtered.len() >= 2;
+        let group = if self.duplicates_only {
+            self.duplicate_lookup.get(&id).copied()
+        } else {
+            self.group_lookup.get(&id).copied()
+        }
+        .filter(|_| self.review_group(id).is_some_and(|g| g.len() > 1));
+        const NEIGHBOURS: usize = 9;
+        let key = if selection {
+            SurveyKey::Selection(self.filtered.len())
+        } else if let Some(group) = group {
+            SurveyKey::Group(self.duplicates_only, group)
+        } else if self.filtered.len() >= 2 {
+            let first = self
+                .selected
+                .saturating_sub(NEIGHBOURS / 2)
+                .min(self.filtered.len().saturating_sub(NEIGHBOURS));
+            SurveyKey::Neighbours(first)
+        } else {
+            return None;
+        };
         if self
             .survey_cache
             .as_ref()
             .is_none_or(|(cached, _)| *cached != key)
         {
-            let group = self.review_group(id).filter(|g| g.len() > 1)?;
-            let positions = group
-                .iter()
-                .filter_map(|&id| self.visible_position(id))
-                .collect();
+            let positions = match key {
+                SurveyKey::Selection(len) => (0..len).collect(),
+                SurveyKey::Group(..) => self
+                    .review_group(id)?
+                    .iter()
+                    .filter_map(|&id| self.visible_position(id))
+                    .collect(),
+                SurveyKey::Neighbours(first) => {
+                    (first..(first + NEIGHBOURS).min(self.filtered.len())).collect()
+                }
+            };
             self.survey_cache = Some((
                 key,
                 Arc::new(SurveySummary::new(positions, &self.filtered, &self.photos)),
             ));
         }
-        self.survey_cache
-            .as_ref()
-            .map(|(_, summary)| summary.clone())
+        self.survey_cache.clone()
+    }
+    /// Photo IDs Survey shows for the current photo.
+    fn survey_members(&mut self) -> Option<Vec<i64>> {
+        let id = self.selected_id()?;
+        let (_, summary) = self.survey_summary(id)?;
+        Some(
+            summary
+                .positions
+                .iter()
+                .map(|&position| self.photos[self.filtered[position]].id)
+                .collect(),
+        )
     }
     fn survey(&mut self, cx: &mut gpui::Context<Self>) -> AnyElement {
         let Some(current) = self.selected_id() else {
@@ -7166,17 +7889,13 @@ impl Workspace {
                 .bg(self.canvas_bg())
                 .text_color(self.muted())
                 .child(icon("group", self.icon_muted()).size(px(24.)))
-                .child(if grouped {
-                    "This photo isn't part of a burst."
-                } else {
-                    "Burst grouping is off."
-                })
+                .child("Survey needs two photos in this view.")
                 .when(!grouped, |s| {
-                    s.child(self.button(
+                    s.child(self.action_button(
                         "survey-enable-bursts",
                         "Group bursts",
-                        "group",
                         Cmd::Group("burst".into()),
+                        ButtonKind::Secondary,
                         false,
                         cx,
                     ))
@@ -7185,7 +7904,7 @@ impl Workspace {
         }
         // Frames in view order; a bounded window keeps memory and disk reads flat
         // even for very long bursts.
-        let summary = summary.expect("survey group");
+        let (key, summary) = summary.expect("survey group");
         let all = &summary.positions;
         let at = all.binary_search(&self.selected).unwrap_or(0);
         const MAX: usize = 16;
@@ -7377,34 +8096,57 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::MD))
                     .px(px(space::TINY))
-                    .text_size(px(11.))
+                    .text_size(px(ui::text::LABEL))
                     .text_color(self.muted())
-                    .child(div().text_color(self.text()).child(format!(
+                    .when_some(key.label(all.len()), |s, label| {
+                        s.child(div().flex_shrink_0().text_color(self.text()).child(label))
+                    })
+                    .child(div().flex_shrink_0().text_color(self.text()).child(format!(
                         "Frame {} of {}",
                         at + 1,
                         all.len()
                     )))
-                    .child(format!(
-                        "{}{span}",
-                        plural(decided, "frame decided", "frames decided")
-                    ))
-                    .when(all.len() > n, |s| {
-                        s.child(format!("showing {}–{}", first + 1, first + n))
-                    })
-                    .child(div().flex_1())
-                    .when(!self.compact, |s| {
-                        s.child(
-                            div()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_normal()
-                                .line_clamp(1)
-                                .child(format!(
-                                    "{} keeps this frame and rejects undecided ones",
-                                    shortcut("⇧P")
-                                )),
-                        )
+                    // The descriptive text yields first; the action never collapses.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(format!(
+                                "{}{span}{}",
+                                plural(decided, "frame decided", "frames decided"),
+                                if all.len() > n {
+                                    format!(" · showing {}–{}", first + 1, first + n)
+                                } else {
+                                    String::new()
+                                }
+                            )),
+                    )
+                    .child({
+                        let hover = self.hover_bg();
+                        div()
+                            .id("survey-resolve")
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .h(px(ui::COMPACT_CONTROL_HEIGHT))
+                            .px(px(space::SM))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .child(self.keycaps("⇧P"))
+                            .when(!self.compact, |s| {
+                                s.child(div().text_color(self.text()).child("Keep this · reject undecided"))
+                            })
+                            .tooltip(self.tip(
+                                "Pick this frame and reject the undecided ones · decided frames keep their flags",
+                                "⇧P",
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.execute(Cmd::ResolveBurst, window, cx)
+                            }))
                     }),
             )
             .child(grid)
@@ -7690,7 +8432,6 @@ impl Workspace {
     }
     /// Decision bar: flag, rate, then navigation/inspection on the right.
     fn rating_bar(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let compact = self.center_size.0 < 760.;
         if self.filter == Filter::Trash {
             return div()
                 .h(px(DECISION_HEIGHT))
@@ -7716,8 +8457,90 @@ impl Workspace {
                 .into_any_element();
         }
         let p = self.review_photo();
-        let rating = p.map_or(0, |p| p.rating);
-        let flag = p.map_or(Flag::None, |p| p.flag);
+        // A multi-selection shows what its members share, never just the
+        // primary photo's state (decisions apply to every member).
+        let summary = self.selection_summary();
+        let rating = match &summary {
+            Some(summary) => summary.common_rating().unwrap_or(0),
+            None => p.map_or(0, |p| p.rating),
+        };
+        let mixed_rating = summary
+            .as_ref()
+            .is_some_and(|s| s.common_rating().is_none());
+        let flag = match &summary {
+            Some(summary) => summary.common_flag(),
+            None => Some(p.map_or(Flag::None, |p| p.flag)),
+        };
+        let grid = self.mode == ViewMode::Grid;
+        let compare = self.mode == ViewMode::Compare;
+        // Survey shows fitted frames: loupe zoom and peaking don't apply there.
+        let zoomable = matches!(self.mode, ViewMode::Loupe | ViewMode::Compare);
+        // Responsive priority: the essentials always stay (flags, stars,
+        // position, auto-advance, zoom or thumbnail size, Trash); optional
+        // items drop lowest value first as the bar narrows.
+        const CHAR: f32 = 7.2;
+        const SMALL_CHAR: f32 = 6.6;
+        let width = self.center_size.0;
+        let tight = width < 760.;
+        let gap = if tight { space::TINY } else { space::XS };
+        let control = ui::CONTROL_HEIGHT + gap;
+        let position = if self.multi.len() > 1 {
+            format!("{} selected", copy::count(self.multi.len()))
+        } else {
+            format!(
+                "{} / {}",
+                copy::count(if self.filtered.is_empty() {
+                    0
+                } else {
+                    self.selected + 1
+                }),
+                copy::count(self.filtered.len())
+            )
+        };
+        let zoom_label = self.zoom_label();
+        let reviewed = self.filtered_reviewed;
+        let reviewed_text = format!("{} reviewed", copy::count(reviewed));
+        let stars_width = 5. * if tight { 20. } else { ui::CONTROL_HEIGHT };
+        let view_controls = if grid {
+            3. * (2. * space::SM + CHAR) + 2. + gap
+        } else if !zoomable {
+            0.
+        } else {
+            let zoom = 2. * space::SM
+                + zoom_label.len() as f32 * CHAR
+                + if tight { 0. } else { 16. + space::SM };
+            zoom + gap + control + if compare { control } else { 0. }
+        };
+        let base = 2. * if tight { space::XS } else { ui::BAR_INSET }
+            + 2. * control // flag icons
+            + 2. * (1. + 2. * space::XS + gap) // dividers
+            + stars_width
+            + gap
+            + if mixed_rating { 5. * SMALL_CHAR + gap } else { 0. }
+            + control // reset icon
+            + position.chars().count() as f32 * SMALL_CHAR
+            + 2. * space::SM
+            + gap
+            + control // auto-advance
+            + view_controls
+            + control; // trash
+        let optional = [
+            // P / X keycaps beside the flag icons.
+            2. * (space::SM + SMALL_CHAR + space::XS),
+            // "Pick" / "Reject" words.
+            10. * CHAR + 2. * space::SM,
+            // Pin and Survey (Survey only in Catalog).
+            if grid { control } else { 2. * control },
+            // Zoom − / + (Review and Compare only).
+            if zoomable { 2. * control } else { 0. },
+            // Progress bar and "N reviewed".
+            64. + space::SM + reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
+            // "Reset" text.
+            space::SM + 5. * CHAR,
+        ];
+        let kept = ui::fit_prefix(width, base, &optional);
+        let (flag_keys, flag_labels, pin_survey, zoom_steps, progress, reset_label) =
+            (kept > 0, kept > 1, kept > 2, kept > 3, kept > 4, kept > 5);
         let hover = self.hover_bg();
         let flag_button = |id: &'static str,
                            label: &'static str,
@@ -7725,12 +8548,16 @@ impl Workspace {
                            glyph: &'static str,
                            target: Flag,
                            color: Hsla| {
-            let on = flag == target;
+            let on = flag == Some(target);
+            // Some, not all, selected photos carry this flag.
+            let partial = !on && summary.as_ref().is_some_and(|s| s.has_flag(target));
             div()
                 .id(id)
                 .h(px(ui::CONTROL_HEIGHT))
                 .px(px(space::SM))
-                .when(compact, |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)).px(px(0.)))
+                .when(!flag_keys && !flag_labels, |s| {
+                    s.w(px(ui::CONTROL_HEIGHT)).px(px(0.))
+                })
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -7747,20 +8574,33 @@ impl Workspace {
                         } else {
                             "reject-on"
                         }
+                    } else if partial {
+                        "partial"
                     } else {
                         glyph
                     },
-                    if on { color } else { self.icon_muted() },
+                    if on || partial {
+                        color
+                    } else {
+                        self.icon_muted()
+                    },
                 ))
-                .when(!compact, |s| {
+                .when(flag_labels, |s| {
                     s.child(
                         div()
                             .text_color(if on { color } else { self.text() })
                             .child(label),
                     )
-                    .child(self.keycap(key))
                 })
-                .tooltip(self.tip(label, key))
+                .when(flag_keys, |s| s.child(self.keycap(key)))
+                .tooltip(self.tip(
+                    &if partial {
+                        format!("{label} all selected · some already are")
+                    } else {
+                        label.to_owned()
+                    },
+                    key,
+                ))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.execute(Cmd::Flag(target), window, cx)
                 }))
@@ -7769,20 +8609,21 @@ impl Workspace {
         for r in 1..=5 {
             stars = stars.child(
                 self.star(("rate", r as usize), r <= rating, Cmd::Rating(r), cx)
-                    .when(compact, |s| s.w(px(20.)))
+                    .when(tight, |s| s.w(px(20.)))
                     .tooltip(self.tip(&format!("Rate {r}"), &r.to_string())),
             );
         }
         let pinned = self.reference == self.selected_id() && self.reference.is_some();
-        let reviewed = self.filtered_reviewed;
+        let share = reviewed as f32 / self.filtered.len().max(1) as f32;
         div()
+            .id("decision-bar")
             .h(px(DECISION_HEIGHT))
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(px(space::XS))
+            .gap(px(gap))
             .p(px(ui::BAR_INSET))
-            .when(compact, |s| s.gap(px(space::TINY)).p(px(space::XS)))
+            .when(tight, |s| s.p(px(space::XS)))
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("toolbar.background", "#141414"))
@@ -7802,15 +8643,23 @@ impl Workspace {
                 Flag::Reject,
                 self.reject_color(),
             ))
-            .child(
-                self.control_divider()
-                    .when(compact, |s| s.w(px(0.)).mx(px(0.))),
-            )
+            .child(self.control_divider())
             .child(stars)
+            .when(mixed_rating, |bar| {
+                bar.child(
+                    div()
+                        .id("rating-mixed")
+                        .flex_shrink_0()
+                        .text_size(px(ui::text::LABEL))
+                        .text_color(self.muted())
+                        .child("mixed")
+                        .tooltip(self.tip("Selected photos have different ratings", "")),
+                )
+            })
             .child(
                 self.button(
                     "reset-decision",
-                    if compact { "" } else { "Reset" },
+                    if reset_label { "Reset" } else { "" },
                     "reset",
                     Cmd::ResetDecision,
                     false,
@@ -7821,75 +8670,71 @@ impl Workspace {
                     "R",
                 )),
             )
-            .child(div().flex_1())
-            .when(self.review_extras_fit(), |bar| {
-                bar.child(
-                    div()
-                        .id("review-progress")
-                        .flex()
-                        .items_center()
-                        .gap(px(space::SM))
-                        .px(px(space::SM))
-                        .text_size(px(11.))
-                        .text_color(self.muted())
-                        .when(!self.compact || self.multi.len() > 1, |s| {
-                            s.child(if self.multi.len() > 1 {
-                                format!("{} selected", self.multi.len())
-                            } else {
-                                format!(
-                                    "{} of {}",
-                                    if self.filtered.is_empty() {
-                                        0
-                                    } else {
-                                        self.selected + 1
-                                    },
-                                    self.filtered.len()
-                                )
-                            })
-                        })
-                        .child(
-                            div().w(px(64.)).h(px(3.)).bg(self.selected_bg()).child(
-                                div()
-                                    .h_full()
-                                    .w(
-                                        px(64. * reviewed as f32
-                                            / self.filtered.len().max(1) as f32),
-                                    )
-                                    .bg(self.pick_color()),
-                            ),
+            .child(div().flex_1().min_w(px(0.)))
+            .child(
+                div()
+                    .id("review-progress")
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .px(px(space::SM))
+                    .text_size(px(ui::text::LABEL))
+                    .text_color(self.muted())
+                    .child(div().text_color(self.text()).child(position))
+                    .when(progress && self.multi.len() < 2, |s| {
+                        s.child(
+                            div()
+                                .w(px(64.))
+                                .h(px(3.))
+                                .bg(self.selected_bg())
+                                .child(div().h_full().w(px(64. * share)).bg(self.muted())),
                         )
+                        .child(reviewed_text)
+                    })
+                    .tooltip(self.tip(
+                        &format!(
+                            "{} of {} reviewed ({:.0}%)",
+                            copy::count(reviewed),
+                            copy::count(self.filtered.len()),
+                            100. * share
+                        ),
+                        "",
+                    )),
+            )
+            .child(
+                self.toggle_button(
+                    "header-advance",
+                    "",
+                    "auto-advance",
+                    Cmd::AutoAdvance,
+                    self.settings.auto_advance,
+                    cx,
+                )
+                .tooltip(self.tip(
+                    if self.settings.auto_advance {
+                        "Auto-advance on · a decision moves to the next photo"
+                    } else {
+                        "Auto-advance off · decisions stay on this photo"
+                    },
+                    "Shift A",
+                )),
+            )
+            .when(pin_survey && !grid, |bar| {
+                bar.child(
+                    self.toggle_button("pin-reference", "", "pin", Cmd::Pin, pinned, cx)
                         .tooltip(self.tip(
-                            &format!(
-                                "{reviewed} of {} reviewed ({:.0}%)",
-                                self.filtered.len(),
-                                100. * reviewed as f32 / self.filtered.len().max(1) as f32
-                            ),
-                            "",
+                            if compare {
+                                "Make the candidate the reference · next candidate"
+                            } else {
+                                "Pin as compare reference"
+                            },
+                            "B",
                         )),
                 )
-                .child(
-                    self.toggle_button(
-                        "header-advance",
-                        "",
-                        "auto-advance",
-                        Cmd::AutoAdvance,
-                        self.settings.auto_advance,
-                        cx,
-                    )
-                    .tooltip(self.tip(
-                        if self.settings.auto_advance {
-                            "Auto-advance on"
-                        } else {
-                            "Auto-advance off"
-                        },
-                        "Shift A",
-                    )),
-                )
-                .child(
-                    self.toggle_button("pin-reference", "", "pin", Cmd::Pin, pinned, cx)
-                        .tooltip(self.tip("Pin as compare reference", "B")),
-                )
-                .child(
+            })
+            .when(pin_survey, |bar| {
+                bar.child(
                     self.toggle_button(
                         "survey-burst",
                         "",
@@ -7902,64 +8747,127 @@ impl Workspace {
                         self.mode == ViewMode::Survey,
                         cx,
                     )
-                    .tooltip(self.tip("Survey burst · every frame side by side", "S")),
+                    .tooltip(self.tip(
+                        if self.multi.len() > 1 {
+                            "Survey the selection · every frame side by side"
+                        } else {
+                            "Survey burst · every frame side by side"
+                        },
+                        "S",
+                    )),
                 )
             })
-            .child(
-                self.toggle_button(
-                    "zoom-photo",
-                    &if self.zoom {
-                        format!("{:.0}%", self.zoom_factor * 100.)
-                    } else {
-                        "Fit".into()
-                    },
-                    if compact { "" } else { "zoom" },
-                    Cmd::Zoom,
-                    self.zoom,
-                    cx,
+            .when(grid, |bar| bar.child(self.grid_size_control(cx)))
+            .when(zoomable, |bar| {
+                bar.child(
+                    self.toggle_button(
+                        "zoom-photo",
+                        &zoom_label,
+                        if tight { "" } else { "zoom" },
+                        Cmd::Zoom,
+                        self.zoom,
+                        cx,
+                    )
+                    .tooltip(self.tip(
+                        if self.zoom {
+                            "Fit to window"
+                        } else {
+                            "View at 100% · or click the photo where you want to look"
+                        },
+                        "Z",
+                    )),
                 )
-                .when(compact, |s| s.w(px(48.)).px(px(space::XS)))
-                .tooltip(self.tip(
-                    if self.zoom {
-                        "Fit to window"
-                    } else {
-                        "View at 100%"
-                    },
-                    "Z",
-                )),
-            )
-            .child(
-                self.button("zoom-out", "−", "", Cmd::ZoomStep(-1), false, cx)
-                    .when(compact, |s| s.w(px(22.)).px(px(0.)))
-                    .tooltip(self.tip("Zoom out", "−")),
-            )
-            .child(
-                self.button("zoom-in", "+", "", Cmd::ZoomStep(1), false, cx)
-                    .when(compact, |s| s.w(px(22.)).px(px(0.)))
-                    .tooltip(self.tip("Zoom in", "+")),
-            )
-            .child(
-                self.toggle_button(
-                    "focus-peaking",
-                    "",
-                    "peaking",
-                    Cmd::FocusPeaking,
-                    self.focus_peaking,
-                    cx,
+                .when(zoom_steps, |bar| {
+                    bar.child(
+                        self.button("zoom-out", "", "zoom-out", Cmd::ZoomStep(-1), false, cx)
+                            .tooltip(self.tip("Zoom out", "-")),
+                    )
+                    .child(
+                        self.button("zoom-in", "", "zoom", Cmd::ZoomStep(1), false, cx)
+                            .tooltip(self.tip("Zoom in", "=")),
+                    )
+                })
+                .when(compare, |bar| {
+                    bar.child(
+                        self.toggle_button(
+                            "compare-sync",
+                            "",
+                            "sync-pan",
+                            Cmd::CompareSync,
+                            self.compare_sync,
+                            cx,
+                        )
+                        .tooltip(self.tip(
+                            if self.compare_sync {
+                                "Panes pan and zoom together"
+                            } else {
+                                "Panes pan independently"
+                            },
+                            "Shift C",
+                        )),
+                    )
+                })
+                .child(
+                    self.toggle_button(
+                        "focus-peaking",
+                        "",
+                        "peaking",
+                        Cmd::FocusPeaking,
+                        self.focus_peaking,
+                        cx,
+                    )
+                    .tooltip(self.tip("Focus peaking · cyan fine-detail highlights", "F")),
                 )
-                .when(compact, |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)))
-                .tooltip(self.tip("Focus peaking · cyan fine-detail highlights", "F")),
-            )
+            })
             // Destructive action sits apart from rating, at the far edge.
-            .child(
-                self.control_divider()
-                    .when(compact, |s| s.w(px(0.)).mx(px(0.))),
-            )
+            .child(self.control_divider())
             .child(
                 self.button("trash-selection", "", "trash", Cmd::Trash(true), false, cx)
-                    .when(compact, |s| s.w(px(ui::COMPACT_CONTROL_HEIGHT)))
                     .tooltip(self.tip("Move to Trash…", "Delete")),
             )
+            .into_any_element()
+    }
+    /// "Fit 45%" (the actual magnification at Fit) or the zoom percentage.
+    fn zoom_label(&self) -> String {
+        let fit = self.fit_scales.get()[usize::from(!self.reference_focused())];
+        if self.zoom {
+            format!("{:.0}%", self.zoom_factor * 100.)
+        } else if fit.is_finite() && fit > 0. && fit != 1. {
+            format!("Fit {:.0}%", fit * 100.)
+        } else {
+            "Fit".into()
+        }
+    }
+    /// Catalog thumbnail size: S / M / L segments in place of loupe zoom.
+    fn grid_size_control(&self, cx: &gpui::Context<Self>) -> AnyElement {
+        let effective = self.grid_size_index();
+        let mut segments = div()
+            .id("grid-size")
+            .flex()
+            .flex_shrink_0()
+            .border_1()
+            .border_color(self.control_border());
+        for (i, label) in ui::GRID_SIZE_LABELS.into_iter().enumerate() {
+            segments = segments.child(
+                self.segment(
+                    ("grid-size", i),
+                    label,
+                    Cmd::GridSize(i),
+                    effective == i,
+                    cx,
+                )
+                .h(px(ui::CONTROL_HEIGHT - 2.)),
+            );
+        }
+        segments
+            .tooltip(self.tip(
+                if effective != self.grid_size {
+                    "Thumbnail size · small while the catalog is narrow"
+                } else {
+                    "Thumbnail size"
+                },
+                "- =",
+            ))
             .into_any_element()
     }
     fn metadata_row(&self, name: &str, value: String) -> AnyElement {
@@ -8020,7 +8928,10 @@ impl Workspace {
             .px(px(ui::PANEL_INSET))
             .pt(px(space::LG))
             .pb(px(space::LG));
-        if let Some(p) = self.review_photo() {
+        if let Some(summary) = self.selection_summary() {
+            // A batch shows what its members carry, not the primary photo.
+            body = body.child(self.selection_inspector(&summary, cx));
+        } else if let Some(p) = self.review_photo() {
             let mut facts = Vec::new();
             if p.width > 0 && p.height > 0 {
                 facts.push(format!("{} × {}", p.width, p.height));
@@ -8271,7 +9182,7 @@ impl Workspace {
                             match p.flag {
                                 Flag::Pick => "Pick",
                                 Flag::Reject => "Reject",
-                                Flag::None => "Unreviewed",
+                                Flag::None => "None",
                             }
                             .into(),
                         ),
@@ -8402,7 +9313,11 @@ impl Workspace {
                 }
             }
         } else {
-            body = body.child(div().text_color(self.muted()).child("No photo selected"));
+            body = body.child(
+                div()
+                    .text_color(self.muted())
+                    .child("Nothing to inspect in this view"),
+            );
         }
         div()
             .w(px(self.docks.inspector))
@@ -8526,6 +9441,10 @@ impl Workspace {
             Value::Null
         };
         state["focus_peaking"] = json!(self.focus_peaking);
+        state["focus_mode"] = json!(self.focus_mode);
+        state["grid_size"] = json!(["s", "m", "l"][self.grid_size.min(2)]);
+        state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
+        state["label_filter"] = json!(self.label_filter.map(ColorLabel::as_str));
         state["image_context"] = self.image_context_state();
         state["catalog_hover"] = json!(self.catalog_hover);
         state["fit_zoom_percent"] = json!(self.fit_scales.get()[1] * 100.);
@@ -10172,102 +11091,6 @@ impl Workspace {
             )
             .into_any_element()
     }
-    fn empty(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let library_empty = self.photos.is_empty();
-        let scope = match &self.scope {
-            Some(scope) => format!("in {}", self.scope_display(scope)),
-            None => "in the whole library".into(),
-        };
-        let (duplicates_title, duplicates_body, duplicates_button) =
-            copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
-        let hint = |key: &str, what: &str| {
-            div()
-                .flex()
-                .gap(px(space::SM))
-                .child(div().text_color(self.text()).child(key.to_owned()))
-                .child(what.to_owned())
-        };
-        div()
-            .flex_1()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .p(px(ui::PANEL_INSET))
-            .text_center()
-            .gap(px(space::MD))
-            .bg(self.canvas_bg())
-            .child(
-                div()
-                    .text_size(px(ui::text::DISPLAY))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(if library_empty {
-                        "Insert a card or Import a folder".into()
-                    } else if self.duplicates_only {
-                        duplicates_title
-                    } else if self.filter == Filter::Trash {
-                        "Trash is empty".into()
-                    } else {
-                        "Nothing matches this view".to_owned()
-                    }),
-            )
-            .child(div().text_color(self.muted()).child(if library_empty {
-                "Open a folder or card to start culling. Originals are never modified.".into()
-            } else if self.duplicates_only {
-                duplicates_body
-            } else if self.filter == Filter::Trash {
-                "Trashed photos can be restored with their ratings and flags.".into()
-            } else {
-                "Choose another collection or clear the rating filter.".to_owned()
-            }))
-            .when_some(
-                duplicates_button.filter(|_| self.duplicates_only && !library_empty),
-                |s, label| {
-                    s.child(self.button(
-                        "empty-scan-duplicates",
-                        label,
-                        "duplicates",
-                        Cmd::ScanDuplicates,
-                        false,
-                        cx,
-                    ))
-                },
-            )
-            .when(library_empty, |s| {
-                s.child(
-                    div().pt(px(space::SM)).child(
-                        self.button(
-                            "empty-open",
-                            "Open Folder…",
-                            "folder-opened",
-                            Cmd::Import,
-                            false,
-                            cx,
-                        )
-                        .border_1()
-                        .border_color(self.c("border.variant", "#333333"))
-                        .tooltip(self.tip("Open folder", "⌘O")),
-                    ),
-                )
-            })
-            .child(
-                div()
-                    .pt(px(space::LG))
-                    .flex()
-                    .flex_wrap()
-                    .justify_center()
-                    .gap(px(space::LG))
-                    .text_size(px(11.))
-                    .text_color(self.muted())
-                    .child(hint("← →", "navigate"))
-                    .child(hint("P", "pick"))
-                    .child(hint("X", "reject"))
-                    .child(hint("1–5", "rate"))
-                    .child(hint(&shortcut("⌘K"), "commands")),
-            )
-            .into_any_element()
-    }
 }
 
 impl Workspace {
@@ -10277,7 +11100,7 @@ impl Workspace {
         // as a transient notice in its place (feedback.rs), never permanently.
         let context = if let Some(drag) = self.dock_drag {
             let (name, minimum, actual) = match drag.side {
-                DockSide::Library => ("Catalog", ui::LIBRARY_MIN_WIDTH, self.docks.library),
+                DockSide::Library => ("Sidebar", ui::LIBRARY_MIN_WIDTH, self.docks.library),
                 DockSide::Inspector => ("Inspector", ui::INFO_MIN_WIDTH, self.docks.inspector),
             };
             if drag.proposed < minimum * 0.6 {
@@ -10324,7 +11147,7 @@ impl Workspace {
             } else if self.multi.len() > 1 {
                 format!(
                     "{} selected · {}",
-                    self.multi.len(),
+                    copy::count(self.multi.len()),
                     plural(self.filtered.len(), "photo", "photos")
                 )
             } else {
@@ -10352,7 +11175,7 @@ impl Workspace {
                     self.docks.library > 0.,
                     cx,
                 )
-                .tooltip(self.tip("Toggle catalog", "⌘B")),
+                .tooltip(self.tip("Toggle sidebar", "⌘B")),
             )
             .when(self.import_ui.active(), |s| {
                 s.child(
@@ -10578,11 +11401,50 @@ impl Render for Workspace {
             } else {
                 ui::CENTER_MIN_WIDTH
             };
+        // Small windows give the photo room (settings are untouched): the
+        // catalog yields first in Review/Compare/Survey and while importing,
+        // and the inspector also yields in Compare/Survey.
+        let photo_view =
+            !self.import_ui.open && self.mode != ViewMode::Grid && !self.filtered.is_empty();
+        let side_by_side = photo_view && matches!(self.mode, ViewMode::Compare | ViewMode::Survey);
+        let (mut library_fits, inspector_fits) =
+            ui::culling_docks(photo_view, side_by_side, self.workspace_size.0);
+        if self.import_ui.open && self.workspace_size.0 < 1200. {
+            library_fits = false;
+        }
+        // A dock the user reopened, or one being dragged, stays.
+        if let Some(drag) = self.dock_drag {
+            library_fits |= drag.side == DockSide::Library;
+        }
+        library_fits |= self.dock_override[0];
+        let inspector_fits = inspector_fits
+            || self.dock_override[1]
+            || self
+                .dock_drag
+                .is_some_and(|drag| drag.side == DockSide::Inspector);
+        if self.mode == ViewMode::Grid {
+            self.dock_override = [false; 2];
+        }
+        if self.sidebar && !self.focus_mode && !library_fits {
+            self.hint_once(
+                "catalog-yields",
+                &format!(
+                    "Sidebar hidden to give the photo room · {} shows it",
+                    shortcut("⌘B")
+                ),
+            );
+        }
         self.docks = ui::fit_docks(
             self.workspace_size.0,
-            (self.sidebar && !self.focus_mode).then_some(self.settings.sidebar_width as f32),
-            (self.inspector && !self.focus_mode && !self.import_ui.open)
-                .then_some(self.settings.inspector_width as f32),
+            (self.sidebar && !self.focus_mode && library_fits)
+                .then_some(self.settings.sidebar_width as f32),
+            // Nothing to inspect in an empty library.
+            (self.inspector
+                && !self.focus_mode
+                && !self.import_ui.open
+                && inspector_fits
+                && !self.photos.is_empty())
+            .then_some(self.settings.inspector_width as f32),
             self.dock_priority,
             minimum_center,
         );
@@ -10639,6 +11501,12 @@ impl Render for Workspace {
         } else {
             self.last_grid_cols = 0;
         }
+        if self.mode != ViewMode::Compare || self.reference.is_none() {
+            let mut panes = self.pane_geometry.get();
+            panes[0] = PaneGeometry::default();
+            self.pane_geometry.set(panes);
+        }
+        self.sync_window_title(window);
         let center = if self.import_ui.open {
             div().into_any_element()
         } else if self.filtered.is_empty() {
@@ -10677,6 +11545,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .child(self.filters(cx))
+            .children(self.bulk_bar(cx))
             .child(
                 div()
                     .flex()
@@ -10722,6 +11591,7 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.scroll_drag = None;
+                    this.navigator_drag = None;
                     if this.pan_drag.release() {
                         cx.notify();
                     }
@@ -10732,6 +11602,7 @@ impl Render for Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.scroll_drag = None;
+                    this.navigator_drag = None;
                     if this.pan_drag.release() {
                         cx.notify();
                     }
@@ -10998,9 +11869,9 @@ pub fn run() -> Result<()> {
 mod ui_tests {
     use super::{
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
-        NoticeKind, Overlay, PaletteCache, PanDrag, SurveySummary, UiInbox, ViewMode,
-        adjust_folder, clear_notice, grip_owns_key, index_filtered_positions, is_quit_chord, item,
-        label_index, retained_position, text_input,
+        NoticeKind, Overlay, PaletteCache, PanDrag, PaneGeometry, SelectionSummary, SurveyKey,
+        SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
+        index_filtered_positions, is_quit_chord, item, label_index, retained_position, text_input,
     };
     use gpui::Keystroke;
     use gpui::{point, px};
@@ -11477,6 +12348,7 @@ mod ui_tests {
         let sources = [
             ("desktop.rs", include_str!("desktop.rs")),
             ("copy.rs", include_str!("desktop/copy.rs")),
+            ("culling.rs", include_str!("desktop/culling.rs")),
             ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
             ("feedback.rs", include_str!("desktop/feedback.rs")),
             ("dialog.rs", include_str!("desktop/dialog.rs")),
@@ -11564,6 +12436,106 @@ mod ui_tests {
         assert!(root.contains(
             "if self.dialog_focus.borrow().focus_is_stale(window) {\n            window.focus(&self.focus);"
         ));
+
+        // Culling keys (held batch decisions, Home/End/Page jumps, keyboard
+        // pan, Shift+B/Shift+C/Shift+Tab) route after the quit check too, and
+        // none of their handlers claims Q.
+        for routed in [
+            "self.bulk_key(event, window, cx)",
+            "self.jump_key(key, modifiers.shift, cx)",
+            "Cmd::PanStep(dx, dy)",
+            "\"b\" => Some(Cmd::SwapPanes)",
+            "\"c\" => Some(Cmd::CompareSync)",
+            "\"tab\" => Some(Cmd::Focus)",
+        ] {
+            let at = body
+                .find(routed)
+                .unwrap_or_else(|| panic!("{routed} routing"));
+            assert!(quit < at, "{routed} routes after quit");
+        }
+        let culling = sources
+            .iter()
+            .find(|(name, _)| *name == "culling.rs")
+            .unwrap()
+            .1;
+        for handler in ["fn bulk_key(", "fn jump_key("] {
+            let start = culling.find(handler).expect(handler);
+            let end = start + culling[start..].find("\n    }\n").unwrap();
+            assert!(
+                !culling[start..end].contains("\"q\""),
+                "{handler} must not claim the quit key"
+            );
+        }
+    }
+
+    #[test]
+    fn zoom_geometry_maps_pointer_to_image_and_back() {
+        use gpui::{Bounds, size};
+        // A 900 x 600 pane at (100, 50) showing a 3000 x 2000 texture of a
+        // 6000 x 4000 source on a 1x display.
+        let g = PaneGeometry {
+            bounds: Bounds::new(point(px(100.), px(50.)), size(px(900.), px(600.))),
+            width: 3000,
+            height: 2000,
+            source_scale: 2.,
+            scale_factor: 1.,
+        };
+        assert!(g.valid());
+        assert!((g.fit_scale() - 0.3).abs() < 1e-6);
+        // At Fit the picture fills the pane: its centre is image (0.5, 0.5),
+        // and the left third of the pane is the left third of the photo.
+        let centre = g.image_point(point(px(550.), px(350.)), g.fit_scale(), [0.5, 0.5]);
+        assert!((centre[0] - 0.5).abs() < 1e-4 && (centre[1] - 0.5).abs() < 1e-4);
+        let left = g.image_point(point(px(400.), px(350.)), g.fit_scale(), [0.5, 0.5]);
+        assert!((left[0] - 1. / 3.).abs() < 1e-3);
+        // Centring that point at 100% and reading it back lands on it.
+        let scale = g.zoom_scale(1.);
+        let pan = g.pan_for(left, [450., 300.], scale);
+        let back = g.image_point(point(px(550.), px(350.)), scale, pan);
+        assert!((back[0] - left[0]).abs() < 1e-3 && (back[1] - 0.5).abs() < 1e-3);
+        // An anchored step keeps the point under a cursor fixed on screen.
+        let cursor = point(px(700.), px(200.));
+        let u = g.image_point(cursor, scale, pan);
+        let zoomed = g.pan_for(u, [600., 150.], g.zoom_scale(1.25));
+        let after = g.image_point(cursor, g.zoom_scale(1.25), zoomed);
+        assert!((after[0] - u[0]).abs() < 1e-3 && (after[1] - u[1]).abs() < 1e-3);
+        // A smaller-than-pane image stays centred.
+        assert_eq!(g.pan_for([0.9, 0.9], [0., 0.], 0.1), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn selection_summary_reports_shared_and_mixed_decisions() {
+        let photos = sample_photos();
+        let mut summary = SelectionSummary::default();
+        let mut pick = photos[0].clone();
+        pick.flag = Flag::Pick;
+        pick.rating = 5;
+        let mut other = pick.clone();
+        other.rating = 3;
+        summary.add(&pick);
+        summary.add(&other);
+        assert_eq!(summary.count, 2);
+        assert_eq!(summary.common_flag(), Some(Flag::Pick));
+        assert_eq!(summary.common_rating(), None);
+        assert_eq!(summary.common_label(), Some(other.label));
+        let mut none = pick.clone();
+        none.flag = Flag::None;
+        summary.add(&none);
+        assert_eq!(summary.common_flag(), None);
+        assert!(summary.has_flag(Flag::Pick) && !summary.has_flag(Flag::Reject));
+    }
+
+    #[test]
+    fn survey_names_selection_and_neighbour_sources() {
+        assert_eq!(
+            SurveyKey::Selection(4).label(4).as_deref(),
+            Some("Selection · 4 photos")
+        );
+        assert_eq!(
+            SurveyKey::Neighbours(0).label(9).as_deref(),
+            Some("Neighbours · 9 photos")
+        );
+        assert_eq!(SurveyKey::Group(false, 2).label(7), None);
     }
 
     #[test]

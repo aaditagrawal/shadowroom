@@ -48,9 +48,6 @@ pub(super) const STATUS_INSET: f32 = space::TINY;
 pub(super) const CONTROL_ROW_HEIGHT: f32 = CONTROL_HEIGHT + 2. * BAR_INSET;
 pub(super) const FIELD_INSET: f32 = space::SM;
 pub(super) const FIELD_HEIGHT: f32 = TEXT_LINE_HEIGHT + 2. * FIELD_INSET + 2. * HAIRLINE;
-// Keep the progress strip and secondary review actions only when the pane can
-// fit them alongside long mono labels and batch counts, rather than wrapping.
-pub(super) const REVIEW_EXTRAS_MIN_WIDTH: f32 = 896.;
 pub(super) const INSPECTOR_SECTION_HEIGHT: f32 = SECTION_HEIGHT + space::LG + space::SM + 1.;
 
 pub(super) const TITLE_HEIGHT: f32 = CONTROL_ROW_HEIGHT + HAIRLINE;
@@ -159,6 +156,34 @@ mod tests {
     }
 
     #[test]
+    fn decision_bar_drops_lowest_value_items_first() {
+        assert_eq!(fit_prefix(100., 50., &[20., 20., 20.]), 2);
+        assert_eq!(fit_prefix(40., 50., &[20.]), 0);
+        assert_eq!(fit_prefix(1000., 50., &[20., 500., 20.]), 3);
+        // A wide low-priority item never displaces a narrower, more valuable one.
+        assert_eq!(fit_prefix(100., 50., &[20., 500., 20.]), 1);
+    }
+
+    #[test]
+    fn small_windows_hide_the_catalog_before_the_inspector() {
+        assert_eq!(culling_docks(true, false, 1024.), (false, true));
+        assert_eq!(culling_docks(true, true, 1024.), (false, false));
+        assert_eq!(culling_docks(true, true, 1200.), (false, true));
+        assert_eq!(culling_docks(true, true, 1440.), (true, true));
+        assert_eq!(culling_docks(false, false, 1024.), (true, true));
+        // Compare at 1024 px with both docks requested: two usable panes.
+        let (library, inspector) = culling_docks(true, true, 1024.);
+        let fit = fit_docks(
+            1024.,
+            library.then_some(LIBRARY_WIDTH),
+            inspector.then_some(INFO_WIDTH),
+            DockSide::Library,
+            560.,
+        );
+        assert!((fit.center - 2. * PANEL_INSET - space::SM) / 2. >= 440.);
+    }
+
+    #[test]
     fn recent_dock_has_priority_only_when_both_cannot_fit() {
         let fit = fit_docks(
             800.,
@@ -188,9 +213,37 @@ pub(super) const FILM_GAP: f32 = space::SM;
 pub(super) const FILM_CELL_BUDGET: f32 = FILM_WIDTH + FILM_GAP;
 
 pub(super) const GRID_GAP: f32 = space::MD;
-pub(super) const GRID_CELL_MIN_WIDTH: f32 = 208.;
-pub(super) const GRID_ROW_HEIGHT: f32 = 216.;
-pub(super) const GRID_IMAGE_HEIGHT: f32 = 160.;
+/// Catalog thumbnail sizes S / M / L: (minimum cell width, image height).
+/// M is the original grid; a row adds `GRID_ROW_CHROME` (padding, burst bar,
+/// caption) to the image height.
+pub(super) const GRID_SIZES: [(f32, f32); 3] = [(144., 104.), (208., 160.), (288., 224.)];
+pub(super) const GRID_SIZE_LABELS: [&str; 3] = ["S", "M", "L"];
+pub(super) const GRID_ROW_CHROME: f32 = 56.;
+/// Below this centre width the Catalog uses the small size whatever was chosen,
+/// so a laptop with both panels still shows three columns.
+pub(super) const GRID_SMALL_CENTER: f32 = 640.;
+
+/// How many optional controls fit, as a prefix of `optional` (most valuable
+/// first): the bar always keeps `base` and drops the lowest-value items first.
+pub(super) fn fit_prefix(available: f32, base: f32, optional: &[f32]) -> usize {
+    let mut used = base;
+    optional
+        .iter()
+        .take_while(|&&width| {
+            used += width;
+            used <= available
+        })
+        .count()
+}
+
+/// Small windows give the photo room: in Review, Compare and Survey the
+/// catalog yields first below 1280 px, and in Compare/Survey the inspector
+/// also yields below 1100 px. Settings are untouched; Catalog restores both.
+pub(super) fn culling_docks(photo_view: bool, side_by_side: bool, width: f32) -> (bool, bool) {
+    let library = !(photo_view && width < 1280.);
+    let inspector = !(side_by_side && width < 1100.);
+    (library, inspector)
+}
 
 pub(super) const INGEST_TIMELINE_WIDTH: f32 = 160.;
 pub(super) const INGEST_DESTINATION_WIDTH: f32 = 304.;
