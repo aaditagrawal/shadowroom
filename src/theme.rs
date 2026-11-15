@@ -119,6 +119,8 @@ impl Theme {
                 ("shadowroom.pick", "#7fbf7f"),
                 ("shadowroom.reject", "#d46a6a"),
                 ("shadowroom.rating", "#e0b341"),
+                ("shadowroom.focus_ring", "#5b9bd5"),
+                ("shadowroom.scrim.modal", "#00000099"),
             ],
         )
     }
@@ -163,6 +165,8 @@ impl Theme {
                 ("shadowroom.pick", "#39734f"),
                 ("shadowroom.reject", "#a53e42"),
                 ("shadowroom.rating", "#8a661f"),
+                ("shadowroom.focus_ring", "#3979b4"),
+                ("shadowroom.scrim.modal", "#1f2a3a59"),
             ],
         )
     }

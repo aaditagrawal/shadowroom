@@ -1,4 +1,5 @@
 mod deletion_ui;
+mod dialog;
 mod folder_picker;
 mod help;
 mod ingest_ui;
@@ -9,6 +10,7 @@ mod scrollbar;
 mod text_input;
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
+use dialog::{ButtonKind, FocusTarget};
 use gpui::{prelude::*, *};
 use layout as ui;
 use layout::DockSide;
@@ -149,7 +151,7 @@ enum ViewMode {
     /// Every frame of the current burst side by side.
     Survey,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 enum PreferencesSection {
     #[default]
     Appearance,
@@ -173,6 +175,10 @@ enum Cmd {
     Preferences,
     ApplyPreferences,
     ApplyClosePreferences,
+    /// Cancel: drop the Preferences draft at once.
+    DiscardPreferences,
+    /// Dismiss the "Discard changes?" prompt and return to the draft.
+    KeepEditingPreferences,
     Appearance,
     PreferencesSection(PreferencesSection),
     Close,
@@ -893,6 +899,8 @@ struct AddHostForm {
     fields: [String; 2],
     active: usize,
     edit: text_input::Edit,
+    /// Validation message shown under the alias field; cleared by typing.
+    error: Option<String>,
 }
 impl AddHostForm {
     fn new() -> Self {
@@ -902,6 +910,7 @@ impl AddHostForm {
             fields: [String::new(), "shadowroom-remote serve --stdio".into()],
             active: 0,
             edit,
+            error: None,
         }
     }
     /// Moves keyboard focus to `field`, caret at its end.
@@ -1003,6 +1012,11 @@ pub struct Workspace {
     preferences: bool,
     preferences_draft: Option<preferences::Draft>,
     preferences_section: PreferencesSection,
+    /// Keyboard focus handles for dialog controls (`dialog.rs`).
+    dialog_focus: RefCell<dialog::DialogFocus>,
+    theme_list_scroll: ScrollHandle,
+    /// The keyboard, not the pointer, moved focus last: show the focus ring.
+    focus_visible: bool,
     deletion: deletion_ui::State,
     folder_picker: Option<folder_picker::State>,
     getting_started: bool,
@@ -1271,6 +1285,9 @@ impl Workspace {
             preferences: false,
             preferences_draft: None,
             preferences_section: PreferencesSection::default(),
+            dialog_focus: RefCell::default(),
+            theme_list_scroll: ScrollHandle::new(),
+            focus_visible: false,
             deletion: deletion_ui::State::default(),
             folder_picker: None,
             getting_started,
@@ -2865,6 +2882,7 @@ impl Workspace {
             }
             Cmd::SaveRemoteHost => {
                 if let Some(AddHostForm { fields, .. }) = &self.add_host {
+                    let mut invalid = None;
                     let alias = fields[0].trim().to_string();
                     let config = shadowroom::network::HostConfig {
                         id: alias.clone(),
@@ -2883,16 +2901,22 @@ impl Workspace {
                         || config.ssh_alias.starts_with('-')
                         || config.ssh_alias.chars().any(char::is_whitespace)
                     {
-                        self.error = Some("Enter an SSH alias or user@host, without spaces".into());
+                        invalid =
+                            Some("Enter an SSH alias (e.g. studio) or user@host, without spaces");
                     } else if self.remote_hosts.contains_key(&config.id) {
-                        self.error = Some(
-                            "This host already exists; use Connect in the command palette".into(),
-                        );
+                        invalid =
+                            Some("This host already exists; use Connect in the command palette");
                     } else if self.enqueue(IoCommand::Remote(
                         shadowroom::network::RemoteCommand::Add(config),
                     )) {
                         self.add_host = None;
                         self.status = "Checking remote agent protocol and version…".into();
+                    }
+                    // Validation stays next to the field; the toast is for
+                    // connection failures after the dialog closes.
+                    if let (Some(message), Some(form)) = (invalid, &mut self.add_host) {
+                        form.error = Some(message.into());
+                        form.focus(0);
                     }
                 }
             }
@@ -2937,7 +2961,7 @@ impl Workspace {
             Cmd::Preferences => {
                 self.getting_started = false;
                 if self.preferences {
-                    self.close_preferences();
+                    self.dismiss_preferences(window, cx);
                 } else {
                     self.open_preferences();
                 }
@@ -2945,6 +2969,12 @@ impl Workspace {
             }
             Cmd::ApplyPreferences => self.apply_preferences(false, cx),
             Cmd::ApplyClosePreferences => self.apply_preferences(true, cx),
+            Cmd::DiscardPreferences => self.close_preferences(),
+            Cmd::KeepEditingPreferences => {
+                if let Some(draft) = &mut self.preferences_draft {
+                    draft.discard_prompt = false;
+                }
+            }
             Cmd::GettingStarted => {
                 // The guide layers over Preferences; Escape returns to the
                 // draft instead of discarding it.
@@ -2994,7 +3024,7 @@ impl Workspace {
                 if self.palette {
                     self.palette = false;
                 } else if self.preferences {
-                    self.close_preferences();
+                    self.dismiss_preferences(window, cx);
                 } else if self.add_host.is_some() {
                     self.add_host = None;
                 } else {
@@ -3428,11 +3458,15 @@ impl Workspace {
                 self.enqueue(IoCommand::CancelImport);
             }
         }
-        window.focus(match resize_focus {
-            Some(DockSide::Library) => &self.library_resize_focus,
-            Some(DockSide::Inspector) => &self.inspector_resize_focus,
-            None => &self.focus,
-        });
+        // A focused dialog control keeps keyboard focus (render hands it back
+        // to the root once its dialog closes).
+        if resize_focus.is_some() || !self.dialog_focus.borrow().owns_focus(window) {
+            window.focus(match resize_focus {
+                Some(DockSide::Library) => &self.library_resize_focus,
+                Some(DockSide::Inspector) => &self.inspector_resize_focus,
+                None => &self.focus,
+            });
+        }
         cx.notify();
     }
 
@@ -3754,10 +3788,10 @@ impl Workspace {
                 "group",
                 Cmd::ResolveBurst,
             ),
-            item("Preferences", "App", "⌘,", "settings", Cmd::Preferences),
+            item(settings_noun(), "App", "⌘,", "settings", Cmd::Preferences),
             item(
                 "Appearance & Themes…",
-                "Preferences · Zed themes and fonts",
+                &format!("{} · Zed themes and fonts", settings_noun()),
                 "",
                 "color-mode",
                 Cmd::Appearance,
@@ -4068,6 +4102,8 @@ impl Workspace {
             return;
         }
         if self.preferences && !self.palette {
+            // Quit, F1, the palette and Esc were routed above.
+            self.preferences_key(event, window, cx);
             return;
         }
         if !self.palette && self.add_host.is_none() && self.ingest_key(event, cx) {
@@ -4082,7 +4118,11 @@ impl Workspace {
                 if key == "tab" {
                     form.focus(1 - form.active);
                 } else {
+                    let before = form.fields[form.active].len();
                     form.edit.key(&mut form.fields[form.active], event, cx);
+                    if form.active == 0 && form.fields[0].len() != before {
+                        form.error = None;
+                    }
                 }
             }
             cx.notify();
@@ -4400,6 +4440,15 @@ fn reveal_label() -> &'static str {
         "Reveal in Finder"
     } else {
         "Show in Files"
+    }
+}
+
+/// macOS (13+) calls the window Settings; GNOME and KDE keep Preferences.
+fn settings_noun() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Settings"
+    } else {
+        "Preferences"
     }
 }
 
@@ -8826,22 +8875,24 @@ impl Workspace {
                 div()
                     .px(px(ui::PANEL_INSET))
                     .py(px(space::MD))
-                    .text_color(self.muted())
-                    .child("No matching commands"),
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::XS))
+                    .child(format!("No commands match “{}”", self.palette_query.trim()))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(self.muted())
+                            .child("Try export, zoom, trash or theme · Esc closes"),
+                    ),
             );
         }
-        div()
-            .absolute()
-            .inset_0()
-            .bg(rgba(0x00000040))
-            .occlude()
-            .flex()
-            .justify_center()
+        // `items_start` lets the panel hug its results instead of stretching to max_h.
+        self.modal_scrim(Overlay::Palette)
+            .items_start()
             .pt(px(72.))
             .child(
-                div()
-                    .id("command-palette")
-                    .occlude()
+                self.modal_surface("command-palette", dialog::DIALOG_SMALL)
                     .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         // Outside-click dismissal belongs to the topmost overlay only.
                         if event.button == MouseButton::Left
@@ -8851,21 +8902,8 @@ impl Workspace {
                             this.execute(Cmd::Close, window, cx);
                         }
                     }))
-                    .w(px(560.))
                     .h_auto()
                     .max_h(px(440.))
-                    .flex()
-                    .flex_col()
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
-                    .border_1()
-                    .border_color(self.c("border.variant", "#333333"))
-                    .shadow(vec![BoxShadow {
-                        color: hsla(0., 0., 0., 0.35),
-                        offset: point(px(0.), px(6.)),
-                        blur_radius: px(18.),
-                        spread_radius: px(0.),
-                    }])
-                    .overflow_hidden()
                     .child(
                         div()
                             .h(px(TOOLBAR_HEIGHT))
@@ -8941,18 +8979,102 @@ impl Workspace {
         }
         row.into_any_element()
     }
+    /// Preference choice group: a radio group for the keyboard. Only the active
+    /// option is a Tab stop; arrows select the neighbouring option. Disabled
+    /// groups (settings that do not apply) are dimmed and inert.
+    fn pref_choices(
+        &self,
+        id: &str,
+        options: impl IntoIterator<Item = (String, Cmd, bool)>,
+        disabled: bool,
+        window: &Window,
+        cx: &gpui::Context<Self>,
+    ) -> AnyElement {
+        let options: Vec<_> = options.into_iter().collect();
+        let count = options.len();
+        let active_index = options
+            .iter()
+            .position(|(_, _, active)| *active)
+            .unwrap_or(0);
+        let group = SharedString::from(id.to_owned());
+        let mut row = div()
+            .flex()
+            .flex_shrink_0()
+            .border_1()
+            .border_color(self.border())
+            .when(disabled, |s| s.opacity(0.45));
+        for (i, (label, cmd, active)) in options.into_iter().enumerate() {
+            let key = format!("{id}-{i}");
+            let segment = if disabled {
+                div()
+                    .id(SharedString::from(key))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .h(px(ui::CONTROL_HEIGHT))
+                    .px(px(space::SM))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(if active { self.text() } else { self.muted() })
+                    .when(active, |s| s.bg(self.selected_bg()))
+                    .child(label)
+            } else {
+                let segment = self.segment(
+                    SharedString::from(key.clone()),
+                    &label,
+                    cmd.clone(),
+                    active,
+                    cx,
+                );
+                self.focusable(
+                    segment,
+                    &key,
+                    2,
+                    i == active_index,
+                    FocusTarget::option(cmd, group.clone(), i, count),
+                    window,
+                    cx,
+                )
+            };
+            row = row.child(segment);
+        }
+        row.into_any_element()
+    }
+    /// A focusable dialog button for Preferences (`tab_index` orders the
+    /// sections: tabs 1, body 2, footer 3, close 4).
+    fn pref_button(
+        &self,
+        element: Stateful<Div>,
+        key: &str,
+        tab_index: isize,
+        cmd: Cmd,
+        window: &Window,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.focusable(
+            element,
+            key,
+            tab_index,
+            true,
+            FocusTarget::button(cmd),
+            window,
+            cx,
+        )
+    }
     /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         let s = self.preference_settings();
-        let fonts = self.choices(
+        let fonts = self.pref_choices(
             "font",
             INTERFACE_FONTS
                 .iter()
                 .copied()
                 .map(|f| (f.to_string(), Cmd::Font(f.into()), s.interface_font == f)),
+            false,
+            window,
             cx,
         );
-        let groups = self.choices(
+        let groups = self.pref_choices(
             "group-mode",
             [
                 ("off", "Off"),
@@ -8961,9 +9083,15 @@ impl Workspace {
                 ("burst", "Burst"),
             ]
             .map(|(k, l)| (l.to_string(), Cmd::Group(k.into()), s.grouping_mode == k)),
+            false,
+            window,
             cx,
         );
-        let gaps = self.choices(
+        // Every grouping mode splits on the time gap; only Visual and Burst
+        // compare frames (`grouping::group_nodes`).
+        let gap_applies = s.grouping_mode != "off";
+        let similarity_applies = matches!(s.grouping_mode.as_str(), "visual" | "burst");
+        let gaps = self.pref_choices(
             "gap",
             [500u64, 1000, 2000, 5000].map(|g| {
                 (
@@ -8972,15 +9100,19 @@ impl Workspace {
                     s.burst_gap_ms == g,
                 )
             }),
+            !gap_applies,
+            window,
             cx,
         );
-        let thresholds = self.choices(
+        let thresholds = self.pref_choices(
             "threshold",
             [(4, "Strict"), (8, "Balanced"), (14, "Loose")]
                 .map(|(n, l)| (l.to_string(), Cmd::Threshold(n), s.visual_threshold == n)),
+            !similarity_applies,
+            window,
             cx,
         );
-        let advance = self.choices(
+        let advance = self.pref_choices(
             "pref-advance",
             [
                 (
@@ -8990,9 +9122,11 @@ impl Workspace {
                 ),
                 ("On".to_string(), Cmd::SetAutoAdvance(true), s.auto_advance),
             ],
+            false,
+            window,
             cx,
         );
-        let drives = self.choices(
+        let drives = self.pref_choices(
             "pref-drives",
             [
                 (
@@ -9006,9 +9140,29 @@ impl Workspace {
                     s.auto_discover_drives,
                 ),
             ],
+            false,
+            window,
             cx,
         );
-        let memory = self.choices(
+        let trash = self.pref_choices(
+            "trash-mode",
+            [
+                (
+                    "OS Trash".into(),
+                    Cmd::TrashMode("system".into()),
+                    s.trash_mode == "system",
+                ),
+                (
+                    "In-app".into(),
+                    Cmd::TrashMode("in_app".into()),
+                    s.trash_mode == "in_app",
+                ),
+            ],
+            false,
+            window,
+            cx,
+        );
+        let memory = self.pref_choices(
             "memory",
             [0, 128, 256, 512, 1024, 2048].map(|mb| {
                 (
@@ -9023,9 +9177,11 @@ impl Workspace {
                     s.memory_budget_mb == mb,
                 )
             }),
+            false,
+            window,
             cx,
         );
-        let disk = self.choices(
+        let disk = self.pref_choices(
             "disk",
             [2048, 8192, 32768].map(|mb| {
                 (
@@ -9034,6 +9190,26 @@ impl Workspace {
                     s.cache_budget_mb == mb,
                 )
             }),
+            false,
+            window,
+            cx,
+        );
+        let guide = self.pref_choices(
+            "guide-startup-pref",
+            [
+                (
+                    "Show".into(),
+                    Cmd::StartupGuide(true),
+                    s.show_getting_started,
+                ),
+                (
+                    "Hide".into(),
+                    Cmd::StartupGuide(false),
+                    !s.show_getting_started,
+                ),
+            ],
+            false,
+            window,
             cx,
         );
         let mode = s
@@ -9041,7 +9217,7 @@ impl Workspace {
             .get("theme_mode")
             .and_then(Value::as_str)
             .unwrap_or("manual");
-        let theme_mode = self.choices(
+        let theme_mode = self.pref_choices(
             "theme-mode",
             [
                 ("manual", "Manual"),
@@ -9049,6 +9225,8 @@ impl Workspace {
                 ("zed", "Follow Zed"),
             ]
             .map(|(k, l)| (l.to_string(), Cmd::ThemeMode(k.into()), mode == k)),
+            false,
+            window,
             cx,
         );
         let hover = self.hover_bg();
@@ -9079,6 +9257,7 @@ impl Workspace {
         };
         let mut theme_list = div()
             .id("theme-list")
+            .track_scroll(&self.theme_list_scroll)
             .max_h(px(240.))
             .overflow_y_scroll()
             .flex()
@@ -9092,7 +9271,20 @@ impl Workspace {
         let light_fallback = Theme::light();
         let dark_fallback = Theme::dark();
         let mut last_appearance = None;
-        for (i, theme) in sorted_themes {
+        let mut child = 0;
+        let theme_count = sorted_themes.len();
+        let selected_position = sorted_themes
+            .iter()
+            .position(|(_, theme)| {
+                let light = theme.appearance == "light";
+                if mode == "system" {
+                    theme.name == if light { light_theme } else { dark_theme }
+                } else {
+                    theme.name == s.theme
+                }
+            })
+            .unwrap_or(0);
+        for (position, (i, theme)) in sorted_themes.into_iter().enumerate() {
             let light = theme.appearance == "light";
             if last_appearance != Some(light) {
                 theme_list = theme_list.child(
@@ -9107,6 +9299,7 @@ impl Workspace {
                         .child(if light { "LIGHT" } else { "DARK" }),
                 );
                 last_appearance = Some(light);
+                child += 1;
             }
             let active = theme.name == s.theme;
             let selected = if mode == "system" {
@@ -9145,90 +9338,97 @@ impl Workspace {
                         .border_color(self.c("border.variant", "#333333")),
                 );
             }
-            theme_list = theme_list.child(
-                div()
-                    .id(("theme", i))
-                    .h(px(ui::ROW_HEIGHT))
-                    .flex_shrink_0()
-                    .px(px(space::MD))
-                    .flex()
-                    .items_center()
-                    .gap(px(space::MD))
-                    .cursor_pointer()
-                    .when(selected, |s| s.bg(self.selected_bg()))
-                    .when(!selected, |s| s.hover(move |s| s.bg(hover)))
-                    .child(swatches)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_normal()
-                            .line_clamp(1)
-                            .child(theme.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .w(px(16.))
-                            .flex_shrink_0()
-                            .when(selected, |s| s.child(icon("check", self.accent()))),
-                    )
-                    .tooltip(self.tip(
-                        &if theme.author.is_empty() {
-                            theme.name.clone()
+            let choose = if mode == "system" {
+                Cmd::SystemTheme(name.clone())
+            } else {
+                Cmd::Theme(name.clone())
+            };
+            let row = div()
+                .id(("theme", i))
+                .h(px(ui::ROW_HEIGHT))
+                .flex_shrink_0()
+                .px(px(space::MD))
+                .flex()
+                .items_center()
+                .gap(px(space::MD))
+                .cursor_pointer()
+                .when(selected, |s| s.bg(self.selected_bg()))
+                .when(!selected, |s| s.hover(move |s| s.bg(hover)))
+                .child(swatches)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_normal()
+                        .line_clamp(1)
+                        .child(theme.name.clone()),
+                )
+                .child(
+                    div()
+                        .w(px(16.))
+                        .flex_shrink_0()
+                        .when(selected, |s| s.child(icon("check", self.accent()))),
+                )
+                .tooltip(self.tip(
+                    &if theme.author.is_empty() {
+                        theme.name.clone()
+                    } else {
+                        format!("{} · {}", theme.name, theme.author)
+                    },
+                    "",
+                ))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let system = this
+                        .preference_settings()
+                        .extra
+                        .get("theme_mode")
+                        .and_then(Value::as_str)
+                        == Some("system");
+                    this.execute(
+                        if system {
+                            Cmd::SystemTheme(name.clone())
                         } else {
-                            format!("{} · {}", theme.name, theme.author)
+                            Cmd::Theme(name.clone())
                         },
-                        "",
-                    ))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let system = this
-                            .preference_settings()
-                            .extra
-                            .get("theme_mode")
-                            .and_then(Value::as_str)
-                            == Some("system");
-                        this.execute(
-                            if system {
-                                Cmd::SystemTheme(name.clone())
-                            } else {
-                                Cmd::Theme(name.clone())
-                            },
-                            window,
-                            cx,
-                        )
-                    })),
+                        window,
+                        cx,
+                    )
+                }));
+            theme_list = theme_list.child(
+                self.focusable(
+                    row,
+                    &format!("theme-{position}"),
+                    2,
+                    position == selected_position,
+                    FocusTarget::option(choose, "theme".into(), position, theme_count)
+                        .reveal(&self.theme_list_scroll, child),
+                    window,
+                    cx,
+                ),
             );
+            child += 1;
         }
         let stats = self.media.stats();
-        let heading = |label: &str| {
-            div()
-                .pt(px(space::LG))
-                .pb(px(space::SM))
-                .text_size(px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(self.text())
-                .child(label.to_owned())
-        };
+        let section = self.preferences_section;
         let body = div()
             .id("preferences-body")
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
             .px(px(ui::DIALOG_INSET))
+            .pt(px(space::SM))
             .pb(px(ui::DIALOG_INSET))
-            .when(self.preferences_section == PreferencesSection::Import, |body| body.child(self.ingest_preferences(cx)))
-            .when(self.preferences_section == PreferencesSection::Culling, |body| body
-            .child(heading("Culling"))
+            .when(section == PreferencesSection::Import, |body| body.child(self.ingest_preferences(window, cx)))
+            .when(section == PreferencesSection::Culling, |body| body
             .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
-            .child(self.preference_row("Trash destination", "OS Trash moves files; in-app Trash keeps originals in place. Always confirm before deleting.", self.choices("trash-mode", [("OS Trash".into(), Cmd::TrashMode("system".into()), s.trash_mode == "system"), ("In-app".into(), Cmd::TrashMode("in_app".into()), s.trash_mode == "in_app")], cx)))
+            .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash))
             .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
-            .child(self.preference_row("Burst gap", "Maximum time between frames in a burst", gaps))
-            .child(self.preference_row("Similarity", "How alike frames must look to group", thresholds))
+            .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps))
+            .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds))
             .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
-            .when(self.preferences_section == PreferencesSection::Appearance, |body| body
-            .child(heading("Appearance"))
+            .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Font", "Interface typeface", fonts))
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
@@ -9241,9 +9441,14 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .child(format!("Available themes · {}", self.preference_themes().len()))
-                    .child(
+                    .child(self.pref_button(
                         self.button("import-theme", "Import Zed theme…", "folder-opened", Cmd::ImportTheme, false, cx),
-                    ),
+                        "import-theme",
+                        2,
+                        Cmd::ImportTheme,
+                        window,
+                        cx,
+                    )),
             )
             .child(theme_list)
             .child(div().pt(px(space::SM)).text_size(px(11.)).text_color(self.muted()).child(match mode {
@@ -9251,8 +9456,7 @@ impl Workspace {
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
             })))
-            .when(self.preferences_section == PreferencesSection::Performance, |body| body
-            .child(heading("Performance"))
+            .when(section == PreferencesSection::Performance, |body| body
             .child(self.preference_row("Preview memory", "Auto adapts to this computer; shared by decoded images and display copies", memory))
             .child(self.preference_row("Disk cache", "Reuses thumbnails and previews across launches; originals stay read-only", disk))
             .child(div().pt(px(space::SM)).text_color(self.muted()).child("The next and previous frames are read ahead for comparison, including while zoomed. Inspection prefers a paired JPEG or embedded camera preview."))
@@ -9272,60 +9476,241 @@ impl Workspace {
                         stats.queued
                     )),
             ))
-            .when(self.preferences_section == PreferencesSection::Help, |body| body
-                .child(heading("Getting Started"))
-                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", self.choices("guide-startup-pref", [("Show".into(), Cmd::StartupGuide(true), s.show_getting_started), ("Hide".into(), Cmd::StartupGuide(false), !s.show_getting_started)], cx)))
-                .child(self.button("open-guide", "Open Getting Started", "files", Cmd::GettingStarted, false, cx)))
-            .when(self.preferences_section == PreferencesSection::Controller, |body| body
-            .child(heading("Creator Micro"))
+            .when(section == PreferencesSection::Help, |body| body
+                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide))
+                .child(self.preference_row(
+                    "Getting Started",
+                    "Open the guide now; F1 opens it from anywhere",
+                    self.pref_button(
+                        self.button("open-guide", "Open Getting Started", "files", Cmd::GettingStarted, false, cx),
+                        "open-guide",
+                        2,
+                        Cmd::GettingStarted,
+                        window,
+                        cx,
+                    )
+                    .into_any_element(),
+                )))
+            .when(section == PreferencesSection::Controller, |body| body
+            .child(
+                div()
+                    .pt(px(space::LG))
+                    .pb(px(space::SM))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(self.text())
+                    .child("Creator Micro"),
+            )
             .child(
                 div()
                     .text_color(self.muted())
                     .text_size(px(11.))
                     .child("Arrows navigate · F13–F15 flag · F16/F17 rating · F18–F20 views · F21 zoom · F22 histogram · F23/F24 bursts. Profiles: docs/CONTROLS.md"),
             ));
+        let changed: HashSet<PreferencesSection> = self
+            .preferences_draft
+            .as_ref()
+            .map(|draft| {
+                draft
+                    .changed_keys()
+                    .iter()
+                    .map(|key| preferences::section_for(key))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut sections = div()
             .flex()
             .flex_shrink_0()
             .gap(px(ui::BAR_INSET))
-            .p(px(ui::BAR_INSET))
+            .px(px(ui::BAR_INSET))
             .border_b_1()
             .border_color(self.border());
-        for (section, label) in [
-            (PreferencesSection::Appearance, "Appearance"),
-            (PreferencesSection::Culling, "Culling"),
-            (PreferencesSection::Import, "Import"),
-            (PreferencesSection::Performance, "Performance"),
-            (PreferencesSection::Controller, "Controller"),
-            (PreferencesSection::Help, "Help"),
-        ] {
-            sections = sections.child(
-                self.segment(
-                    SharedString::from(format!("preferences-{section:?}")),
-                    label,
-                    Cmd::PreferencesSection(section),
-                    self.preferences_section == section,
-                    cx,
-                )
-                .px(px(space::LG)),
-            );
+        let accent = self.accent();
+        let warning = self.c("warning", "#e0b341");
+        let section_count = preferences::SECTIONS.len();
+        for (index, (tab, label)) in preferences::SECTIONS.into_iter().enumerate() {
+            let active = section == tab;
+            let element = div()
+                .id(SharedString::from(format!("preferences-{tab:?}")))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(space::XS))
+                .h(px(ui::CONTROL_ROW_HEIGHT))
+                .px(px(space::LG))
+                // The active tab matches the title-bar view tabs: text plus a
+                // 2 px accent underline on the bar's hairline, no fill.
+                .border_b_2()
+                .border_color(if active { accent } else { transparent_black() })
+                .text_color(if active { self.text() } else { self.muted() })
+                .cursor_pointer()
+                .when(!active, |s| s.hover(move |s| s.bg(hover)))
+                .child(label)
+                // Unsaved-change dot, positioned so tabs never shift as it appears.
+                .relative()
+                .when(changed.contains(&tab), |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .top(px(space::MD))
+                            .right(px(space::SM))
+                            .size(px(5.))
+                            .rounded_full()
+                            .bg(warning),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.execute(Cmd::PreferencesSection(tab), window, cx)
+                }));
+            sections = sections.child(self.focusable(
+                element,
+                &format!("prefs-tab-{index}"),
+                1,
+                active,
+                FocusTarget::option(
+                    Cmd::PreferencesSection(tab),
+                    "prefs-tab".into(),
+                    index,
+                    section_count,
+                ),
+                window,
+                cx,
+            ));
         }
-        div()
-            .absolute()
-            .inset_0()
-            .bg(rgba(0x00000060))
-            .occlude()
-            .flex()
-            .items_center()
-            .justify_center()
+        let draft = self.preferences_draft.as_ref();
+        let changes = draft.map_or(0, |draft| draft.changed_count());
+        let applying = draft.is_some_and(|draft| draft.applying);
+        let prompt = draft.is_some_and(|draft| draft.discard_prompt);
+        let status: AnyElement = if !self.settings_writable || self.settings_failure.is_some() {
+            div()
+                .child("Settings need attention · use Retry unsaved decisions")
+                .into_any_element()
+        } else if applying {
+            div().child("Applying changes…").into_any_element()
+        } else if prompt {
+            div()
+                .text_size(px(12.))
+                .text_color(self.text())
+                .child(format!(
+                    "Discard {changes} {}?",
+                    if changes == 1 { "change" } else { "changes" }
+                ))
+                .into_any_element()
+        } else if changes == 0 {
+            div().child("No changes").into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::SM))
+                .text_color(warning)
+                .child(div().size(px(6.)).rounded_full().bg(warning))
+                .child(format!(
+                    "{changes} unsaved {}",
+                    if changes == 1 { "change" } else { "changes" }
+                ))
+                .into_any_element()
+        };
+        let buttons = if prompt {
+            div()
+                .flex()
+                .gap(px(space::SM))
+                .child(self.pref_button(
+                    self.action_button(
+                        "keep-editing-preferences",
+                        "Keep Editing",
+                        Cmd::KeepEditingPreferences,
+                        ButtonKind::Primary,
+                        false,
+                        cx,
+                    ),
+                    "prefs-keep-editing",
+                    3,
+                    Cmd::KeepEditingPreferences,
+                    window,
+                    cx,
+                ))
+                .child(self.pref_button(
+                    self.action_button(
+                        "discard-preferences",
+                        "Discard",
+                        Cmd::DiscardPreferences,
+                        ButtonKind::DestructiveQuiet,
+                        false,
+                        cx,
+                    ),
+                    "prefs-discard",
+                    3,
+                    Cmd::DiscardPreferences,
+                    window,
+                    cx,
+                ))
+        } else {
+            let clean = changes == 0 || applying;
+            let apply = self.action_button(
+                "apply-preferences",
+                "Apply",
+                Cmd::ApplyPreferences,
+                ButtonKind::Secondary,
+                clean,
+                cx,
+            );
+            div()
+                .flex()
+                .gap(px(space::SM))
+                .child(self.pref_button(
+                    self.action_button(
+                        "cancel-preferences",
+                        "Cancel",
+                        Cmd::DiscardPreferences,
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    ),
+                    "prefs-cancel",
+                    3,
+                    Cmd::DiscardPreferences,
+                    window,
+                    cx,
+                ))
+                .child(if clean {
+                    apply
+                } else {
+                    self.pref_button(apply, "prefs-apply", 3, Cmd::ApplyPreferences, window, cx)
+                })
+                .child(self.pref_button(
+                    self.action_button(
+                        "apply-close-preferences",
+                        "Apply & Close",
+                        Cmd::ApplyClosePreferences,
+                        ButtonKind::Primary,
+                        applying,
+                        cx,
+                    ),
+                    "prefs-apply-close",
+                    3,
+                    Cmd::ApplyClosePreferences,
+                    window,
+                    cx,
+                ))
+        };
+        let close = self.pref_button(
+            self.button("close-preferences", "", "close", Cmd::Close, false, cx)
+                .tooltip(self.tip("Close", "Esc")),
+            "prefs-close",
+            4,
+            Cmd::Close,
+            window,
+            cx,
+        );
+        self.modal_scrim(Overlay::Preferences)
             .p(px(space::XXL))
             .child(
-                div()
-                    .id("preferences")
-                    .occlude()
+                self.modal_surface("preferences", dialog::DIALOG_LARGE)
                     .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         // A click in the palette, guide or theme picker layered
-                        // above must not close them (or discard this draft).
+                        // above must not close them (or discard this draft);
+                        // with unsaved changes Close asks first.
                         if event.button == MouseButton::Left
                             && this.top_overlay() == Some(Overlay::Preferences)
                         {
@@ -9333,98 +9718,17 @@ impl Workspace {
                             this.execute(Cmd::Close, window, cx);
                         }
                     }))
-                    .w(px(680.))
                     .max_h(px(660.))
                     .h_full()
-                    .flex()
-                    .flex_col()
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
-                    .border_1()
-                    .border_color(self.c("border.variant", "#333333"))
-                    .child(
-                        div()
-                            .h(px(TOOLBAR_HEIGHT))
-                            .flex_shrink_0()
-                            .pl(px(ui::DIALOG_INSET))
-                            .pr(px(ui::BAR_INSET))
-                            .py(px(ui::BAR_INSET))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_b_1()
-                            .border_color(self.border())
-                            .child(div().font_weight(FontWeight::MEDIUM).child("Preferences"))
-                            .child(
-                                self.button(
-                                    "close-preferences",
-                                    "",
-                                    "close",
-                                    Cmd::Close,
-                                    false,
-                                    cx,
-                                )
-                                .tooltip(self.tip("Close", "Esc")),
-                            ),
-                    )
+                    .child(self.modal_header(settings_noun(), None, cx).child(close))
                     .child(sections)
                     .child(body)
                     .child(
-                        div()
-                            .min_h(px(52.))
-                            .flex_shrink_0()
-                            .px(px(ui::DIALOG_INSET))
-                            .py(px(space::SM))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_t_1()
-                            .border_color(self.border())
+                        self.modal_footer()
                             .text_size(px(11.))
                             .text_color(self.muted())
-                            .child(
-                                div().flex_1().min_w(px(0.)).child(
-                                    if !self.settings_writable || self.settings_failure.is_some() {
-                                        "Settings need attention · use Retry unsaved decisions"
-                                    } else if self
-                                        .preferences_draft
-                                        .as_ref()
-                                        .is_some_and(|draft| draft.applying)
-                                    {
-                                        "Applying changes…"
-                                    } else {
-                                        "Changes take effect when you Apply"
-                                    },
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(space::SM))
-                                    .child(self.button(
-                                        "cancel-preferences",
-                                        "Cancel",
-                                        "",
-                                        Cmd::Close,
-                                        false,
-                                        cx,
-                                    ))
-                                    .child(self.button(
-                                        "apply-preferences",
-                                        "Apply",
-                                        "check",
-                                        Cmd::ApplyPreferences,
-                                        false,
-                                        cx,
-                                    ))
-                                    .child(self.button(
-                                        "apply-close-preferences",
-                                        "Apply & Close",
-                                        "",
-                                        Cmd::ApplyClosePreferences,
-                                        false,
-                                        cx,
-                                    )),
-                            ),
+                            .child(div().flex_1().min_w(px(0.)).child(status))
+                            .child(buttons),
                     ),
             )
             .into_any_element()
@@ -9804,7 +10108,7 @@ impl Workspace {
                     self.preferences,
                     cx,
                 )
-                .tooltip(self.tip("Preferences", "⌘,")),
+                .tooltip(self.tip(settings_noun(), "⌘,")),
             )
             .into_any_element()
     }
@@ -9821,6 +10125,7 @@ impl Render for Workspace {
         }
         self.reconcile_rating_filter();
         self.apply_theme_mode(window);
+        self.dialog_focus.borrow_mut().begin_frame();
         for texture in self.retired.drain(..) {
             let _ = window.drop_image(texture.image);
         }
@@ -10002,6 +10307,12 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|this, _: &QuitApp, _window, cx| this.request_quit(cx)))
+            // The pointer took over: hide the keyboard focus ring until Tab or arrows.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                if std::mem::take(&mut this.focus_visible) {
+                    cx.notify();
+                }
+            }))
             .relative()
             .size_full()
             .flex()
@@ -10041,80 +10352,8 @@ impl Render for Workspace {
                     .child(self.button("dismiss-error", "", "close", Cmd::DismissError, false, cx)),
             );
         }
-        if let Some(AddHostForm {
-            fields,
-            active,
-            edit,
-        }) = &self.add_host
-        {
-            let mut form = div().w(px(560.)).p(px(space::XL)).flex().flex_col().gap(px(space::MD)).border_1().border_color(self.border()).bg(self.c("elevated_surface.background", "#1b1b1b"))
-                .child(div().text_size(px(16.)).child("Add network host"))
-                .child(div().text_color(self.muted()).child("Use your existing SSH configuration. Tab changes fields; Enter checks the agent."));
-            for (n, label) in ["SSH alias or user@host", "Remote command (optional)"]
-                .into_iter()
-                .enumerate()
-            {
-                form = form.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(space::XS))
-                        .child(label)
-                        .child(
-                            div()
-                                .id(("host-field", n))
-                                .min_h(px(ui::FIELD_HEIGHT))
-                                .p(px(ui::FIELD_INSET))
-                                .border_1()
-                                .border_color(if *active == n {
-                                    self.accent()
-                                } else {
-                                    self.border()
-                                })
-                                .bg(self.bg())
-                                .overflow_hidden()
-                                .child(self.input_field(
-                                    edit,
-                                    &fields[n],
-                                    "",
-                                    *active == n,
-                                    !self.palette,
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(form) = &mut this.add_host {
-                                        form.focus(n);
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
-                );
-            }
-            form = form.child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(px(space::SM))
-                    .child(self.button("host-cancel", "Cancel", "close", Cmd::Close, false, cx))
-                    .child(self.button(
-                        "host-save",
-                        "Add & connect",
-                        "add",
-                        Cmd::SaveRemoteHost,
-                        false,
-                        cx,
-                    )),
-            );
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgba(0x00000088))
-                    .child(form),
-            );
+        if self.add_host.is_some() {
+            root = root.child(self.add_host_view(cx));
         }
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
             root = root.child(self.rating_filter_menu(cx));
@@ -10136,6 +10375,11 @@ impl Render for Workspace {
         }
         if self.folder_picker.is_some() {
             root = root.child(self.picker_view(cx));
+        }
+        // A focused dialog control that is no longer drawn (its dialog closed
+        // or its tab changed) hands focus back to the root, which owns `key()`.
+        if self.dialog_focus.borrow().focus_is_stale(window) {
+            window.focus(&self.focus);
         }
         self.trim_display_cache();
         // Client-side decorations (Wayland, composited X11): transparent resize
@@ -10823,6 +11067,7 @@ mod ui_tests {
         let sources = [
             ("desktop.rs", include_str!("desktop.rs")),
             ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
+            ("dialog.rs", include_str!("desktop/dialog.rs")),
             ("folder_picker.rs", include_str!("desktop/folder_picker.rs")),
             ("help.rs", include_str!("desktop/help.rs")),
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
@@ -10867,6 +11112,33 @@ mod ui_tests {
             }
         }
         assert_eq!(handlers, 2, "root and dock-grip handlers");
+
+        // Preferences and dialog keyboard focus: focused controls are children
+        // of the root with no key handlers of their own (counted above), so
+        // keys bubble to `key()`, which routes Preferences only after the quit
+        // check. A focus handle left on a closed dialog is handed back to the
+        // root every frame, so the chord never dispatches to a dead node.
+        let quit = body.find("is_quit_chord(&event.keystroke)").unwrap();
+        let preferences = body
+            .find("self.preferences_key(event, window, cx)")
+            .expect("Preferences keyboard routing");
+        assert!(quit < preferences, "Preferences keys route after quit");
+        let preferences_source = sources
+            .iter()
+            .find(|(name, _)| *name == "preferences.rs")
+            .unwrap()
+            .1;
+        let handler = &preferences_source[preferences_source
+            .find("fn preferences_key(")
+            .expect("preferences_key")..];
+        let handler = &handler[..handler.find("\n    }\n").unwrap()];
+        assert!(
+            !handler.contains("\"q\""),
+            "preferences_key must not claim the quit key"
+        );
+        assert!(root.contains(
+            "if self.dialog_focus.borrow().focus_is_stale(window) {\n            window.focus(&self.focus);"
+        ));
     }
 
     #[test]

@@ -69,46 +69,23 @@ impl Workspace {
                     .child(div().text_color(self.muted()).child(text)),
             );
         }
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000088))
-            .flex()
-            .items_center()
-            .justify_center()
+        self.modal_scrim(Overlay::GettingStarted)
             .p(px(space::XL))
             .child(
-                div()
-                    .id("getting-started")
-                    .occlude()
-                    .w(px(720.))
-                    .max_w_full()
+                self.modal_surface("getting-started", dialog::DIALOG_LARGE)
                     .h(px(
                         (self.workspace_size.1 - 2. * space::XL).clamp(200., 680.)
                     ))
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(self.border())
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
+                    .child(self.modal_header(
+                        "Getting Started",
+                        Some(("close-guide", Cmd::Close)),
+                        cx,
+                    ))
                     .child(
                         div()
                             .flex_shrink_0()
-                            .p(px(space::LG))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_b_1()
-                            .border_color(self.border())
-                            .child(div().text_size(px(18.)).child("Getting Started"))
-                            .child(self.button("close-guide", "", "close", Cmd::Close, false, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .p(px(space::LG))
+                            .px(px(ui::DIALOG_INSET))
+                            .py(px(space::LG))
                             .flex()
                             .flex_col()
                             .gap(px(space::XS))
@@ -121,20 +98,15 @@ impl Workspace {
                             .child(
                                 div()
                                     .text_color(self.muted())
-                                    .child("Ctrl/Cmd+Z Undo · Ctrl/Cmd+K Commands · Ctrl/Cmd+, Preferences · F1 Help"),
+                                    .child(format!(
+                                        "Ctrl/Cmd+Z Undo · Ctrl/Cmd+K Commands · Ctrl/Cmd+, {} · F1 Help",
+                                        settings_noun()
+                                    )),
                             ),
                     )
                     .child(content)
                     .child(
-                        div()
-                            .flex_shrink_0()
-                            .p(px(space::LG))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(space::SM))
-                            .border_t_1()
-                            .border_color(self.border())
+                        self.modal_footer()
                             .child(self.button(
                                 "guide-startup",
                                 "Show at startup",
@@ -147,11 +119,11 @@ impl Workspace {
                                 self.settings.show_getting_started,
                                 cx,
                             ))
-                            .child(self.button(
+                            .child(self.action_button(
                                 "guide-done",
                                 "Start culling",
-                                "",
                                 Cmd::Close,
+                                ButtonKind::Primary,
                                 false,
                                 cx,
                             )),
