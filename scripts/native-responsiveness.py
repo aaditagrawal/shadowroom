@@ -138,21 +138,30 @@ class X:
     def key(self, name: str, press: bool) -> int:
         code = self.keycode(name)
         with self.lock:
+            # Stamp before sending: a loaded host can deschedule this thread
+            # after XFlush, and the app may receive the event before we resume.
+            sent = now_ns()
             self.xtst.XTestFakeKeyEvent(self.d, code, int(press), 0)
             self.x.XFlush(self.d)
-            return now_ns()
+            return sent
 
     def motion(self, x: int, y: int) -> int:
         with self.lock:
+            # Stamp before sending: a loaded host can deschedule this thread
+            # after XFlush, and the app may receive the event before we resume.
+            sent = now_ns()
             self.xtst.XTestFakeMotionEvent(self.d, 0, x, y, 0)
             self.x.XFlush(self.d)
-            return now_ns()
+            return sent
 
     def button(self, number: int, press: bool) -> int:
         with self.lock:
+            # Stamp before sending: a loaded host can deschedule this thread
+            # after XFlush, and the app may receive the event before we resume.
+            sent = now_ns()
             self.xtst.XTestFakeButtonEvent(self.d, number, int(press), 0)
             self.x.XFlush(self.d)
-            return now_ns()
+            return sent
 
     def children(self, window: int):
         root, parent = ctypes.c_ulong(), ctypes.c_ulong()
