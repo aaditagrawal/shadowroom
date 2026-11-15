@@ -1222,7 +1222,7 @@ impl Workspace {
         let trace_keys = trace.enabled().then(|| {
             let trace = trace.clone();
             cx.intercept_keystrokes(move |event, _, cx| {
-                trace.input("key", &event.keystroke.unparse(), false);
+                trace.input("key", &event.keystroke.unparse());
                 let trace = trace.clone();
                 cx.defer(move |_| trace.handled());
             })
@@ -10739,7 +10739,7 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.filters(cx))
+            .child(self.trace.timed("filters", self.filters(cx)))
             .child(
                 div()
                     .flex()
@@ -10747,17 +10747,18 @@ impl Workspace {
                     .min_h(px(0.))
                     .min_w(px(0.))
                     .overflow_hidden()
-                    .child(center),
+                    .child(self.trace.timed("center", center)),
             );
         if !self.filtered.is_empty() {
-            main = main.child(self.rating_bar(cx));
+            main = main.child(self.trace.timed("rating_bar", self.rating_bar(cx)));
             if self.mode != ViewMode::Grid {
-                main = main.child(self.filmstrip(cx));
+                let strip = self.filmstrip(cx);
+                main = main.child(self.trace.timed("filmstrip", strip));
             }
         }
         let mut body = div().relative().flex().flex_1().min_h(px(0.)).min_w(px(0.));
         if self.docks.library > 0. {
-            body = body.child(self.sidebar(cx));
+            body = body.child(self.trace.timed("sidebar", self.sidebar(cx)));
         }
         if self.import_ui.open {
             body = body.child(self.ingest_view(cx));
@@ -10765,7 +10766,7 @@ impl Workspace {
             body = body.child(main);
         }
         if self.docks.inspector > 0. {
-            body = body.child(self.inspector_view(cx));
+            body = body.child(self.trace.timed("inspector", self.inspector_view(cx)));
         }
         if self.docks.library > 0. {
             body = body.child(self.dock_resize_grip(DockSide::Library, window, cx));
@@ -10779,7 +10780,7 @@ impl Workspace {
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.trace.enabled() && event.pressed_button.is_some() {
-                    this.trace.input("drag", "", false);
+                    this.trace.input("drag", "");
                 }
                 this.move_scrollbar(event, cx);
                 this.move_dock_resize(event, cx);
@@ -10809,7 +10810,7 @@ impl Workspace {
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
                 if this.trace.enabled() {
                     this.trace
-                        .input("mouse_down", &format!("{:?}", event.button), false);
+                        .input("mouse_down", &format!("{:?}", event.button));
                 }
                 if std::mem::take(&mut this.focus_visible) {
                     cx.notify();
@@ -10825,9 +10826,9 @@ impl Workspace {
             .line_height(px(ui::TEXT_LINE_HEIGHT))
             .text_color(self.text())
             .bg(self.bg())
-            .child(self.title_bar(window, cx))
+            .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
             .child(body)
-            .child(self.status_bar(window, cx));
+            .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
         if self.add_host.is_some() {
             root = root.child(self.add_host_view(cx));
         }

@@ -647,7 +647,8 @@ class Driver:
 
 # --------------------------------------------------------------------------- analysis
 def load_trace(path: Path):
-    inputs, handled, frames = [], [], []
+    """Inputs, handled stamps, presented frames and GPUI's pre-dispatch draws."""
+    inputs, handled, frames, dispatch_draws = [], [], [], []
     for line in path.read_text().splitlines():
         record = json.loads(line)
         kind = record.get("k")
@@ -656,9 +657,9 @@ def load_trace(path: Path):
         elif kind == "handled":
             handled.append(record["t"])
         elif kind == "frame":
-            frames.append(record)
+            (frames if record.get("presented", True) else dispatch_draws).append(record)
     frames.sort(key=lambda f: f["render_start"])
-    return inputs, handled, frames
+    return inputs, handled, frames, dispatch_draws
 
 
 def first_at_or_after(values, t, key=lambda v: v):
@@ -682,7 +683,7 @@ def split(frame):
 
 
 def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz: float):
-    app_inputs, handled, frames = load_trace(trace_path)
+    app_inputs, handled, frames, dispatch_draws = load_trace(trace_path)
     interval_ms = 1000.0 / refresh_hz
     starts = [f["render_start"] for f in frames]
     samples = []
@@ -742,6 +743,7 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
             "handle_ms": (handled[h] - app_t) / 1e6 if h < len(handled) else None,
             "wait_ms": (frame["render_start"] - (handled[h] if h < len(handled) else app_t)) / 1e6,
             "render_ms": (frame["render_end"] - frame["render_start"]) / 1e6,
+            "cpu_ms": frame.get("cpu_ns", 0) / 1e6,
             **split(frame),
             "frame_ms": (frame["present"] - frame["render_start"]) / 1e6,
             "input_to_present_ms": (frame["present"] - item["sent"]) / 1e6,
@@ -767,6 +769,11 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
         span = (min(r["sent"] for r in rows), max(r["sent"] for r in rows) + 1_000_000_000)
         in_span = [f for f in frames if span[0] <= f["render_start"] <= span[1]]
         frame_ms = [(f["present"] - f["render_start"]) / 1e6 for f in in_span]
+        regions = {}
+        for f in in_span:
+            for name, costs in (f.get("regions") or {}).items():
+                regions.setdefault(name, []).append(sum(costs) / 1e6)
+        hidden = [f for f in dispatch_draws if span[0] <= f["render_start"] <= span[1]]
         render_ms = [(f["render_end"] - f["render_start"]) / 1e6 for f in in_span]
         table[name] = {
             "inputs": len(rows),
@@ -779,6 +786,10 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
             "next_frame_render_ms": summary([r["render_ms"] for r in good]),
             "next_frame_draw_present_ms": summary([r["frame_ms"] for r in good]),
             "all_frames": len(in_span),
+            "all_frames_cpu_ms": summary([f["cpu_ns"] / 1e6 for f in in_span if f.get("cpu_ns")]),
+            "region_cpu_ms_mean": {k: round(statistics.fmean(v), 3) for k, v in sorted(regions.items())},
+            "dispatch_draws": len(hidden),
+            "dispatch_draw_cpu_ms": summary([f["cpu_ns"] / 1e6 for f in hidden if f.get("cpu_ns")]),
             "all_frames_render_ms": summary(render_ms),
             "all_frames_draw_present_ms": summary(frame_ms),
             "all_frames_layout_prepaint_ms": summary([split(f).get("layout_prepaint_ms") for f in in_span]),
@@ -795,14 +806,14 @@ def analyse(driver_inputs, idle, trace_path: Path, damage: list[int], refresh_hz
         idle_rows.append(dict(row, frames=len(drawn), frames_per_s=round(len(drawn) / row["seconds"], 2),
                               frames_from_poll=sum(1 for f in drawn if f["poll"])))
     return {"refresh_hz": refresh_hz, "interval_ms": round(interval_ms, 3), "scenarios": table,
-            "idle": idle_rows, "samples": samples, "frame_count": len(frames),
+            "idle": idle_rows, "samples": samples, "frame_count": len(frames), "dispatch_draw_count": len(dispatch_draws),
             "damage_events": len(damage)}
 
 
 def print_report(result):
     print(f"\nDisplay interval {result['interval_ms']} ms ({result['refresh_hz']} Hz)")
     header = f"{'scenario':24} {'n':>4} {'in→present p50/p95/max ms':>28} {'render p50/p95/max':>22} " \
-             f"{'layout p50/p95':>15} {'paint p50/p95':>15} {'present p50/p95':>16} {'>1 int':>6} {'nofr':>5}"
+             f"{'layout p50/p95':>15} {'paint p50/p95':>15} {'present p50/p95':>16} {'cpu p50/p95':>12} {'>1 int':>6} {'nofr':>5}"
     print(header)
     for name, row in result["scenarios"].items():
         def fmt(s, keys=("p50", "p95", "max")):
@@ -810,7 +821,12 @@ def print_report(result):
         print(f"{name:24} {row['inputs']:>4} {fmt(row['input_to_present_ms']):>28} "
               f"{fmt(row['all_frames_render_ms']):>22} {fmt(row['all_frames_layout_prepaint_ms'], ('p50', 'p95')):>15} "
               f"{fmt(row['all_frames_paint_ms'], ('p50', 'p95')):>15} {fmt(row['all_frames_present_ms'], ('p50', 'p95')):>16} "
+              f"{fmt(row['all_frames_cpu_ms'], ('p50', 'p95')):>12} "
               f"{row['frames_over_one_interval']:>6} {row['inputs_without_new_frame']:>5}")
+    print("\nMean main-thread CPU ms per presented frame by region (request_layout + prepaint + paint)")
+    for name, row in result["scenarios"].items():
+        regions = " ".join(f"{k}={v:.2f}" for k, v in row["region_cpu_ms_mean"].items())
+        print(f"{name:24} dispatch draws {row['dispatch_draws']:>3}  {regions}")
     print(f"\n{'idle':24} {'cpu %':>7} {'wakeups/s':>10} {'frames/s':>9}")
     for row in result["idle"]:
         print(f"{row['scenario']:24} {row['cpu_percent']:>7} {row['main_thread_wakeups_per_s']:>10} "
@@ -833,6 +849,7 @@ def main():
     parser.add_argument("--label", default="")
     args = parser.parse_args()
     driver = Driver(args)
+    driver.loadavg_start = os.getloadavg()
     driver.prepare()
     report = {"schema_version": 1, "label": args.label, "binary": str(driver.binary),
               "binary_sha256": None, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -851,7 +868,7 @@ def main():
         "platform": platform.platform(), "machine": platform.machine(), "python": platform.python_version(),
         "cpu": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
                      if line.startswith("model name")), None),
-        "logical_cpus": os.cpu_count(), "loadavg_end": os.getloadavg(),
+        "logical_cpus": os.cpu_count(), "loadavg_start": driver.loadavg_start, "loadavg_end": os.getloadavg(),
         "x_server": "private rootful Xwayland", "window": list(WINDOW), "photos": driver.photo_count,
         "xrandr": driver.xrandr.strip().splitlines()[:3],
     }
