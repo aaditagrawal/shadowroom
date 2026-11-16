@@ -646,6 +646,7 @@ impl Workspace {
             active,
             edit,
             error,
+            error_field,
             connecting,
             failed,
         }) = &self.add_host
@@ -666,7 +667,7 @@ impl Workspace {
             .into_iter()
             .enumerate()
         {
-            let invalid = n == 0 && error.is_some();
+            let invalid = n == *error_field && error.is_some();
             body = body.child(
                 div()
                     .flex()
@@ -707,7 +708,7 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .when_some(error.as_ref().filter(|_| n == 0), |s, message| {
+                    .when_some(error.as_ref().filter(|_| invalid), |s, message| {
                         s.child(
                             div()
                                 .flex()

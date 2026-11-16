@@ -5269,6 +5269,7 @@ name = "shadowroom"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "ashpd 0.11.1",
  "blake3",
  "chrono",
  "crossbeam-channel",

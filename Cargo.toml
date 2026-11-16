@@ -11,7 +11,7 @@ categories = ["multimedia::images", "gui"]
 
 [features]
 default = ["desktop", "native-color", "native-codecs"]
-desktop = ["dep:gpui"]
+desktop = ["dep:gpui", "dep:ashpd"]
 # Load packaged/system LibRaw and Linux libheif for full codec coverage.
 native-codecs = ["dep:libloading"]
 # Optional established ICC backend for comparison and unsupported Rust profiles.
@@ -52,6 +52,10 @@ gpui = { version = "0.2.2", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 heifer = { version = "=0.2.0", optional = true }
+# The XDG file-chooser portal with a real title, accept label and start folder
+# (GPUI's prompt_for_paths sets neither). The exact version and features GPUI
+# already locks, so no new crate enters the build.
+ashpd = { version = "=0.11.1", default-features = false, features = ["async-std"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Use Foundation's typed ownership/out-parameter bindings for native OS Trash.

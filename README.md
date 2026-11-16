@@ -56,7 +56,7 @@ the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
 required. The macOS build is signed ad hoc and is not notarized. Each asset
 includes a SHA-256 checksum.
 
-Folder and theme choosers use the desktop's file-chooser portal on Linux, with a
+Folder, export and theme choosers use the desktop's file-chooser portal on Linux, with a
 built-in picker when no portal is available; OS Trash runs inside the app without
 requiring GIO. See [Linux portability](docs/PORTABILITY.md) for the
 experimental Rust media backends and static CPU/X11 browsing prototype.

@@ -355,12 +355,18 @@ impl Workspace {
 
     /// Escape while a quit waits for writes, exports or an import: Shadowroom
     /// stays open and the work carries on (R4-a11y-03). Cards queued behind
-    /// the running import were already dropped by the quit request.
+    /// the running import were only held, never dropped: they are released.
     pub(super) fn cancel_quit(&mut self) -> bool {
-        if self.quit != QuitState::Draining || self.deletion.executing() {
+        if self.quit != QuitState::Draining
+            || self.deletion.executing()
+            || self.import_ui.cancel_sent_for_quit
+        {
             return false;
         }
         self.quit = QuitState::Open;
+        if std::mem::take(&mut self.import_ui.queue_held) {
+            self.enqueue(IoCommand::IngestHoldQueue(false));
+        }
         // The toast that said a key was refused while closing is moot now.
         self.error = None;
         let carrying_on = if self.import_ui.progress.phase.is_active() {
@@ -374,11 +380,28 @@ impl Workspace {
         true
     }
 
+    /// A quit that ended without closing (Escape, or the quit prompt left
+    /// open or answered with Cancel) releases what it held: the queued cards
+    /// start again as usual. Returns whether anything changed.
+    pub(super) fn release_quit_holds(&mut self) -> bool {
+        if self.quit != QuitState::Open || self.feedback.quit_prompt.is_some() {
+            return false;
+        }
+        let cancelled = std::mem::take(&mut self.import_ui.cancel_sent_for_quit);
+        if std::mem::take(&mut self.import_ui.queue_held) {
+            self.enqueue(IoCommand::IngestHoldQueue(false));
+            return true;
+        }
+        cancelled
+    }
+
     /// While a quit waits, the status it waits on and how to stay.
-    fn closing_text(&self) -> Option<String> {
+    pub(super) fn closing_text(&self) -> Option<String> {
         match self.quit {
             QuitState::Open => None,
-            QuitState::Draining if !self.deletion.executing() => {
+            QuitState::Draining
+                if !self.deletion.executing() && !self.import_ui.cancel_sent_for_quit =>
+            {
                 Some(format!("{} · Esc keeps Shadowroom open", self.status))
             }
             _ => Some(self.status.to_string()),

@@ -195,6 +195,9 @@ pub trait CopyHooks: Send + Sync {
     fn before_manifest_verify(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+    /// Called on the import dispatcher before it scans `path` (fault
+    /// injection: a slow card keeps the dispatcher busy).
+    fn before_scan(&self, _path: &Path) {}
     /// The volume holding `path` (`uuid:…` or `label:…`).
     fn volume_identity(&self, path: &Path) -> String {
         super::volume_identity(path)
@@ -204,7 +207,7 @@ pub trait CopyHooks: Send + Sync {
     fn volume_mounts(&self, volume: &str) -> Vec<PathBuf> {
         crate::indexer::discover_drives()
             .into_iter()
-            .filter(|drive| drive.removable && super::volume_identity(&drive.path) == volume)
+            .filter(|drive| drive.removable && drive.volume == volume)
             .map(|drive| drive.path)
             .collect()
     }
@@ -1213,7 +1216,7 @@ mod batch_tests {
 fn fold(
     settled: Vec<Settled>,
     report: &mut Report,
-    lost: &dyn Fn(&Path) -> bool,
+    watch: &SourceWatch<'_>,
     deferred: &mut Vec<usize>,
 ) -> bool {
     let mut failed = false;
@@ -1245,10 +1248,13 @@ fn fold(
             }
             Settled::Failed { id, path, error } => {
                 failed = true;
-                if lost(&path) {
+                if watch.lost(&path) {
                     deferred.push(id);
                     continue;
                 }
+                // Named under the scanned source, like the scan's tiles and
+                // "Retry failed", even when the card was read elsewhere.
+                let path = watch.scanned(&path);
                 report.progress.failed += 1;
                 report.progress.failed_ids.push(id);
                 report.progress.failed_sources.push(path.clone());
@@ -1319,6 +1325,27 @@ impl<'a> SourceWatch<'a> {
             Ok(relative) if *current != self.origin => current.join(relative),
             _ => path.to_path_buf(),
         }
+    }
+    /// `path` (read where the source is now) under the scanned source.
+    pub(super) fn scanned(&self, path: &Path) -> PathBuf {
+        let current = self.current.borrow();
+        match path.strip_prefix(&*current) {
+            Ok(relative) if *current != self.origin => self.origin.join(relative),
+            _ => path.to_path_buf(),
+        }
+    }
+    /// The source root now.
+    pub(super) fn current(&self) -> PathBuf {
+        self.current.borrow().clone()
+    }
+    /// The card's UUID identity, when it can be followed to another mount.
+    pub(super) fn identity(&self) -> Option<String> {
+        self.mount.as_ref().and(self.volume.clone())
+    }
+    /// The scanned source relative to the card's mount root.
+    pub(super) fn inside(&self) -> Option<PathBuf> {
+        let mount = self.mount.as_ref()?;
+        self.origin.strip_prefix(mount).ok().map(Path::to_path_buf)
     }
     /// `group` with its source paths where they are now.
     fn rebase_group(&self, group: &PlannedGroup) -> PlannedGroup {
@@ -1391,7 +1418,12 @@ impl<'a> SourceWatch<'a> {
             return false;
         };
         for candidate in self.hooks.volume_mounts(volume) {
-            let root = candidate.join(inside);
+            // A whole card reads from the mount root itself (no trailing "/").
+            let root = if inside.as_os_str().is_empty() {
+                candidate
+            } else {
+                candidate.join(inside)
+            };
             if root == *self.current.borrow() {
                 continue;
             }
@@ -1441,6 +1473,7 @@ pub fn execute_with(
         Utc::now().timestamp_millis(),
         rand::random::<u64>()
     );
+    let watch = SourceWatch::new(plan, hooks, control);
     let mut report = Report {
         progress: Progress {
             job_id: job.clone(),
@@ -1449,6 +1482,8 @@ pub fn execute_with(
             total_bytes: plan.bytes,
             library_root: Some(roots[0].clone()),
             source: Some(plan.source.clone()),
+            volume: watch.identity(),
+            volume_path: watch.inside(),
             destinations: roots
                 .iter()
                 .map(|p| format!("{}: pending verification", p.display()))
@@ -1459,7 +1494,6 @@ pub fn execute_with(
     };
     update(&report.progress);
     catalog.ingest_begin(&job, plan)?;
-    let watch = SourceWatch::new(plan, hooks, control);
     // Verified, published groups go to the committer; settled outcomes return.
     // The bound keeps the copier at most a few groups (and open files) ahead.
     let (to_committer, committer_incoming) = crossbeam_channel::bounded(8);
@@ -1514,7 +1548,7 @@ pub fn execute_with(
                 }
                 for message in settled.try_iter() {
                     if let FromCommitter::Settled(list) = message {
-                        resync |= fold(list, &mut report, &lost, &mut deferred);
+                        resync |= fold(list, &mut report, &watch, &mut deferred);
                     }
                 }
                 if resync {
@@ -1526,7 +1560,7 @@ pub fn execute_with(
                     for message in settled.iter() {
                         match message {
                             FromCommitter::Settled(list) => {
-                                fold(list, &mut report, &lost, &mut deferred);
+                                fold(list, &mut report, &watch, &mut deferred);
                             }
                             FromCommitter::Resynced => break,
                         }
@@ -1554,7 +1588,7 @@ pub fn execute_with(
                     while !control.is_cancelled() {
                         for message in settled.try_iter() {
                             if let FromCommitter::Settled(list) = message {
-                                resync |= fold(list, &mut report, &lost, &mut deferred);
+                                resync |= fold(list, &mut report, &watch, &mut deferred);
                                 update(&report.progress);
                             }
                         }
@@ -1566,6 +1600,9 @@ pub fn execute_with(
                         if relocate_at.elapsed() >= Duration::from_secs(1) {
                             relocate_at = Instant::now();
                             if watch.relocate(&probe) {
+                                // The app learns where the card is now: that
+                                // path is this job's card, never a new card.
+                                report.progress.current_source = Some(watch.current());
                                 back = true;
                                 break;
                             }
@@ -1616,7 +1653,7 @@ pub fn execute_with(
                     for message in settled.iter() {
                         match message {
                             FromCommitter::Settled(list) => {
-                                failed |= fold(list, &mut report, &lost, &mut deferred);
+                                failed |= fold(list, &mut report, &watch, &mut deferred);
                             }
                             FromCommitter::Resynced => break,
                         }
@@ -1745,16 +1782,14 @@ pub fn execute_with(
                             deferred.push(named.group.id);
                             continue;
                         }
+                        let scanned = watch.scanned(&named.group.primary.path);
                         report.progress.failed += 1;
                         report.progress.failed_ids.push(named.group.id);
                         report
                             .progress
-                            .failed_sources
-                            .push(named.group.primary.path.clone());
-                        report
-                            .progress
                             .errors
-                            .push(format!("{}: {error:#}", named.group.primary.path.display()));
+                            .push(format!("{}: {error:#}", scanned.display()));
+                        report.progress.failed_sources.push(scanned);
                     }
                 }
                 // Byte progress is throttled above; per-group counters are too, so a
@@ -1777,10 +1812,9 @@ pub fn execute_with(
         // Groups the vanished source failed after the copier stopped (on
         // cancel) are left out, as never imported, rather than counted failed.
         let mut abandoned = Vec::new();
-        let lost = |path: &Path| watch.lost(path);
         for message in settled.iter() {
             if let FromCommitter::Settled(list) = message {
-                fold(list, &mut report, &lost, &mut abandoned);
+                fold(list, &mut report, &watch, &mut abandoned);
             }
         }
         if let Err(panic) = committer.join() {

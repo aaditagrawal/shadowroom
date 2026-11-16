@@ -265,8 +265,19 @@ pub(super) struct ImportUi {
     /// Imports waiting for the running job (another card), in start order.
     pub queue: Vec<QueuedJob>,
     /// The card of the last job that completed: its sidebar row reads
-    /// "Safe to eject" until it is ejected or another job starts.
+    /// "Safe to eject" until it is ejected or another job starts. Where the
+    /// job last read it (a card back at another mount point reads there).
     pub done_source: Option<PathBuf>,
+    /// Filesystem identity of each mounted card (from drive discovery and
+    /// insertion), so the copying card at another mount point is that card.
+    pub volumes: HashMap<PathBuf, String>,
+    /// A quit holds the queue (no card starts while closing). Escape releases
+    /// it with every card still queued; only the close itself drops them.
+    pub queue_held: bool,
+    /// The card "Skip" cancelled: its result reads "Skipped".
+    skipping: Option<PathBuf>,
+    /// A quit cancelled the paused import as its last step before closing.
+    pub cancel_sent_for_quit: bool,
     /// The failed job's error list is unfolded under its outcome.
     details_open: bool,
     /// "Retry failed" picked the failed photos: start once their plan is ready.
@@ -312,6 +323,13 @@ pub(super) struct Outcome {
     failed_ids: Vec<usize>,
     /// Their source files, for Retry failed after the card was rescanned.
     failed_sources: Vec<PathBuf>,
+    /// The card's UUID identity and the source's place on it, so Retry
+    /// failed finds the card wherever it is mounted now.
+    volume: Option<String>,
+    volume_path: Option<PathBuf>,
+    /// The user skipped this card while it was out ("Skip CARD_A · start
+    /// CARD_B"): it reads "Skipped", not "Cancelled".
+    skipped: bool,
     /// The scan group each error line names, when it names one: a click on
     /// the line shows that tile.
     error_groups: Vec<Option<usize>>,
@@ -322,6 +340,20 @@ impl Outcome {
     /// Failed or cancelled with something left to do (not a success).
     fn needs_attention(&self) -> bool {
         self.tone != Tone::Success
+    }
+    /// The card this result belongs to is at `path` (`volume` is the
+    /// identity of the drive there).
+    fn of_card(&self, path: &Path, volume: Option<&str>) -> bool {
+        self.source == path
+            || self
+                .volume
+                .as_deref()
+                .is_some_and(|own| volume == Some(own) && self.volume_path_is_root())
+    }
+    fn volume_path_is_root(&self) -> bool {
+        self.volume_path
+            .as_deref()
+            .is_none_or(|inside| inside.as_os_str().is_empty())
     }
 }
 impl ImportUi {
@@ -398,6 +430,10 @@ impl ImportUi {
             tokens_open: false,
             queue: Vec::new(),
             done_source: None,
+            volumes: HashMap::new(),
+            queue_held: false,
+            skipping: None,
+            cancel_sent_for_quit: false,
             details_open: false,
             start_when_planned: false,
             history_open: HashSet::new(),
@@ -758,9 +794,93 @@ impl ImportUi {
     pub fn queued(&self, source: &std::path::Path) -> bool {
         self.queue.iter().any(|job| job.source == source)
     }
+    /// The identity of the card mounted at `path`, when it has a UUID.
+    fn uuid_at(&self, path: &Path) -> Option<&str> {
+        self.volumes
+            .get(path)
+            .map(String::as_str)
+            .filter(|volume| volume.starts_with("uuid:"))
+    }
+    /// Whether `path` is the running job's card: the source it scanned, where
+    /// it reads now, or the same card (by filesystem UUID) mounted at another
+    /// path. Such a path is never scanned again or shown as a new card.
+    pub fn copying_card(&self, path: &Path) -> bool {
+        let p = &self.progress;
+        self.active()
+            && (p.source.as_deref() == Some(path)
+                || p.current_source.as_deref() == Some(path)
+                || p.volume
+                    .as_deref()
+                    .is_some_and(|job| self.uuid_at(path) == Some(job)))
+    }
+    /// A card was inserted at `path`. Returns whether to scan it ("ask"
+    /// mode). A second card is queued behind a running job by the worker, so
+    /// a running job's progress is never replaced with a placeholder; the
+    /// card being copied coming back (after a pull, maybe at another mount
+    /// point) resumes its own job and is neither scanned nor announced.
+    pub(super) fn card_detected(&mut self, path: PathBuf, volume: String, auto: bool) -> bool {
+        if auto {
+            self.open = true;
+        }
+        self.volumes.insert(path.clone(), volume);
+        // The card whose import just finished, back at another mount point a
+        // moment later, is not a new card either: its row says "Safe to
+        // eject" and the view stays where it is.
+        if self.just_finished_card(&path) {
+            return false;
+        }
+        let copying = self.copying_card(&path);
+        if !copying && auto && !self.active() {
+            self.progress = Progress {
+                phase: Phase::Queued,
+                source: Some(path.clone()),
+                ..Default::default()
+            };
+            self.source = path;
+            return false;
+        }
+        !copying && !auto
+    }
+    /// The result "Retry failed" acts on: the shown card's, else the newest
+    /// other card's, when photos failed in it.
+    pub(super) fn retryable(&self) -> Option<&Outcome> {
+        self.outcome
+            .iter()
+            .chain(self.elsewhere.iter().rev())
+            .find(|o| !o.failed_ids.is_empty() || !o.failed_sources.is_empty())
+    }
+    /// Drive discovery changed: learn each card's identity. A finished card
+    /// that left (pulled or ejected) is no longer "Safe to eject", and
+    /// inserting it again later is a new insertion.
+    pub(super) fn drives_changed(&mut self, drives: &[shadowroom::indexer::Drive]) {
+        self.volumes = drives
+            .iter()
+            .map(|drive| (drive.path.clone(), drive.volume.clone()))
+            .collect();
+        if self
+            .done_source
+            .as_ref()
+            .is_some_and(|done| !drives.iter().any(|drive| drive.path == *done))
+        {
+            self.done_source = None;
+        }
+    }
+    /// Whether `path` is the card of the job that just completed (the last
+    /// job, still marked "Safe to eject").
+    fn just_finished_card(&self, path: &Path) -> bool {
+        let p = &self.progress;
+        p.phase == Phase::Completed
+            && self.done_source.is_some()
+            && (self.done_source.as_deref() == Some(path)
+                || p.source.as_deref() == Some(path)
+                || p.current_source.as_deref() == Some(path)
+                || p.volume
+                    .as_deref()
+                    .is_some_and(|job| self.uuid_at(path) == Some(job)))
+    }
     /// What a sidebar drive row adds to its name: the copy state of its card.
     pub fn drive_state(&self, path: &std::path::Path) -> Option<String> {
-        if self.active() && self.progress.source.as_deref() == Some(path) {
+        if self.copying_card(path) {
             let percent = (copy::import_fraction(&self.progress) * 100.).round();
             return Some(match self.progress.phase {
                 Phase::Paused => format!("Paused {percent:.0}%"),
@@ -772,19 +892,22 @@ impl ImportUi {
         if self.queued(path) {
             return Some("Queued".into());
         }
-        if self.done_source.as_deref() == Some(path) {
+        if self.done_source.as_deref() == Some(path) || self.just_finished_card(path) {
             return Some("Safe to eject".into());
         }
         // A job on this card that stopped short: what is left to do.
+        let volume = self.uuid_at(path);
         if let Some(outcome) = self
             .outcome
             .iter()
             .chain(self.elsewhere.iter())
-            .find(|o| o.source == path && o.needs_attention())
+            .find(|o| o.of_card(path, volume) && o.needs_attention())
         {
             let failed = outcome.failed_ids.len().max(outcome.failed_sources.len());
             return Some(if failed > 0 {
                 format!("{} failed", copy::count(failed))
+            } else if outcome.skipped {
+                "Skipped".into()
             } else if outcome.tone == Tone::Info {
                 "Cancelled".into()
             } else {
@@ -807,7 +930,7 @@ impl ImportUi {
         self.active_field = None;
         self.resizing = None;
         self.show_history = false;
-        if self.active() && self.progress.source.as_ref() == Some(&path) {
+        if self.copying_card(&path) {
             return false;
         }
         self.error = None;
@@ -823,6 +946,30 @@ impl ImportUi {
         }
         self.error = Some(error);
         self.retry_sources = None;
+    }
+    /// The worker refused to scan `path`: it is the card being copied (at a
+    /// new mount point) or a card already queued. A view waiting for that
+    /// scan goes back to what it showed instead of spinning. Returns whether
+    /// it was waiting.
+    fn scan_refused(&mut self, path: &Path) -> bool {
+        if !(self.scanning() && self.source == path) {
+            return false;
+        }
+        match self.scan.as_ref().map(|scan| scan.source.clone()) {
+            Some(source) => {
+                self.source = source;
+                self.scan_state = ScanState::Ready;
+            }
+            None => {
+                self.scan_state = ScanState::Idle;
+                if let Some(source) = self.progress.source.clone().filter(|_| self.active()) {
+                    self.source = source;
+                }
+            }
+        }
+        self.retry_sources = None;
+        self.changed();
+        true
     }
     /// The scan group an error line ("<source path>: <reason>") names.
     fn group_of_error(&self, line: &str) -> Option<usize> {
@@ -888,7 +1035,12 @@ impl ImportUi {
             self.retry_select(ids);
             return;
         }
-        let Some(outcome) = self.outcome.clone().filter(|o| o.source == self.source) else {
+        let volume = self.uuid_at(&self.source);
+        let Some(outcome) = self
+            .outcome
+            .clone()
+            .filter(|o| o.of_card(&self.source, volume))
+        else {
             return;
         };
         let failed_ids = if outcome.failed_sources.is_empty() {
@@ -968,6 +1120,9 @@ fn history_outcome(job: &Value) -> Option<Outcome> {
         errors: Vec::new(),
         failed_ids: Vec::new(),
         failed_sources,
+        volume: None,
+        volume_path: None,
+        skipped: false,
         error_groups: Vec::new(),
         manifest: None,
     })
@@ -979,10 +1134,7 @@ impl Workspace {
     /// (or queues behind a running job).
     fn retry_outcome(&mut self, outcome: &Outcome) {
         let ui = &self.import_ui;
-        if ui.job_here()
-            || (ui.active() && ui.progress.source.as_ref() == Some(&outcome.source))
-            || ui.scanning()
-        {
+        if ui.job_here() || ui.copying_card(&outcome.source) || ui.scanning() {
             return;
         }
         let wanted: HashSet<PathBuf> = outcome
@@ -1006,7 +1158,23 @@ impl Workspace {
         if wanted.is_empty() {
             return;
         }
-        if !outcome.source.exists() {
+        // Where the card is now: a card with a filesystem UUID is found by it
+        // at whatever mount point it came back on (the old path may be a
+        // stale, empty directory); anything else must still be where it was.
+        let location = match outcome.volume.as_deref() {
+            Some(volume) => self
+                .import_ui
+                .volumes
+                .iter()
+                .filter(|(_, v)| v.as_str() == volume)
+                .map(|(mount, _)| match outcome.volume_path.as_deref() {
+                    Some(inside) if !inside.as_os_str().is_empty() => mount.join(inside),
+                    _ => mount.clone(),
+                })
+                .min(),
+            None => outcome.source.exists().then(|| outcome.source.clone()),
+        };
+        let Some(location) = location else {
             self.announce(
                 format!(
                     "Insert {} to retry its failed photos",
@@ -1018,12 +1186,15 @@ impl Workspace {
                 Tone::Warning,
             );
             return;
+        };
+        if self.import_ui.copying_card(&location) {
+            return;
         }
         self.import_ui
             .elsewhere
             .retain(|o| o.source != outcome.source);
-        self.import_ui.retry_sources = Some((outcome.source.clone(), wanted));
-        self.scan_for_import(outcome.source.clone());
+        self.import_ui.retry_sources = Some((location.clone(), wanted));
+        self.scan_for_import(location);
     }
     /// A desktop notification for a finished import or export, only while the
     /// window is in the background (the in-window notice covers the rest) and
@@ -1125,10 +1296,7 @@ impl Workspace {
             .drives
             .iter()
             .filter(|drive| drive.removable)
-            .find(|drive| {
-                !(self.import_ui.active()
-                    && self.import_ui.progress.source.as_ref() == Some(&drive.path))
-            })
+            .find(|drive| !self.import_ui.copying_card(&drive.path))
             .map(|drive| drive.path.clone());
         match card {
             Some(path) if self.import_ui.source == path && self.import_ui.scan.is_some() => {
@@ -1160,6 +1328,31 @@ impl Workspace {
         }
         self.palette_revision = self.palette_revision.wrapping_add(1);
     }
+    /// The worker answered a scan with "busy": say why nothing scans.
+    fn scan_refused(&mut self, path: PathBuf) {
+        let queued = self.import_ui.queued(&path);
+        if !queued
+            && self.import_ui.active()
+            && let Some(volume) = self.import_ui.progress.volume.clone()
+        {
+            // The worker matched it to the copying card by its UUID.
+            self.import_ui.volumes.insert(path.clone(), volume);
+        }
+        if self.import_ui.scan_refused(&path) {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            if queued {
+                self.announce(format!("{name} is already queued"), Tone::Info);
+            } else {
+                self.announce(
+                    format!("{name} is the card being imported · its import continues"),
+                    Tone::Info,
+                );
+            }
+        }
+    }
     pub(super) fn ingest_event(&mut self, event: Event) {
         match event {
             Event::Scanning(path) => {
@@ -1168,9 +1361,11 @@ impl Workspace {
                 self.import_ui.failed.clear();
                 // The card leaving the view keeps an unfinished result in
                 // the footer; a card coming back gets its own result again.
+                let volume = self.import_ui.uuid_at(&path).map(str::to_owned);
+                let volume = volume.as_deref();
                 if let Some(outcome) = self.import_ui.outcome.take()
                     && outcome.needs_attention()
-                    && outcome.source != path
+                    && !outcome.of_card(&path, volume)
                 {
                     self.import_ui
                         .elsewhere
@@ -1181,7 +1376,7 @@ impl Workspace {
                     .import_ui
                     .elsewhere
                     .iter()
-                    .position(|o| o.source == path)
+                    .position(|o| o.of_card(&path, volume))
                 {
                     self.import_ui.outcome = Some(self.import_ui.elsewhere.remove(index));
                 }
@@ -1191,6 +1386,7 @@ impl Workspace {
                 self.import_ui.scan_state = ScanState::Scanning;
                 self.import_ui.error = None;
             }
+            Event::Busy(path) => self.scan_refused(path),
             Event::Batch(groups) => {
                 for group in groups {
                     self.import_ui.append(group);
@@ -1299,6 +1495,7 @@ impl Workspace {
                         0
                     };
                     let source = p.source.clone().unwrap_or_default();
+                    let skipped = self.import_ui.skipping.take().is_some_and(|s| s == source);
                     let mut outcome = match p.phase {
                         Phase::Completed => Outcome {
                             source,
@@ -1309,6 +1506,24 @@ impl Workspace {
                             errors: Vec::new(),
                             failed_ids: Vec::new(),
                             failed_sources: Vec::new(),
+                            volume: p.volume.clone(),
+                            volume_path: p.volume_path.clone(),
+                            skipped: false,
+                            error_groups: Vec::new(),
+                            manifest: p.manifest.clone(),
+                        },
+                        Phase::Cancelled if skipped => Outcome {
+                            source,
+                            tone: Tone::Info,
+                            text: copy::import_skipped(p),
+                            remaining: false,
+                            library: None,
+                            errors: Vec::new(),
+                            failed_ids: Vec::new(),
+                            failed_sources: Vec::new(),
+                            volume: p.volume.clone(),
+                            volume_path: p.volume_path.clone(),
+                            skipped: true,
                             error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
@@ -1329,6 +1544,9 @@ impl Workspace {
                             errors: Vec::new(),
                             failed_ids: Vec::new(),
                             failed_sources: Vec::new(),
+                            volume: p.volume.clone(),
+                            volume_path: p.volume_path.clone(),
+                            skipped: false,
                             error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
@@ -1348,6 +1566,9 @@ impl Workspace {
                             },
                             failed_ids: p.failed_ids.clone(),
                             failed_sources: p.failed_sources.clone(),
+                            volume: p.volume.clone(),
+                            volume_path: p.volume_path.clone(),
+                            skipped: false,
                             error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
@@ -1402,9 +1623,10 @@ impl Workspace {
                         ui.elsewhere.push(outcome);
                         ui.elsewhere_details = false;
                     }
-                    if p.phase == Phase::Failed && (!here || !self.import_ui.open) {
-                        // The panel holds the grouped errors; outside it, one
-                        // line says what happened and where the details are.
+                    if p.phase == Phase::Failed && !self.import_ui.open {
+                        // The panel holds the grouped errors (or, for another
+                        // card, its footer band does); outside it, one line
+                        // says what happened and where the details are.
                         self.announce_action(
                             format!("{card} · {summary}"),
                             Tone::Warning,
@@ -1416,9 +1638,11 @@ impl Workspace {
                 }
                 if p.phase == Phase::Completed && !was_completed {
                     let p = &self.import_ui.progress;
-                    self.import_ui.done_source = p.source.clone();
+                    // Where the job last read the card: a card that came back
+                    // at another mount point is ejected (and marked safe) there.
+                    let source = p.current_source.clone().or_else(|| p.source.clone());
+                    self.import_ui.done_source = source.clone();
                     let root = p.library_root.clone();
-                    let source = p.source.clone();
                     // The verified-offload sentence is the one that earns trust:
                     // show it once, with a way to the new photos.
                     let text = if here {
@@ -1558,8 +1782,7 @@ impl Workspace {
             "ingest_scan" => {
                 let path = PathBuf::from(params["path"].as_str().ok_or("path required")?);
                 // Another card scans while a job copies; the copying one never.
-                if self.import_ui.active() && self.import_ui.progress.source.as_ref() == Some(&path)
-                {
+                if self.import_ui.copying_card(&path) {
                     return Err("This source is importing now".into());
                 }
                 self.scan_for_import(path);
@@ -1654,7 +1877,9 @@ impl Workspace {
                 let outcome = |o: &Outcome| json!({"source":o.source,"text":o.text,"failed_ids":o.failed_ids,"failed_sources":o.failed_sources,"errors":o.errors});
                 return Ok(
                     json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"queue":self.import_ui.queue,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock),
-                        "outcome":self.import_ui.outcome.as_ref().map(outcome),"elsewhere":self.import_ui.elsewhere.iter().map(outcome).collect::<Vec<_>>(),"failed_tiles":self.import_ui.failed.keys().collect::<Vec<_>>()}),
+                        "outcome":self.import_ui.outcome.as_ref().map(outcome),"elsewhere":self.import_ui.elsewhere.iter().map(outcome).collect::<Vec<_>>(),"failed_tiles":self.import_ui.failed.keys().collect::<Vec<_>>(),
+                        "queue_held":self.import_ui.queue_held,
+                        "drives":self.drives.iter().map(|d| json!({"path":d.path,"volume":d.volume,"state":self.import_ui.drive_state(&d.path)})).collect::<Vec<_>>()}),
                 );
             }
             "ingest_cancel" => {
@@ -1756,6 +1981,15 @@ impl Workspace {
                     self.retry_outcome(&outcome);
                 }
             }
+            // From the palette: the shown card's failures, else the newest
+            // other card's.
+            "retry_failed_any" => match self.import_ui.retryable().cloned() {
+                Some(outcome) => {
+                    self.import_ui.open = true;
+                    self.retry_outcome(&outcome);
+                }
+                None => self.announce("No failed photos to retry", Tone::Info),
+            },
             // The other card's result in the footer.
             "elsewhere:retry" => {
                 if let Some(outcome) = self.import_ui.elsewhere.last().cloned() {
@@ -2100,6 +2334,7 @@ impl Workspace {
                     let next = queued_name(next);
                     let card = copy::source_name(&self.import_ui.progress);
                     self.import_ui.confirm = None;
+                    self.import_ui.skipping = self.import_ui.progress.source.clone();
                     self.enqueue(IoCommand::IngestCancel);
                     self.announce(
                         format!(
@@ -2437,9 +2672,10 @@ impl Workspace {
                                 if let Some(error) = failed.clone() {
                                     // Failed in the last job: never mistaken for a
                                     // new photo, with the reason on hover.
-                                    // Photo-overlay ink: legible on the scrim in
-                                    // every theme.
-                                    let ink = this.c("shadowroom.scrim.reject", "#e07a7a");
+                                    // Photo-overlay ink: the text in the overlay
+                                    // text colour (>= 4.5:1 on the plate in every
+                                    // theme), only the glyph in the reject ink.
+                                    let ink = this.scrim_flag(Flag::Reject);
                                     image = image.child(
                                         div()
                                             .id(("ingest-failed", index))
@@ -2451,7 +2687,7 @@ impl Workspace {
                                             .gap(px(2.))
                                             .px(px(space::XS))
                                             .bg(this.scrim())
-                                            .text_color(ink)
+                                            .text_color(this.scrim_text())
                                             .text_size(ui::font(ui::text::MICRO))
                                             .child(icon("warning", ink).size(px(12.)))
                                             .child("Failed")
@@ -2470,8 +2706,11 @@ impl Workspace {
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
                                             .text_size(ui::font(ui::text::MICRO))
+                                            // The pick ink is the overlay's own
+                                            // "good" colour, legible on the plate
+                                            // in light themes too.
                                             .child(
-                                                icon("check", this.c("success", "#7fbf7f"))
+                                                icon("check", this.scrim_flag(Flag::Pick))
                                                     .size(px(12.)),
                                             )
                                             .child("Verified"),
@@ -3546,7 +3785,7 @@ impl Workspace {
             .child(
                 self.button(
                     "ingest-all",
-                    "Check all",
+                    "Check All",
                     "",
                     Cmd::Ingest("all".into()),
                     false,
@@ -3560,7 +3799,7 @@ impl Workspace {
             .child(
                 self.button(
                     "ingest-none",
-                    "Uncheck all",
+                    "Uncheck All",
                     "",
                     Cmd::Ingest("none".into()),
                     false,
@@ -3725,6 +3964,7 @@ impl Workspace {
                             index == 0 || this.import_ui.timeline[index - 1].day != group.day;
                         div()
                             .id(("ingest-time", index))
+                            .w_full()
                             .h(px(66.))
                             .px(px(ui::PANEL_INSET))
                             .py(px(space::SM))
@@ -3757,9 +3997,14 @@ impl Workspace {
                                             .text_ellipsis()
                                             .child(date),
                                     )
+                                    // Counts in one right-aligned column,
+                                    // kept clear of the date (R4-io-10).
                                     .child(
                                         div()
                                             .flex_shrink_0()
+                                            .pl(px(space::SM))
+                                            .flex()
+                                            .justify_end()
                                             .text_size(ui::font(ui::text::LABEL))
                                             .text_color(this.muted())
                                             .child(copy::count(day_total)),
@@ -3823,7 +4068,12 @@ impl Workspace {
                                             .child(group.label.clone()),
                                     )
                                     .child(
-                                        div().flex_shrink_0().child(copy::count(group.ids.len())),
+                                        div()
+                                            .flex_shrink_0()
+                                            .pl(px(space::SM))
+                                            .flex()
+                                            .justify_end()
+                                            .child(copy::count(group.ids.len())),
                                     ),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -4094,17 +4344,18 @@ impl Workspace {
             && self.import_ui.progress.job_id == id;
         let mut amount = if live {
             // The running job: how far it is, never "0 photos".
+            // No noun on the total: a job mixes photos and videos.
             let p = &self.import_ui.progress;
             format!(
                 "{} of {}",
                 copy::count(p.completed + p.skipped + p.failed),
-                plural(p.total, "photo", "photos")
+                copy::count(p.total)
             )
         } else if matches!(verification, "running" | "finalizing") {
             format!(
                 "{} of {}",
                 copy::count(count("completed")),
-                plural(count("total"), "photo", "photos")
+                copy::count(count("total"))
             )
         } else if counts.get("completed_videos").is_some() {
             let videos = count("completed_videos").min(count("completed"));
@@ -4306,7 +4557,7 @@ impl Workspace {
                                 s.child(
                                     self.action_button(
                                         ("ingest-history-manifest", n),
-                                        "Show manifest",
+                                        "Show Manifest",
                                         Cmd::RevealPath(manifest),
                                         ButtonKind::Secondary,
                                         false,
@@ -4322,7 +4573,7 @@ impl Workspace {
                                 s.child(
                                     self.action_button(
                                         ("ingest-history-retry", n),
-                                        "Retry failed",
+                                        "Retry Failed",
                                         Cmd::Ingest(format!("history_retry:{id}")),
                                         ButtonKind::Secondary,
                                         self.import_ui.scanning(),
@@ -4444,11 +4695,12 @@ impl Workspace {
         cx: &gpui::Context<Self>,
     ) -> AnyElement {
         let ui_state = &self.import_ui;
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.c("warning", WARNING_FALLBACK);
         let (glyph, color) = match outcome.tone {
             Tone::Success => ("check", self.c("success", "#7fbf7f")),
             Tone::Warning => ("warning", warning),
-            Tone::Info => ("check", self.icon_muted()),
+            // Cancelled or skipped: neutral, never the "verified" check.
+            Tone::Info => ("stop", self.icon_muted()),
         };
         let (prefix, details_open, details, retry, dismiss) = if elsewhere {
             (
@@ -4505,7 +4757,7 @@ impl Workspace {
                 )
                 .child(self.action_button(
                     "ingest-outcome-cull",
-                    "Cull imported photos",
+                    "Cull Imported Photos",
                     Cmd::Ingest("close".into()),
                     ButtonKind::Secondary,
                     false,
@@ -4515,7 +4767,7 @@ impl Workspace {
             .when(outcome.remaining && !elsewhere, |s| {
                 s.child(self.action_button(
                     "ingest-remaining",
-                    "Import remaining",
+                    "Import Remaining",
                     Cmd::Ingest("remaining".into()),
                     ButtonKind::Secondary,
                     self.ingest_blocker().is_some(),
@@ -4546,7 +4798,7 @@ impl Workspace {
                     s.child(
                         self.action_button(
                             SharedString::from(format!("ingest-retry-failed-{key}")),
-                            "Retry failed",
+                            "Retry Failed",
                             Cmd::Ingest(retry.into()),
                             ButtonKind::Secondary,
                             ui_state.job_here() || ui_state.scanning(),
@@ -4572,7 +4824,7 @@ impl Workspace {
                     s.child(
                         self.action_button(
                             SharedString::from(format!("ingest-show-manifest-{key}")),
-                            "Show manifest",
+                            "Show Manifest",
                             Cmd::RevealPath(manifest),
                             ButtonKind::Secondary,
                             false,
@@ -4646,7 +4898,7 @@ impl Workspace {
     /// A job copying another card: what it does, and that this one waits.
     fn ingest_other_job_band(&self) -> AnyElement {
         let progress = &self.import_ui.progress;
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.c("warning", WARNING_FALLBACK);
         let missing = progress.source_missing;
         let line = if missing {
             copy::import_progress(progress)
@@ -4730,7 +4982,7 @@ impl Workspace {
                 s.child(
                     self.action_button(
                         "ingest-clear-queue",
-                        "Clear queue",
+                        "Clear Queue",
                         Cmd::Ingest("clear_queue".into()),
                         ButtonKind::Secondary,
                         false,
@@ -4761,7 +5013,7 @@ impl Workspace {
         // review and Queue button, with that job summarized above it.
         let active = ui_state.job_here();
         let error = self.c("error", "#d46a6a");
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.c("warning", WARNING_FALLBACK);
         let mut footer = div()
             .id("ingest-footer")
             .flex()
@@ -4942,7 +5194,7 @@ impl Workspace {
                     .child(self.confirm_button(
                         self.action_button(
                             "ingest-cancel",
-                            "Cancel import",
+                            "Cancel Import",
                             Cmd::Ingest("cancel".into()),
                             ButtonKind::DestructiveQuiet,
                             false,
@@ -4977,7 +5229,7 @@ impl Workspace {
                             s.child(
                                 self.action_button(
                                     "ingest-skip",
-                                    &format!("Skip {card} · start {next}"),
+                                    &format!("Skip {card} · Start {next}"),
                                     Cmd::Ingest("skip".into()),
                                     ButtonKind::Secondary,
                                     false,
@@ -5107,7 +5359,8 @@ impl Workspace {
                         .border_1()
                         .border_color(self.border())
                         .whitespace_nowrap()
-                        .child(icon("check", self.icon_muted()))
+                        // Waiting to import, not done: never the check.
+                        .child(icon("import", self.icon_muted()))
                         .child(
                             div()
                                 .id("ingest-queued-text")
@@ -5144,7 +5397,7 @@ impl Workspace {
                         self.action_button(
                             "ingest-skip-to-this",
                             &format!(
-                                "Skip {card} · start {}",
+                                "Skip {card} · Start {}",
                                 queued_name(&ui_state.queue[0])
                             ),
                             Cmd::Ingest("skip".into()),
@@ -5593,6 +5846,100 @@ mod responsive_tests {
         assert!(state.active() && !state.job_here());
     }
 
+    /// R5-io-01: card A is copying, pulled, and comes back as EOS_DIGITAL1
+    /// (a stale EOS_DIGITAL directory took its old name) while card B is
+    /// shown. The app treats the new path as the copying card everywhere.
+    #[test]
+    fn the_copying_card_back_at_another_mount_point_is_that_card_not_a_new_one() {
+        use super::{Phase, ScanState};
+        use std::path::{Path, PathBuf};
+        let old = PathBuf::from("/run/media/u/EOS_DIGITAL");
+        let moved = PathBuf::from("/run/media/u/EOS_DIGITAL1");
+        let card_b = PathBuf::from("/run/media/u/CARD_B");
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        state.progress.phase = Phase::Paused;
+        state.progress.source_missing = true;
+        state.progress.source = Some(old.clone());
+        state.progress.volume = Some("uuid:7E57-CA4D".into());
+        state.progress.transferred = 40;
+        state.progress.total_bytes = 100;
+        state.source = card_b.clone();
+        state.scan_state = ScanState::Ready;
+        // "When a card is inserted: Ask": the card is announced with its
+        // identity before the job has followed it there.
+        assert!(!state.card_detected(moved.clone(), "uuid:7E57-CA4D".into(), false));
+        assert_eq!(state.source, card_b);
+        assert_eq!(state.scan_state, ScanState::Ready);
+        assert!(state.copying_card(&moved));
+        // The sidebar row, a scan request and Ctrl+Shift+I all see it so.
+        assert_eq!(state.drive_state(&moved).as_deref(), Some("Paused 40%"));
+        assert!(!state.request_scan(moved.clone()));
+        assert_eq!(state.source, card_b);
+        assert!(!state.scanning());
+        state.progress.phase = Phase::Copying;
+        state.progress.source_missing = false;
+        assert_eq!(state.drive_state(&moved).as_deref(), Some("Copying 40%"));
+        // Auto mode: no placeholder replaces the running job's progress.
+        assert!(!state.card_detected(moved.clone(), "uuid:7E57-CA4D".into(), true));
+        assert_eq!(state.progress.source.as_deref(), Some(old.as_path()));
+        // A label is not an identity: a same-named card is another card.
+        let other = PathBuf::from("/run/media/u/EOS_DIGITAL2");
+        assert!(state.card_detected(other.clone(), "label:EOS_DIGITAL".into(), false));
+        assert!(!state.copying_card(&other));
+        // Where the job reads now (from its progress) counts without an identity.
+        state.volumes.clear();
+        state.progress.current_source = Some(moved.clone());
+        assert!(state.copying_card(&moved));
+        assert!(!state.copying_card(Path::new("/run/media/u/CARD_C")));
+        // Finished: the card is safe to eject where it is now.
+        state.progress.phase = Phase::Completed;
+        state.done_source = state.progress.current_source.clone();
+        assert!(!state.copying_card(&moved));
+        assert_eq!(state.drive_state(&moved).as_deref(), Some("Safe to eject"));
+        // Detected a moment after it finished: still not a new card.
+        assert!(!state.card_detected(moved.clone(), "uuid:7E57-CA4D".into(), false));
+        assert_eq!(state.source, card_b);
+        // Once it has left, inserting it again later is a new insertion.
+        state.drives_changed(&[]);
+        assert_eq!(state.done_source, None);
+        assert!(state.card_detected(moved.clone(), "uuid:7E57-CA4D".into(), false));
+    }
+
+    /// A scan the worker refused (the copying card, or a queued card) puts the
+    /// view back on what it showed instead of leaving it on "Scanning".
+    #[test]
+    fn a_refused_scan_returns_to_the_card_shown() {
+        use super::{Phase, ScanState};
+        use std::path::PathBuf;
+        let temp = tempfile::tempdir().unwrap();
+        let shown = temp.path().join("CARD_B");
+        std::fs::create_dir(&shown).unwrap();
+        image::RgbImage::new(4, 4)
+            .save(shown.join("00.png"))
+            .unwrap();
+        let catalog = shadowroom::catalog::Catalog::open(&temp.path().join("c.db")).unwrap();
+        let scan = ingest::scan(&shown, &catalog, |_| {}, &ingest::Control::default()).unwrap();
+        let mut state = ImportUi::new(&shadowroom::settings::Settings::default());
+        state.scanned(std::sync::Arc::new(scan), 60);
+        state.progress.phase = Phase::Copying;
+        state.progress.source = Some(PathBuf::from("/run/media/u/EOS_DIGITAL"));
+        let moved = PathBuf::from("/run/media/u/EOS_DIGITAL1");
+        assert!(state.request_scan(moved.clone()));
+        assert!(state.scanning());
+        // Another path's refusal changes nothing.
+        assert!(!state.scan_refused(&PathBuf::from("/elsewhere")));
+        assert!(state.scan_refused(&moved));
+        assert_eq!(state.source, shown);
+        assert_eq!(state.scan_state, ScanState::Ready);
+        // Nothing was shown yet: the view idles on the copying card.
+        let mut empty = ImportUi::new(&shadowroom::settings::Settings::default());
+        empty.progress = state.progress.clone();
+        assert!(empty.request_scan(moved.clone()));
+        assert!(empty.scan_refused(&moved));
+        assert_eq!(empty.scan_state, ScanState::Idle);
+        assert_eq!(empty.source, PathBuf::from("/run/media/u/EOS_DIGITAL"));
+    }
+
     #[test]
     fn drive_rows_show_copying_queued_and_done_states() {
         use super::Phase;
@@ -5656,6 +6003,9 @@ mod responsive_tests {
             // Scan IDs from an older scan of this card: re-derived from paths.
             failed_ids: vec![99],
             failed_sources: vec![broken.primary.path.clone()],
+            volume: None,
+            volume_path: None,
+            skipped: false,
             error_groups: Vec::new(),
             manifest: None,
         };
