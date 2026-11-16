@@ -402,23 +402,53 @@ impl Workspace {
     }
 
     /// Lights-out (a second Focus press): the decision bar and filmstrip fold
-    /// into an 8 px ledger along the window's bottom edge.
+    /// into an 8 px ledger along the window's bottom edge, on the canvas
+    /// colour, so nothing around the photo is brighter than its surround in
+    /// a light palette (R5-design-08).
     pub(super) fn lights_out_band(&self, cx: &mut Context<Self>) -> AnyElement {
         let width = (self.center_size.0 - 2. * ui::PANEL_INSET).floor().max(0.);
+        let canvas = self.canvas_bg();
+        let (rail, reviewed) = self.canvas_ledger_inks(canvas);
         div()
             .id("lights-out-ledger")
             .h(px(LIGHTS_OUT_BAND))
             .flex_shrink_0()
             .px(px(ui::PANEL_INSET))
-            .bg(self.panel())
-            .child(self.ledger(
+            .bg(canvas)
+            .child(self.ledger_on(
                 Track::free(width, self.filtered.len()),
                 None,
                 ((LIGHTS_OUT_BAND - TRACK) / 2.).floor(),
                 LIGHTS_OUT_BAND,
+                (canvas, rail, reviewed),
                 cx,
             ))
             .into_any_element()
+    }
+
+    /// Rail and reviewed inks for a track on the canvas: the ledger tokens
+    /// where they hold (rail 1.5:1 on the canvas, reviewed 3:1 from the
+    /// rail), else the first chrome role that does, so a light canvas keeps
+    /// the shape code readable.
+    fn canvas_ledger_inks(&self, canvas: Hsla) -> (Hsla, Hsla) {
+        let rail = [
+            self.c("shadowroom.ledger.rail", "#3a3a3a"),
+            self.border(),
+            self.c("text.disabled", "#666666"),
+            self.muted(),
+        ]
+        .into_iter()
+        .find(|ink| contrast(*ink, canvas) >= 1.5)
+        .unwrap_or_else(|| self.muted());
+        let reviewed = [
+            self.c("shadowroom.ledger.reviewed", "#8a8a8a"),
+            self.muted(),
+            self.text(),
+        ]
+        .into_iter()
+        .find(|ink| contrast(*ink, rail) >= 3.)
+        .unwrap_or_else(|| self.text());
+        (rail, reviewed)
     }
 
     /// The track, `height` tall and transparent so it sits on whatever band
@@ -433,6 +463,25 @@ impl Workspace {
         height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let inks = (
+            self.panel(),
+            self.c("shadowroom.ledger.rail", "#3a3a3a"),
+            self.c("shadowroom.ledger.reviewed", "#8a8a8a"),
+        );
+        self.ledger_on(track, window, top, height, inks, cx)
+    }
+
+    /// [`Self::ledger`] on a given surface with its (surface, rail, reviewed)
+    /// inks: the panel bands use the ledger tokens, lights-out the canvas.
+    fn ledger_on(
+        &self,
+        track: Track,
+        window: Option<(usize, usize)>,
+        top: f32,
+        height: f32,
+        (surface, rail, reviewed): (Hsla, Hsla, Hsla),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let frames = self.filtered.len();
         let width = track.width;
         let ledger = self.ledger_data(cell_count(frames, width));
@@ -443,16 +492,9 @@ impl Workspace {
             Track { width, gap: 0. }
         };
         let current = self.selected.min(frames.saturating_sub(1));
-        let colors = [
-            self.c("shadowroom.ledger.rail", "#3a3a3a"),
-            self.c("shadowroom.ledger.reviewed", "#8a8a8a"),
-            self.pick_color(),
-            self.reject_color(),
-        ];
+        let colors = [rail, reviewed, self.pick_color(), self.reject_color()];
         let accent = self.accent();
         let bracket_color = self.muted();
-        // Filmstrip, Catalog band and lights-out band are all panels.
-        let surface = self.panel();
         let geometry = self.ledger_track.clone();
         let painted = ledger.clone();
         let bracket = window.map(|(start, end)| track.span(start, end, frames, ledger.cells.len()));
@@ -532,6 +574,23 @@ impl Workspace {
             }))
             .into_any_element()
     }
+}
+
+/// WCAG contrast ratio between two opaque colours.
+fn contrast(a: Hsla, b: Hsla) -> f32 {
+    let luminance = |c: Hsla| {
+        let c = gpui::Rgba::from(c);
+        let lin = |v: f32| {
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 #[cfg(test)]

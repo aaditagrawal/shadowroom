@@ -2919,6 +2919,12 @@ impl Workspace {
         }
     }
     // Preserve catalog order for history and API responses, without scanning the catalog.
+    /// The decision `id` carries now.
+    fn current_decision(&self, id: i64) -> Option<Decision> {
+        self.photo_index
+            .get(&id)
+            .map(|&index| Decision::from(&self.photos[index]))
+    }
     fn decisions_for(&self, ids: &HashSet<i64>) -> Vec<Decision> {
         let mut indices: Vec<_> = ids
             .iter()
@@ -3373,6 +3379,10 @@ impl Workspace {
                 Cmd::Undo,
                 "⌘Z",
             );
+            // Keyed, so lights-out shows it with its Undo (R5-a11y-07).
+            if let Some(flash) = self.feedback.flash.as_mut() {
+                flash.key = Some("batch-decision");
+            }
         } else if old.is_some() && self.selected_id() != old {
             // The decided frame is no longer on screen (auto-advance, or the
             // decision filtered it out): confirm what it now carries.
@@ -4101,6 +4111,11 @@ impl Workspace {
                 if let Some(d) = self.history.undo() {
                     let id = d.first().map(|d| d.id);
                     let subject = self.decisions_subject(&d);
+                    if let Some(restored) = d.first()
+                        && let Some(now) = self.current_decision(restored.id)
+                    {
+                        self.stamp_history(true, &now, restored);
+                    }
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
                         self.announce_action(
@@ -4119,6 +4134,11 @@ impl Workspace {
                 if let Some(d) = self.history.redo() {
                     let id = d.first().map(|d| d.id);
                     let subject = self.decisions_subject(&d);
+                    if let Some(redone) = d.first()
+                        && let Some(now) = self.current_decision(redone.id)
+                    {
+                        self.stamp_history(false, redone, &now);
+                    }
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
                         self.announce_action(
