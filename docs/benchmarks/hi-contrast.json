@@ -1,0 +1,756 @@
+{
+  "before": {
+    "commit": "c0760d5",
+    "core": {
+      "passed": 107,
+      "applicable": 142,
+      "score_pct": 75.4
+    },
+    "core_lenient_outline": {
+      "passed": 107,
+      "applicable": 138,
+      "score_pct": 77.5
+    },
+    "core_strict_state": {
+      "passed": 107,
+      "applicable": 142,
+      "score_pct": 75.4
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 62,
+        "applicable": 71,
+        "score_pct": 87.3
+      },
+      "Shadowroom Light": {
+        "passed": 45,
+        "applicable": 71,
+        "score_pct": 63.4
+      }
+    },
+    "extended": {
+      "passed": 16,
+      "applicable": 24,
+      "score_pct": 66.7
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 8,
+        "applicable": 12,
+        "score_pct": 66.7
+      },
+      "Shadowroom Light": {
+        "passed": 8,
+        "applicable": 12,
+        "score_pct": 66.7
+      }
+    },
+    "cvd": {
+      "total": 64,
+      "fail": 14
+    },
+    "core_fails": [
+      "Dark:muted.hover_row 3.82<4.5",
+      "Dark:border.panel 1.22<3.0",
+      "Dark:border.elevated 1.12<3.0",
+      "Dark:select.multi 2.21<3.0",
+      "Dark:state.selected_vs_panel 1.13<3.0",
+      "Dark:state.selected_vs_elevated 1.04<3.0",
+      "Dark:reject.toolbar_text 4.25<4.5",
+      "Dark:hist.label_panel 3.48<4.5",
+      "Dark:caption.compare 3.97<4.5",
+      "Light:muted.canvas 4.01<4.5",
+      "Light:muted.keycap 4.01<4.5",
+      "Light:muted.selected_row 4.5<4.5",
+      "Light:border.panel 1.46<3.0",
+      "Light:border.elevated 1.54<3.0",
+      "Light:select.multi 2.07<3.0",
+      "Light:state.selected_vs_panel 1.12<3.0",
+      "Light:state.selected_vs_elevated 1.12<3.0",
+      "Light:rating.canvas_text 3.96<4.5",
+      "Light:pick.toolbar_text 4.36<4.5",
+      "Light:badge.rating 2.13<4.5",
+      "Light:badge.pick 1.99<3.0",
+      "Light:badge.reject 1.79<3.0",
+      "Light:badge.multi 1.6<3.0",
+      "Light:hist.label_strong_panel 2.48<4.5",
+      "Light:caption.compare 3.97<4.5",
+      "Light:label.red.panel 2.54<3.0",
+      "Light:label.red.shadowroom 2.02<3.0",
+      "Light:label.yellow.panel 1.77<3.0",
+      "Light:label.yellow.shadowroom 1.41<3.0",
+      "Light:label.green.panel 2.0<3.0",
+      "Light:label.green.shadowroom 1.59<3.0",
+      "Light:label.blue.panel 2.19<3.0",
+      "Light:label.blue.shadowroom 1.74<3.0",
+      "Light:label.purple.panel 2.37<3.0",
+      "Light:label.purple.shadowroom 1.89<3.0"
+    ],
+    "ext_fails": [
+      "Dark:ext.control_border.canvas 1.32<3.0",
+      "Dark:ext.control_border.toolbar 1.22<3.0",
+      "Dark:ext.field.outline_elevated 1.12<3.0",
+      "Dark:ext.field.outline_panel 1.22<3.0",
+      "Light:ext.control_border.canvas 1.16<3.0",
+      "Light:ext.control_border.toolbar 1.46<3.0",
+      "Light:ext.field.outline_elevated 1.54<3.0",
+      "Light:ext.field.outline_panel 1.46<3.0"
+    ],
+    "cvd_fails": [
+      "labels (hard-coded, both themes) protan Red/Green dE=10.6",
+      "labels (hard-coded, both themes) protan Yellow/Green dE=7.5",
+      "labels (hard-coded, both themes) protan Blue/Purple dE=3.9",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=9.8",
+      "Shadowroom Light protan rating/pick dE=11.2",
+      "labels (hard-coded, both themes) deutan Red/Yellow dE=11.1",
+      "labels (hard-coded, both themes) deutan Red/Green dE=4.3",
+      "labels (hard-coded, both themes) deutan Yellow/Green dE=10.4",
+      "labels (hard-coded, both themes) deutan Blue/Purple dE=1.4",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=7.0",
+      "Shadowroom Light deutan rating/reject dE=7.8",
+      "labels (hard-coded, both themes) tritan Green/Blue dE=8.2"
+    ]
+  },
+  "r1": {
+    "commit": "3a5567b",
+    "core": {
+      "passed": 138,
+      "applicable": 138,
+      "score_pct": 100.0
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 138,
+      "applicable": 142,
+      "score_pct": 97.2
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      },
+      "Shadowroom Light": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      }
+    },
+    "extended": {
+      "passed": 39,
+      "applicable": 46,
+      "score_pct": 84.8
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 20,
+        "applicable": 23,
+        "score_pct": 87.0
+      },
+      "Shadowroom Light": {
+        "passed": 19,
+        "applicable": 23,
+        "score_pct": 82.6
+      }
+    },
+    "cvd": {
+      "total": 144,
+      "fail": 25
+    },
+    "core_fails": [],
+    "ext_fails": [
+      "Dark:ext.field.outline_elevated 1.12<3.0",
+      "Dark:ext.field.outline_panel 1.22<3.0",
+      "Dark:ext.palette.recent_selected 4.48<4.5",
+      "Light:ext.control_border.canvas 2.44<3.0",
+      "Light:ext.field.outline_elevated 1.54<3.0",
+      "Light:ext.field.outline_panel 1.46<3.0",
+      "Light:ext.import.included_tile 2.99<3.0"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=8.0",
+      "labels chrome Dark protan Blue/Purple dE=3.2",
+      "labels chrome Light protan Red/Yellow dE=11.2",
+      "labels chrome Light protan Blue/Purple dE=4.4",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=3.2",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=6.6",
+      "Shadowroom Light protan rating/pick dE=10.9",
+      "labels chrome Dark deutan Red/Yellow dE=11.2",
+      "labels chrome Dark deutan Red/Green dE=10.4",
+      "labels chrome Dark deutan Blue/Purple dE=5.3",
+      "labels chrome Light deutan Red/Yellow dE=3.8",
+      "labels chrome Light deutan Blue/Purple dE=4.1",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=5.3",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=8.3",
+      "Shadowroom Light deutan rating/reject dE=7.6",
+      "labels chrome Dark tritan Yellow/Purple dE=10.9",
+      "labels chrome Dark tritan Green/Blue dE=6.1",
+      "labels chrome Light tritan Green/Blue dE=8.5",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Green/Blue dE=6.1"
+    ]
+  },
+  "r2": {
+    "commit": "e355fe4",
+    "core": {
+      "passed": 138,
+      "applicable": 138,
+      "score_pct": 100.0
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 138,
+      "applicable": 142,
+      "score_pct": 97.2
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      },
+      "Shadowroom Light": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      }
+    },
+    "extended": {
+      "passed": 39,
+      "applicable": 46,
+      "score_pct": 84.8
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 20,
+        "applicable": 23,
+        "score_pct": 87.0
+      },
+      "Shadowroom Light": {
+        "passed": 19,
+        "applicable": 23,
+        "score_pct": 82.6
+      }
+    },
+    "cvd": {
+      "total": 144,
+      "fail": 25
+    },
+    "core_fails": [],
+    "ext_fails": [
+      "Dark:ext.field.outline_elevated 1.12<3.0",
+      "Dark:ext.field.outline_panel 1.22<3.0",
+      "Dark:ext.palette.recent_selected 4.48<4.5",
+      "Light:ext.control_border.canvas 2.44<3.0",
+      "Light:ext.field.outline_elevated 1.54<3.0",
+      "Light:ext.field.outline_panel 1.46<3.0",
+      "Light:ext.import.included_tile 2.99<3.0"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=8.0",
+      "labels chrome Dark protan Blue/Purple dE=3.2",
+      "labels chrome Light protan Red/Yellow dE=11.2",
+      "labels chrome Light protan Blue/Purple dE=4.4",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=3.2",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=6.6",
+      "Shadowroom Light protan rating/pick dE=10.9",
+      "labels chrome Dark deutan Red/Yellow dE=11.2",
+      "labels chrome Dark deutan Red/Green dE=10.4",
+      "labels chrome Dark deutan Blue/Purple dE=5.3",
+      "labels chrome Light deutan Red/Yellow dE=3.8",
+      "labels chrome Light deutan Blue/Purple dE=4.1",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=5.3",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=8.3",
+      "Shadowroom Light deutan rating/reject dE=7.6",
+      "labels chrome Dark tritan Yellow/Purple dE=10.9",
+      "labels chrome Dark tritan Green/Blue dE=6.1",
+      "labels chrome Light tritan Green/Blue dE=8.5",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Green/Blue dE=6.1"
+    ]
+  },
+  "r3": {
+    "commit": "05c6fc1",
+    "core": {
+      "passed": 134,
+      "applicable": 138,
+      "score_pct": 97.1
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 134,
+      "applicable": 142,
+      "score_pct": 94.4
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      },
+      "Shadowroom Light": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      }
+    },
+    "extended": {
+      "passed": 72,
+      "applicable": 76,
+      "score_pct": 94.7
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 36,
+        "applicable": 38,
+        "score_pct": 94.7
+      },
+      "Shadowroom Light": {
+        "passed": 36,
+        "applicable": 38,
+        "score_pct": 94.7
+      }
+    },
+    "cvd": {
+      "total": 168,
+      "fail": 29
+    },
+    "core_fails": [
+      "Dark:border.panel 1.41<3.0",
+      "Dark:border.elevated 1.29<3.0",
+      "Light:border.panel 1.26<3.0",
+      "Light:border.elevated 1.32<3.0"
+    ],
+    "ext_fails": [
+      "Dark:ext.control_border.toolbar 1.41<3.0",
+      "Dark:ext.import.included_tile 1.32<3.0",
+      "Light:ext.control_border.toolbar 1.26<3.0",
+      "Light:ext.import.included_tile 1.37<3.0"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=8.0",
+      "labels chrome Dark protan Blue/Purple dE=3.2",
+      "labels chrome Light protan Red/Yellow dE=11.2",
+      "labels chrome Light protan Blue/Purple dE=4.4",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=3.2",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=6.6",
+      "Shadowroom Light protan rating/pick dE=10.9",
+      "labels chrome Dark deutan Red/Yellow dE=11.2",
+      "labels chrome Dark deutan Red/Green dE=10.4",
+      "labels chrome Dark deutan Blue/Purple dE=5.3",
+      "labels chrome Light deutan Red/Yellow dE=3.8",
+      "labels chrome Light deutan Blue/Purple dE=4.1",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=5.3",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=8.3",
+      "Shadowroom Light deutan rating/reject dE=7.6",
+      "labels chrome Dark tritan Yellow/Purple dE=10.9",
+      "labels chrome Dark tritan Green/Blue dE=6.1",
+      "labels chrome Light tritan Green/Blue dE=8.5",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Green/Blue dE=6.1",
+      "ledger Shadowroom Dark protan reject/muted dE=10.4",
+      "ledger Shadowroom Light protan pick/reject dE=6.6",
+      "ledger Shadowroom Dark deutan pick/reject dE=8.4",
+      "ledger Shadowroom Light deutan pick/reject dE=8.3"
+    ]
+  },
+  "r4": {
+    "commit": "837512e",
+    "core": {
+      "passed": 134,
+      "applicable": 138,
+      "score_pct": 97.1
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 134,
+      "applicable": 142,
+      "score_pct": 94.4
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      },
+      "Shadowroom Light": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      }
+    },
+    "extended": {
+      "passed": 111,
+      "applicable": 116,
+      "score_pct": 95.7
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 55,
+        "applicable": 58,
+        "score_pct": 94.8
+      },
+      "Shadowroom Light": {
+        "passed": 56,
+        "applicable": 58,
+        "score_pct": 96.6
+      }
+    },
+    "cvd": {
+      "total": 168,
+      "fail": 29
+    },
+    "core_fails": [
+      "Dark:border.panel 1.41<3.0",
+      "Dark:border.elevated 1.29<3.0",
+      "Light:border.panel 1.26<3.0",
+      "Light:border.elevated 1.32<3.0"
+    ],
+    "ext_fails": [
+      "Dark:ext.control_border.toolbar 1.41<3.0",
+      "Dark:ext.import.included_tile 1.32<3.0",
+      "Dark:ext.menu.destructive_selected 3.83<4.5",
+      "Light:ext.control_border.toolbar 1.26<3.0",
+      "Light:ext.import.included_tile 1.37<3.0"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=8.0",
+      "labels chrome Dark protan Blue/Purple dE=3.2",
+      "labels chrome Light protan Red/Yellow dE=11.2",
+      "labels chrome Light protan Blue/Purple dE=4.4",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=3.2",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=6.6",
+      "Shadowroom Light protan rating/pick dE=10.9",
+      "labels chrome Dark deutan Red/Yellow dE=11.2",
+      "labels chrome Dark deutan Red/Green dE=10.4",
+      "labels chrome Dark deutan Blue/Purple dE=5.3",
+      "labels chrome Light deutan Red/Yellow dE=3.8",
+      "labels chrome Light deutan Blue/Purple dE=4.1",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=5.3",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=8.3",
+      "Shadowroom Light deutan rating/reject dE=7.6",
+      "labels chrome Dark tritan Yellow/Purple dE=10.9",
+      "labels chrome Dark tritan Green/Blue dE=6.1",
+      "labels chrome Light tritan Green/Blue dE=8.5",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Green/Blue dE=6.1",
+      "ledger Shadowroom Dark protan reject/muted dE=10.4",
+      "ledger Shadowroom Light protan pick/reject dE=6.6",
+      "ledger Shadowroom Dark deutan pick/reject dE=8.4",
+      "ledger Shadowroom Light deutan pick/reject dE=8.3"
+    ]
+  },
+  "r5": {
+    "commit": "72b936e",
+    "core": {
+      "passed": 134,
+      "applicable": 138,
+      "score_pct": 97.1
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 134,
+      "applicable": 142,
+      "score_pct": 94.4
+    },
+    "core_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      },
+      "Shadowroom Light": {
+        "passed": 67,
+        "applicable": 69,
+        "score_pct": 97.1
+      }
+    },
+    "extended": {
+      "passed": 171,
+      "applicable": 178,
+      "score_pct": 96.1
+    },
+    "extended_per_theme": {
+      "Shadowroom Dark": {
+        "passed": 85,
+        "applicable": 89,
+        "score_pct": 95.5
+      },
+      "Shadowroom Light": {
+        "passed": 86,
+        "applicable": 89,
+        "score_pct": 96.6
+      }
+    },
+    "cvd": {
+      "total": 168,
+      "fail": 26
+    },
+    "core_fails": [
+      "Dark:border.panel 1.41<3.0",
+      "Dark:border.elevated 1.29<3.0",
+      "Light:border.panel 1.26<3.0",
+      "Light:border.elevated 1.32<3.0"
+    ],
+    "ext_fails": [
+      "Dark:ext.control_border.toolbar 1.41<3.0",
+      "Dark:ext.import.included_tile 1.32<3.0",
+      "Dark:ext.clip.readout_shadow_swatch 2.85<3.0",
+      "Dark:ext.import.failed_chip_text 3.85<4.5",
+      "Light:ext.control_border.toolbar 1.26<3.0",
+      "Light:ext.import.included_tile 1.37<3.0",
+      "Light:ext.import.failed_chip_text 3.85<4.5"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=8.0",
+      "labels chrome Dark protan Blue/Purple dE=5.6",
+      "labels chrome Light protan Red/Yellow dE=11.2",
+      "labels chrome Light protan Blue/Purple dE=2.0",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=5.6",
+      "Shadowroom Dark protan rating/pick dE=10.6",
+      "Shadowroom Light protan pick/reject dE=6.6",
+      "Shadowroom Light protan rating/pick dE=10.9",
+      "labels chrome Dark deutan Red/Yellow dE=11.2",
+      "labels chrome Dark deutan Red/Green dE=10.4",
+      "labels chrome Dark deutan Blue/Purple dE=7.0",
+      "labels chrome Light deutan Red/Yellow dE=3.8",
+      "labels chrome Light deutan Blue/Purple dE=5.8",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=7.0",
+      "Shadowroom Dark deutan pick/reject dE=8.4",
+      "Shadowroom Light deutan pick/reject dE=8.3",
+      "Shadowroom Light deutan rating/reject dE=7.6",
+      "labels chrome Dark tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "ledger Shadowroom Dark protan reject/reviewed dE=10.4",
+      "ledger Shadowroom Light protan pick/reject dE=6.6",
+      "ledger Shadowroom Dark deutan pick/reject dE=8.4",
+      "ledger Shadowroom Light deutan pick/reject dE=8.3"
+    ]
+  },
+  "r4-hc": {
+    "commit": "837512e",
+    "core": {
+      "passed": 138,
+      "applicable": 138,
+      "score_pct": 100.0
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 138,
+      "applicable": 142,
+      "score_pct": 97.2
+    },
+    "core_per_theme": {
+      "Shadowroom High Contrast Dark": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      },
+      "Shadowroom High Contrast Light": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      }
+    },
+    "extended": {
+      "passed": 114,
+      "applicable": 116,
+      "score_pct": 98.3
+    },
+    "extended_per_theme": {
+      "Shadowroom High Contrast Dark": {
+        "passed": 57,
+        "applicable": 58,
+        "score_pct": 98.3
+      },
+      "Shadowroom High Contrast Light": {
+        "passed": 57,
+        "applicable": 58,
+        "score_pct": 98.3
+      }
+    },
+    "cvd": {
+      "total": 168,
+      "fail": 33
+    },
+    "core_fails": [],
+    "ext_fails": [
+      "High Contrast Dark:ext.ledger.reviewed_vs_rail 1.98<3.0",
+      "High Contrast Light:ext.ledger.reviewed_vs_rail 1.65<3.0"
+    ],
+    "cvd_fails": [
+      "labels chrome Dark protan Red/Green dE=9.4",
+      "labels chrome Dark protan Blue/Purple dE=3.8",
+      "labels chrome Light protan Red/Yellow dE=7.3",
+      "labels chrome Light protan Red/Green dE=10.8",
+      "labels chrome Light protan Blue/Purple dE=5.0",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=3.2",
+      "Shadowroom High Contrast Dark protan rating/pick dE=6.7",
+      "Shadowroom High Contrast Light protan pick/reject dE=9.0",
+      "Shadowroom High Contrast Light protan rating/pick dE=9.5",
+      "Shadowroom High Contrast Light protan rating/reject dE=9.6",
+      "labels chrome Dark deutan Red/Yellow dE=9.9",
+      "labels chrome Dark deutan Red/Green dE=10.5",
+      "labels chrome Dark deutan Blue/Purple dE=6.0",
+      "labels chrome Light deutan Red/Yellow dE=5.1",
+      "labels chrome Light deutan Blue/Purple dE=3.7",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=5.3",
+      "Shadowroom High Contrast Dark deutan pick/reject dE=5.7",
+      "Shadowroom High Contrast Dark deutan rating/pick dE=10.7",
+      "Shadowroom High Contrast Light deutan pick/reject dE=8.8",
+      "Shadowroom High Contrast Light deutan rating/pick dE=11.3",
+      "Shadowroom High Contrast Light deutan rating/reject dE=4.2",
+      "labels chrome Dark tritan Yellow/Purple dE=10.4",
+      "labels chrome Dark tritan Green/Blue dE=7.1",
+      "labels chrome Light tritan Yellow/Purple dE=11.5",
+      "labels chrome Light tritan Green/Blue dE=8.4",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "labels on-photo scrim tritan Green/Blue dE=6.1",
+      "ledger Shadowroom High Contrast Light protan pick/reject dE=9.0",
+      "ledger Shadowroom High Contrast Dark deutan pick/reject dE=5.7",
+      "ledger Shadowroom High Contrast Light deutan pick/reject dE=8.8"
+    ]
+  },
+  "r5-hc": {
+    "commit": "72b936e",
+    "core": {
+      "passed": 138,
+      "applicable": 138,
+      "score_pct": 100.0
+    },
+    "core_lenient_outline": {
+      "passed": 134,
+      "applicable": 134,
+      "score_pct": 100.0
+    },
+    "core_strict_state": {
+      "passed": 138,
+      "applicable": 142,
+      "score_pct": 97.2
+    },
+    "core_per_theme": {
+      "Shadowroom High Contrast Dark": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      },
+      "Shadowroom High Contrast Light": {
+        "passed": 69,
+        "applicable": 69,
+        "score_pct": 100.0
+      }
+    },
+    "extended": {
+      "passed": 175,
+      "applicable": 178,
+      "score_pct": 98.3
+    },
+    "extended_per_theme": {
+      "Shadowroom High Contrast Dark": {
+        "passed": 88,
+        "applicable": 89,
+        "score_pct": 98.9
+      },
+      "Shadowroom High Contrast Light": {
+        "passed": 87,
+        "applicable": 89,
+        "score_pct": 97.8
+      }
+    },
+    "cvd": {
+      "total": 168,
+      "fail": 31
+    },
+    "core_fails": [],
+    "ext_fails": [
+      "High Contrast Dark:ext.import.failed_chip_text 3.85<4.5",
+      "High Contrast Light:ext.clip.readout_highlight_swatch 2.92<3.0",
+      "High Contrast Light:ext.import.failed_chip_text 3.85<4.5"
+    ],
+    "cvd_fails": [
+      "labels chrome Light normal Blue/Purple dE=11.9",
+      "labels chrome Dark protan Red/Green dE=9.4",
+      "labels chrome Dark protan Blue/Purple dE=4.1",
+      "labels chrome Light protan Red/Yellow dE=7.3",
+      "labels chrome Light protan Red/Green dE=10.8",
+      "labels chrome Light protan Blue/Purple dE=4.4",
+      "labels on-photo scrim protan Red/Green dE=8.0",
+      "labels on-photo scrim protan Blue/Purple dE=5.6",
+      "Shadowroom High Contrast Dark protan rating/pick dE=6.7",
+      "Shadowroom High Contrast Light protan pick/reject dE=9.0",
+      "Shadowroom High Contrast Light protan rating/pick dE=9.5",
+      "Shadowroom High Contrast Light protan rating/reject dE=9.6",
+      "labels chrome Dark deutan Red/Yellow dE=9.9",
+      "labels chrome Dark deutan Red/Green dE=10.5",
+      "labels chrome Dark deutan Blue/Purple dE=6.7",
+      "labels chrome Light deutan Red/Yellow dE=5.1",
+      "labels chrome Light deutan Blue/Purple dE=5.4",
+      "labels on-photo scrim deutan Red/Yellow dE=11.2",
+      "labels on-photo scrim deutan Red/Green dE=10.4",
+      "labels on-photo scrim deutan Blue/Purple dE=7.0",
+      "Shadowroom High Contrast Dark deutan pick/reject dE=5.7",
+      "Shadowroom High Contrast Dark deutan rating/pick dE=10.7",
+      "Shadowroom High Contrast Light deutan pick/reject dE=8.8",
+      "Shadowroom High Contrast Light deutan rating/pick dE=11.3",
+      "Shadowroom High Contrast Light deutan rating/reject dE=4.2",
+      "labels chrome Dark tritan Yellow/Purple dE=10.4",
+      "labels chrome Light tritan Yellow/Purple dE=11.5",
+      "labels on-photo scrim tritan Yellow/Purple dE=10.9",
+      "ledger Shadowroom High Contrast Light protan pick/reject dE=9.0",
+      "ledger Shadowroom High Contrast Dark deutan pick/reject dE=5.7",
+      "ledger Shadowroom High Contrast Light deutan pick/reject dE=8.8"
+    ]
+  }
+}

@@ -19,6 +19,7 @@
 | [Catalog](CATALOG.md) | Schema, metadata, pairing, and indexing |
 | [Background service](SERVICE.md) | Actors, bounded queues, and shutdown |
 | [Performance](PERFORMANCE.md) | Measured results, raw data, and reproduction |
+| [Human interface review](HUMAN_INTERFACE.md) | Measured design, usability and accessibility rounds, decisions, and open gaps |
 | [CI performance](CI-PERFORMANCE.md) | Actions build/cache timings and reproduction |
 | [Fedora and DNF](FEDORA.md) | Native RPMs, offline source builds, and COPR setup |
 | [Release process](RELEASING.md) | Checks, packaging, and publication |
