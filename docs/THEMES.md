@@ -177,6 +177,10 @@ The UI registers bundled bytes with GPUI at startup. The variable fonts include 
 
 ## Preference persistence
 
+**Culling → Peaking color** (Red, the default, Cyan, Yellow or White) and
+**Peaking sensitivity** (Low, Medium or High) style focus peaking; they are stored
+as `peaking_color` and `peaking_sensitivity`.
+
 **Culling → Trash destination** chooses **OS Trash** (the default) or **In-app**.
 OS Trash moves confirmed local photo groups out of their source folders and uses
 your operating system's recovery interface. In-app Trash only hides catalog

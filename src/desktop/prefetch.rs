@@ -10,15 +10,30 @@ use super::{PreviewKind, ViewMode, Workspace};
 use gpui::{AnyElement, IntoElement, ParentElement, Styled, div, img, px};
 
 impl Workspace {
-    /// Prepares the previous and next photos' fit previews and paints them
-    /// invisibly, so the atlas already holds them when navigation arrives.
-    /// Zoomed views are skipped: full-resolution textures are too large to
-    /// keep speculatively.
+    /// Prepares the previous and next photos' fit previews (with focus
+    /// peaking or clipping when on) and paints them invisibly, so the atlas
+    /// already holds them when navigation arrives. Zoomed views are not
+    /// painted: full-resolution textures are too large to keep speculatively.
     pub(super) fn neighbour_textures(
         &mut self,
         cx: &mut gpui::Context<Self>,
     ) -> Option<AnyElement> {
-        if self.zoom || !matches!(self.mode, ViewMode::Loupe | ViewMode::Compare) {
+        if !matches!(self.mode, ViewMode::Loupe | ViewMode::Compare) {
+            return None;
+        }
+        if self.zoom {
+            // Peaking and clipping copies take a full-resolution pass each, so
+            // without this the overlay pops in after every step (REV-29).
+            // Prepare the next frame's copy only, without painting it.
+            if self.display_effect(PreviewKind::Full) != 0 {
+                if let Some(&index) = self
+                    .selected
+                    .checked_add_signed(self.navigation_direction)
+                    .and_then(|position| self.filtered.get(position))
+                {
+                    let _ = self.texture(index, PreviewKind::Full, cx);
+                }
+            }
             return None;
         }
         let mut images = Vec::new();

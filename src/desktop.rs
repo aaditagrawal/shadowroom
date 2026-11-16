@@ -219,6 +219,11 @@ enum Cmd {
     ZoomTo(f32),
     ZoomStep(i8),
     FocusPeaking,
+    /// J: paint blown highlights and crushed shadows on the photo.
+    Clipping,
+    /// Preferences → Culling: focus-peaking ink and edge threshold.
+    PeakingColor(shadowroom::peaking::PeakingColor),
+    PeakingSensitivity(shadowroom::peaking::PeakingSensitivity),
     ClearReviewSubset,
     Inspector,
     InspectorTab(bool),
@@ -1086,6 +1091,8 @@ pub struct Workspace {
     zoom_factor: f32,
     fit_scales: std::rc::Rc<std::cell::Cell<[f32; 2]>>,
     focus_peaking: bool,
+    /// Clipping overlay (J): blown highlights red, crushed shadows blue.
+    clipping: bool,
     navigation_direction: isize,
     preview_foreground: RefCell<Option<(Option<i64>, Option<i64>, PreviewKind, usize)>>,
     inspector: bool,
@@ -1565,6 +1572,7 @@ impl Workspace {
             zoom_factor: 1.,
             fit_scales: std::rc::Rc::new(std::cell::Cell::new([1.; 2])),
             focus_peaking: false,
+            clipping: false,
             navigation_direction: 1,
             preview_foreground: RefCell::new(None),
             inspector,
@@ -3813,11 +3821,7 @@ impl Workspace {
                 }
                 self.read_ahead();
             }
-            Cmd::ZoomTo(factor) => {
-                self.zoom = true;
-                self.zoom_factor = factor.clamp(0.125, 8.);
-                self.read_ahead();
-            }
+            Cmd::ZoomTo(factor) => self.zoom_preset(factor),
             Cmd::ZoomStep(direction) => {
                 let current = if self.zoom {
                     self.zoom_factor
@@ -3834,13 +3838,19 @@ impl Workspace {
                 self.focus_peaking = !self.focus_peaking;
                 self.announce(
                     if self.focus_peaking {
-                        "Focus peaking on · cyan highlights fine edges · F toggles"
+                        format!(
+                            "Focus peaking on · {} marks sharp edges · F toggles",
+                            self.peaking_style().color.name().to_lowercase()
+                        )
                     } else {
-                        "Focus peaking off"
+                        "Focus peaking off".into()
                     },
                     Tone::Info,
                 );
             }
+            Cmd::Clipping => self.toggle_clipping(),
+            // Preferences-only: the open draft takes them before this match.
+            Cmd::PeakingColor(_) | Cmd::PeakingSensitivity(_) => {}
             Cmd::Inspector => {
                 let hidden = self.docks.inspector == 0.;
                 self.inspector = self.focus_mode || !self.inspector || hidden;
@@ -4531,10 +4541,17 @@ impl Workspace {
             ),
             item(
                 "Focus Peaking",
-                "View · cyan fine-detail highlights",
+                "View · mark sharp edges; color in Preferences → Culling",
                 "F",
                 "peaking",
                 Cmd::FocusPeaking,
+            ),
+            item(
+                "Show Clipping",
+                "View · blown highlights red, crushed shadows blue",
+                "J",
+                "histogram",
+                Cmd::Clipping,
             ),
             item(
                 "Show Full Folder",
@@ -5266,6 +5283,7 @@ impl Workspace {
                 "s" => Some(Cmd::View(ViewMode::Survey)),
                 "z" | "f21" | "space" if self.mode != ViewMode::Grid => Some(Cmd::ZoomAtPointer),
                 "f" => Some(Cmd::FocusPeaking),
+                "j" => Some(Cmd::Clipping),
                 "+" | "=" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(1)),
                 "-" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(-1)),
                 "+" | "=" => Some(Cmd::ZoomStep(1)),
@@ -7225,11 +7243,7 @@ impl Workspace {
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
         };
-        let effect = if self.focus_peaking && kind != PreviewKind::Thumbnail {
-            4
-        } else {
-            0
-        };
+        let effect = self.display_effect(kind);
         let (mtime, size) = (preview_mtime(p), preview_size(p));
         self.textures
             .contains_key(&(p.id, tier + effect, mtime, size))
@@ -7301,8 +7315,9 @@ impl Workspace {
         // Display identity; preview_size hashes paths for companions/remotes.
         let (mtime, size) = (preview_mtime(p), preview_size(p));
         let mut fallback = None;
-        let peaking = self.focus_peaking && wanted != PreviewKind::Thumbnail;
-        let effect = if peaking { 4 } else { 0 };
+        // Peaking and clipping copies are separate cache entries (effect bits).
+        let effect = self.display_effect(wanted);
+        let style = self.peaking_style();
         let search_max = if desired == 1 { 2 } else { desired };
         for k in (0..=search_max).rev() {
             let key = (p.id, k + effect, mtime, size);
@@ -7324,8 +7339,8 @@ impl Workspace {
                 break;
             }
         }
-        // Keep the ordinary image visible while its peaking copy is prepared.
-        if fallback.is_none() && peaking {
+        // Keep the ordinary image visible while its overlay copy is prepared.
+        if fallback.is_none() && effect != 0 {
             for k in (0..=search_max).rev() {
                 let key = (p.id, k, mtime, size);
                 if let Some(texture) = self.textures.get(&key) {
@@ -7431,9 +7446,7 @@ impl Workspace {
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
-            if peaking {
-                shadowroom::peaking::highlight(&preview.rgba, &mut bgra, width, height);
-            }
+            Self::paint_effects(effect, style, &preview.rgba, &mut bgra, width, height);
             let buffer = image::RgbaImage::from_raw(width, height, bgra)
                 .expect("validated preview dimensions");
             (
@@ -7532,7 +7545,10 @@ impl Workspace {
             });
         let mut quality_note = None;
         let active = self.mode == ViewMode::Compare && self.reference_focused() == reference;
+        // Peaking at Fit marks a downscaled preview's edges: say so.
+        let fit_peaking = self.focus_peaking && !self.zoom;
         let show_quality = self.zoom
+            || fit_peaking
             || requested_error.is_some()
             || matches!(&texture, Some((.., source, _, _)) if source.note.is_some())
             || !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full);
@@ -7593,6 +7609,8 @@ impl Workspace {
                         .map(|e| e.message.clone())
                         .unwrap_or_else(|| "loading fit preview…".into())
                 )
+            } else if fit_peaking {
+                format!("Peaking on fit preview · Z for 100% · {w} × {h}{origin}")
             } else {
                 format!("Fit · {w} × {h}{origin}")
             };
@@ -9685,8 +9703,30 @@ impl Workspace {
                         .text_size(px(ui::text::LABEL)),
                     )
                     .tooltip(self.tip("Histogram scale · log lifts shadows and highlights", ""));
+                let clipping = self
+                    .compact_toggle(
+                        "histogram-clipping",
+                        "",
+                        "warning",
+                        Cmd::Clipping,
+                        self.clipping,
+                        cx,
+                    )
+                    .tooltip(self.tip(
+                        "Show clipping on the photo · blown highlights red, crushed shadows blue",
+                        "J",
+                    ));
                 body = body
-                    .child(self.inspector_section("Histogram").child(scale))
+                    .child(
+                        self.inspector_section("Histogram").child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::XS))
+                                .child(clipping)
+                                .child(scale),
+                        ),
+                    )
                     .child(div().h(px(4.)));
                 if let Some(preview) = &preview {
                     body = body.child(crate::histogram::histogram_with(
@@ -9708,6 +9748,7 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
+                            label_warning: self.c("warning", "#e0b341").into(),
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
@@ -10043,6 +10084,8 @@ impl Workspace {
             Value::Null
         };
         state["focus_peaking"] = json!(self.focus_peaking);
+        state["clipping"] = json!(self.clipping);
+        state["peaking_style"] = json!({"color": self.peaking_style().color.key(), "sensitivity": self.peaking_style().sensitivity.key()});
         state["focus_mode"] = json!(self.focus_mode);
         state["grid_size"] = json!(["s", "m", "l"][self.grid_size.min(2)]);
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
@@ -10399,9 +10442,9 @@ impl Workspace {
                     .map(|&i| &self.photos[i])
                     .map(|p| {
                         let display = [2u8, 1, 0].into_iter().find_map(|tier| {
-                            let effect = if self.focus_peaking { 4 } else { 0 };
+                            let effect = self.display_effect(PreviewKind::Fit);
                             self.textures.get(&(p.id, tier + effect, preview_mtime(p), preview_size(p)))
-                                .map(|texture| (texture, effect != 0))
+                                .map(|texture| (texture, Self::effect_peaks(effect)))
                                 .or_else(|| self.textures.get(&(p.id, tier, preview_mtime(p), preview_size(p))).map(|texture| (texture, false)))
                         }).map(|(t, peaking)| json!({"kind":t.kind,"width":t.width,"height":t.height,"peaking":peaking}));
                         let preview = self.media.best_photo(p).map(|v| json!({
@@ -10656,6 +10699,7 @@ impl Workspace {
                     "close_overlay" => Cmd::Close,
                     "getting_started" => Cmd::GettingStarted,
                     "toggle_focus_peaking" => Cmd::FocusPeaking,
+                    "toggle_clipping" => Cmd::Clipping,
                     "show_full_folder" => Cmd::ClearReviewSubset,
                     "reset_decision" => Cmd::ResetDecision,
                     "show_appearance" => Cmd::Appearance,
@@ -11151,6 +11195,33 @@ impl Workspace {
             window,
             cx,
         );
+        let peaking = loupe_aids::peaking_style_of(s);
+        let peaking_colors = self.pref_choices(
+            "peaking-color",
+            shadowroom::peaking::PeakingColor::ALL.map(|color| {
+                (
+                    color.name().to_string(),
+                    Cmd::PeakingColor(color),
+                    peaking.color == color,
+                )
+            }),
+            false,
+            window,
+            cx,
+        );
+        let peaking_levels = self.pref_choices(
+            "peaking-sensitivity",
+            shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
+                (
+                    level.name().to_string(),
+                    Cmd::PeakingSensitivity(level),
+                    peaking.sensitivity == level,
+                )
+            }),
+            false,
+            window,
+            cx,
+        );
         let memory = self.pref_choices(
             "memory",
             [0, 128, 256, 512, 1024, 2048].map(|mb| {
@@ -11413,6 +11484,8 @@ impl Workspace {
             .when(section == PreferencesSection::Culling, |body| body
             .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
             .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash))
+            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors))
+            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels))
             .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
             .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps))
             .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds))

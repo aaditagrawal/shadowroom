@@ -1,8 +1,106 @@
 //! Inspection aids around the loupe: Focus mode without chrome, focus-peaking
 //! colour and sensitivity, the clipping overlay and zoom presets.
 use super::*;
+use shadowroom::peaking::{PeakingColor, PeakingSensitivity, PeakingStyle};
+
+/// Texture-key effect bits above the tier (0-2): +4 focus peaking, +8 the
+/// clipping overlay, and the peaking style from bit 4, so a colour or
+/// sensitivity change never reuses a stale peaked copy (`key.1 % 4` stays
+/// the tier).
+const PEAKING_BIT: u8 = 4;
+const CLIPPING_BIT: u8 = 8;
+const STYLE_SHIFT: u8 = 4;
+
+/// The peaking style stored in settings (missing or unknown keys: default).
+pub(super) fn peaking_style_of(settings: &Settings) -> PeakingStyle {
+    let text = |key: &str| settings.extra.get(key).and_then(Value::as_str);
+    PeakingStyle {
+        color: text("peaking_color")
+            .and_then(PeakingColor::from_key)
+            .unwrap_or_default(),
+        sensitivity: text("peaking_sensitivity")
+            .and_then(PeakingSensitivity::from_key)
+            .unwrap_or_default(),
+    }
+}
 
 impl Workspace {
+    pub(super) fn peaking_style(&self) -> PeakingStyle {
+        peaking_style_of(&self.settings)
+    }
+
+    /// Effect bits of the display copy wanted for `kind`; thumbnails never
+    /// carry an overlay.
+    pub(super) fn display_effect(&self, kind: PreviewKind) -> u8 {
+        if kind == PreviewKind::Thumbnail {
+            return 0;
+        }
+        let mut effect = 0;
+        if self.focus_peaking {
+            let style = self.peaking_style();
+            let color = PeakingColor::ALL
+                .iter()
+                .position(|&c| c == style.color)
+                .unwrap_or(0);
+            let level = PeakingSensitivity::ALL
+                .iter()
+                .position(|&l| l == style.sensitivity)
+                .unwrap_or(0);
+            effect |= PEAKING_BIT | (((color * 3 + level) as u8) << STYLE_SHIFT);
+        }
+        if self.clipping {
+            effect |= CLIPPING_BIT;
+        }
+        effect
+    }
+
+    /// Paints the overlays `effect` asks for into a BGRA display copy of
+    /// `rgba`. Runs on the background executor.
+    pub(super) fn paint_effects(
+        effect: u8,
+        style: PeakingStyle,
+        rgba: &[u8],
+        bgra: &mut [u8],
+        width: u32,
+        height: u32,
+    ) {
+        if effect & PEAKING_BIT != 0 {
+            shadowroom::peaking::highlight_with(rgba, bgra, width, height, style);
+        }
+        // Clipping paints last: an exposure warning outranks an edge.
+        if effect & CLIPPING_BIT != 0 {
+            shadowroom::peaking::clipping(rgba, bgra);
+        }
+    }
+
+    /// Whether a display texture key carries focus peaking.
+    pub(super) fn effect_peaks(effect: u8) -> bool {
+        effect & PEAKING_BIT != 0
+    }
+
+    pub(super) fn toggle_clipping(&mut self) {
+        self.clipping = !self.clipping;
+        self.announce(
+            if self.clipping {
+                "Clipping shown · red marks blown highlights, blue crushed shadows · J toggles"
+            } else {
+                "Clipping hidden"
+            },
+            Tone::Info,
+        );
+    }
+
+    /// Fit (0) or an exact magnification, from the presets or the palette.
+    pub(super) fn zoom_preset(&mut self, factor: f32) {
+        if factor <= 0. {
+            self.zoom = false;
+        } else {
+            self.zoom = true;
+            self.zoom_factor = factor.clamp(0.125, 8.);
+        }
+        self.read_ahead();
+    }
+
     /// The title bar, view toolbar and status bar. Focus mode hides them so
     /// the photo gets the height (REV-25); Import always keeps them.
     pub(super) fn chrome_visible(&self) -> bool {
