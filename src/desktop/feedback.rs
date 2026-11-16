@@ -474,6 +474,15 @@ impl Workspace {
                 .when(photo.flag != Flag::None, |s| {
                     s.child(self.flag_glyph(photo.flag))
                 })
+                // A reject says so in words: the glyph alone reads as a
+                // badge, and the frame is not dimmed in the loupe.
+                .when(photo.flag == Flag::Reject, |s| {
+                    s.child(
+                        div()
+                            .text_color(self.scrim_flag(Flag::Reject))
+                            .child("Rejected"),
+                    )
+                })
                 .when(photo.rating > 0, |s| {
                     s.child(
                         div()

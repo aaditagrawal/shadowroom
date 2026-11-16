@@ -7443,12 +7443,6 @@ impl Workspace {
             .min_h(px(0.))
             .bg(self.canvas_bg())
             .overflow_hidden()
-            .border_1()
-            .border_color(if active {
-                self.accent()
-            } else {
-                transparent_black()
-            })
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 this.click_photo(reference, event);
                 cx.notify();
@@ -7733,14 +7727,15 @@ impl Workspace {
                     .children(chip.map(|chip| chip.flex_shrink_0())),
             )
         });
-        // What the previous frame now carries, briefly, after auto-advance.
+        // What the previous frame now carries, briefly, after auto-advance:
+        // inside the picture's bottom-left corner, like the chip at its top.
         let pane = pane.when(!reference, |pane| {
             pane.children(self.decision_note_chip().map(|chip| {
                 div()
                     .absolute()
-                    .bottom(px(8.))
-                    .left(px(8.))
-                    .right(px(8.))
+                    .bottom(px(inset_y.floor() + space::SM))
+                    .left(px(inset_x.floor() + space::SM))
+                    .right(px(inset_x.floor() + space::SM))
                     .flex()
                     .child(chip.max_w_full())
             }))
