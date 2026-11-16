@@ -21,13 +21,15 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `Z` or Space | Toggle fit / 100% zoom, centred on the point under the pointer when it rests on the photo |
 | Click the photo | At Fit, 100% centred where you clicked; when zoomed, back to Fit |
 | `=` / `-` | Zoom in / out; in Catalog, larger / smaller thumbnails |
+| Alt/Option + `0` / `1` / `2` / `4` | Fit / 100% / 200% / 400% in Review and Compare (Alt+digit never rates) |
 | Ctrl/Cmd + scroll | Zoom in / out around the pointer; plain scroll pans while zoomed |
 | Alt/Option + arrows | Pan a zoomed photo by a third of the view |
 | `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
 | Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
 | Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip (notices appear at the top of the photo); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
 | Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
-| `F` | Toggle cyan focus peaking in Review and Compare |
+| `F` | Toggle focus peaking in Review and Compare (red by default; color and sensitivity in **Preferences → Culling**) |
+| `J` | Toggle the clipping overlay: blown highlights red, crushed shadows blue |
 | `F1` | Open Getting Started |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
@@ -54,7 +56,8 @@ The loupe shows the current photo's flag, stars and label at its top-left, with 
 
 Zoom ranges from 12.5% to 800%; the zoom button shows the actual magnification
 at Fit (for example **Fit 45%**), the **−** and **+** buttons change it, and **Z**
-restores 100% or Fit. While zoomed, a navigator at the photo's bottom-right shows
+restores 100% or Fit; Alt/Option+1, +2 and +4 jump straight to 100%, 200% and
+400%, and Alt/Option+0 returns to Fit. While zoomed, a navigator at the photo's bottom-right shows
 where the view sits in the frame; click or drag it to move. Adjacent frames retain
 zoom and pan. In Compare, arrows skip the reference frame, so the two panes never
 show the same photo, and each pane is labelled on the picture with its role, file
@@ -67,8 +70,15 @@ burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column 
 gives the largest frames; its header's
 **⇧P Keep this · reject undecided** button acts on exactly those frames. Focus peaking
 highlights abrupt luminance edges in the displayed preview, including both Compare
-panes. It is a visual aid, not an automatic sharpness verdict, and never changes
-the source or histogram.
+panes, in red by default; **Preferences → Culling** offers cyan, yellow and white
+and a Low / Medium / High sensitivity. At Fit the caption under the photo says
+peaking reads the fit preview (**Z** for 100%). The neighbouring frames' peaked
+copies are prepared ahead, so peaking does not pop in after each step. It is a
+visual aid, not an automatic sharpness verdict, and never changes the source or
+histogram. The clipping overlay (`J`, or the warning button by the inspector's
+histogram) paints pixels with a channel at 255 red and at 0 blue on the displayed
+preview; the histogram footer names the same ends in words (**Shadows 0.8% ·
+Highlights 1.0%**), in the warning colour above 0.5% of the frame.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
 Ctrl/Cmd-click toggles individual frames. In the Import grid a plain click or

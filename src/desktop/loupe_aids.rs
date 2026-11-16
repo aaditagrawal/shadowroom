@@ -11,6 +11,9 @@ const PEAKING_BIT: u8 = 4;
 const CLIPPING_BIT: u8 = 8;
 const STYLE_SHIFT: u8 = 4;
 
+/// Loupe zoom presets on Alt/Option+digit (REV-22): 0 is Fit.
+pub(super) const ZOOM_PRESETS: [(&str, f32); 4] = [("0", 0.), ("1", 1.), ("2", 2.), ("4", 4.)];
+
 /// The peaking style stored in settings (missing or unknown keys: default).
 pub(super) fn peaking_style_of(settings: &Settings) -> PeakingStyle {
     let text = |key: &str| settings.extra.get(key).and_then(Value::as_str);

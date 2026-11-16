@@ -99,7 +99,8 @@ the command palette (**Cmd/Ctrl+K**).
 | `B` | Pin comparison reference |
 | Space or `Z` | Fit / 100% |
 | `+` / `−` | Increase / decrease zoom |
-| `F` | Toggle focus peaking |
+| `F` / `J` | Toggle focus peaking / clipping overlay |
+| Alt+`1` / `2` / `4`, Alt+`0` | 100% / 200% / 400% zoom, Fit |
 | `F1` | Getting Started guide |
 | Shift+`↓` / Shift+`↑` | Extend / shrink selection by a grid row |
 | `[` / `]` | Previous / next group |

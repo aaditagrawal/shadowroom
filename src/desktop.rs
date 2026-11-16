@@ -4518,6 +4518,10 @@ impl Workspace {
             ),
             item("Zoom In", "View", "=", "zoom", Cmd::ZoomStep(1)),
             item("Zoom Out", "View", "-", "zoom-out", Cmd::ZoomStep(-1)),
+            item("Zoom to Fit", "View", "⌥0", "zoom-out", Cmd::ZoomTo(0.)),
+            item("Zoom to 100%", "View", "⌥1", "zoom", Cmd::ZoomTo(1.)),
+            item("Zoom to 200%", "View", "⌥2", "zoom", Cmd::ZoomTo(2.)),
+            item("Zoom to 400%", "View", "⌥4", "zoom", Cmd::ZoomTo(4.)),
             item(
                 "Thumbnail Size: Small",
                 "Catalog",
@@ -5140,6 +5144,19 @@ impl Workspace {
             self.execute(Cmd::PanStep(dx, dy), window, cx);
             return;
         }
+        // Alt/Option+0/1/2/4: Fit, 100%, 200%, 400% (REV-22). Alt+digit never
+        // rates: only the bare digits decide.
+        if modifiers.alt && !primary && !modifiers.shift && key.len() == 1 {
+            if let Some(&(_, factor)) = loupe_aids::ZOOM_PRESETS.iter().find(|(k, _)| *k == key) {
+                if self.mode != ViewMode::Grid {
+                    self.execute(Cmd::ZoomTo(factor), window, cx);
+                }
+                return;
+            }
+            if key.as_bytes()[0].is_ascii_digit() {
+                return;
+            }
+        }
         if !primary && !modifiers.alt && self.jump_key(key, modifiers.shift, cx) {
             return;
         }
@@ -5500,7 +5517,9 @@ fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
     } else {
-        keys.replace('⌘', "Ctrl+").replace('⇧', "Shift+")
+        keys.replace('⌘', "Ctrl+")
+            .replace('⇧', "Shift+")
+            .replace('⌥', "Alt+")
     }
 }
 
@@ -13389,6 +13408,9 @@ mod ui_tests {
             "\"b\" => Some(Cmd::SwapPanes)",
             "\"c\" => Some(Cmd::CompareSync)",
             "\"tab\" => Some(Cmd::Focus)",
+            // Inspection aids: the clipping overlay and Alt+digit zoom presets.
+            "\"j\" => Some(Cmd::Clipping)",
+            "loupe_aids::ZOOM_PRESETS.iter()",
         ] {
             let at = body
                 .find(routed)
