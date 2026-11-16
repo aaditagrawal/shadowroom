@@ -303,7 +303,7 @@ struct PaletteCache {
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
-    availability: [bool; 9],
+    availability: [bool; 10],
     revision: u64,
 }
 
@@ -4792,6 +4792,7 @@ impl Workspace {
         let grouped = self.duplicates_only || !self.groups.is_empty();
         let (import_open, importing) = (self.import_ui.open, self.import_ui.active());
         items.retain(|i| match &i.command {
+            Cmd::ClearReviewSubset => self.review_subset.is_some(),
             // Import controls appear only where they act: Start and Refresh on
             // the open panel, Pause and Cancel while an import runs.
             Cmd::Ingest(action) => match action.as_str() {
@@ -4864,6 +4865,7 @@ impl Workspace {
             self.recovery_pending,
             self.import_ui.open,
             self.import_ui.active(),
+            self.review_subset.is_some(),
         ];
         let mut cell = self.palette_cache.borrow_mut();
         if cell.as_ref().is_none_or(|cache| {
