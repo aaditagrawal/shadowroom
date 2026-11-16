@@ -126,6 +126,27 @@ Dark and Light pass every comparable pair.
   - A type-role pass so every text size is a named role.
   - Exports keep their context; per-card queue controls; a remounted card is
     recognised by its filesystem UUID; each card keeps its result.
+- **Round 6: one meaning per mark, and import correctness.** This round was
+  verified rather than fully re-scored. One reviewer checked every round-5
+  finding against captures of `641979c`: 36 resolved, 2 partial, 5 unresolved,
+  0 regressed, and no blocker or major regression. Its judgment is that every
+  surface moved up, by roughly 0.25–0.4 on the 0–5 scales and 6–8 points on
+  accessibility. Those estimates are not scored, so the table above stops at r5.
+  - A box only ever means a key, drawn by one keycap component everywhere.
+    Label swatches show their 6–9 key (Purple a dot), every toggle that is on
+    has the same mark, and failures have their own glyph.
+  - Warning, rating, label blue and purple are separated by lightness as well as
+    hue, and a theme test checks them under protan and deutan simulation.
+  - Focus-mode notices fit and lead with capture time. Lights-out stamps Undo,
+    Redo and the loupe aids, held for a second with the undo key.
+  - Commands, views and buttons have one name each, in Title Case.
+  - A card remounted at another path is treated as the copying card throughout
+    the app. Cancel is tied to its job, so skipping a missing card can't cancel
+    the next one. Ctrl+Q keeps the queue until the app actually closes, so Escape
+    loses nothing.
+  - Linux exports open the desktop's own chooser, titled with what will happen
+    and opening at the last export folder. Only one platform chooser opens at a
+    time.
 
 ## Decisions
 
@@ -143,6 +164,11 @@ Dark and Light pass every comparable pair.
    agreed. The accessibility reviewer disagreed: the platform chooser is the only
    file UI a screen reader can reach. Round 6 therefore calls the portal directly,
    with a title and start folder, and keeps the built-in picker as the fallback.
+   The portal dialog is not yet parented to the Shadowroom window, and this path
+   has only been unit-tested. The harness always forces the built-in picker.
+4. **High Contrast Light rating stars are near-black brown** (`#3d2c00`). That
+   keeps warning at 4.5:1 and distinguishable from rating under colour-vision
+   simulation. Amber stars would fail rating against reject for deuteranopes.
 
 ## Still open
 
@@ -157,8 +183,16 @@ Dark and Light pass every comparable pair.
   Some targets (20 px stars, 12 px scrollbars) are below 24 px.
 - **Catalog at scale.** The folder list is flat. Trash and Duplicates lack batch
   actions.
-- **Colour vision.** Label pairs still collide under colour-vision simulation.
-  The letter or key on each label carries the meaning.
+- **Colour vision.** Some label pairs still collide under colour-vision
+  simulation. The key or mark on each label carries the meaning.
+- **Round-6 follow-ups.**
+  - Parent the portal dialog to the window.
+  - Include the clipping-stripe size in the texture cache key.
+  - Full screen in the palette, and a macOS shortcut for it.
+  - Add Network Host: lock fields while connecting, and make Try Again replace
+    the host after the alias changes.
+  - A dark surround for lights-out in light themes.
+  - A "seen" state on the ledger for pick-only passes.
 
 ## Reproduce
 
