@@ -1292,6 +1292,12 @@ pub struct Workspace {
     /// The focus target last scrolled into view, so a control is revealed
     /// once when the keyboard reaches it and never fights the wheel.
     focus_revealed: Rc<RefCell<Option<SharedString>>>,
+    /// This frame's Preferences rows, so a Tab reveal can bring the whole
+    /// row (label and description) into view, not just its control.
+    pref_rows: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    /// The topmost overlay last frame: a change retires tooltips shown
+    /// before it (see [`TOOLTIP_EPOCH`]).
+    last_top_overlay: Option<Overlay>,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     /// The pane F6 moved keyboard focus to (`panes.rs`).
@@ -1802,6 +1808,8 @@ impl Workspace {
             guide_scroll: ScrollHandle::new(),
             prefs_scroll: ScrollHandle::new(),
             focus_revealed: Rc::default(),
+            pref_rows: Rc::default(),
+            last_top_overlay: None,
             focus_visible: false,
             pane: panes::Pane::default(),
             pane_ring: false,
@@ -3984,8 +3992,14 @@ impl Workspace {
             }
             Cmd::Appearance => {
                 self.open_preferences();
-                self.preferences_section = PreferencesSection::Appearance;
                 self.palette = false;
+                // The same reset as a tab switch: Appearance opens at the top
+                // with its theme list, wherever another tab was scrolled.
+                self.execute(
+                    Cmd::PreferencesSection(PreferencesSection::Appearance),
+                    window,
+                    cx,
+                );
             }
             Cmd::PreferencesSection(section) => {
                 if self.preferences_section != section {
@@ -6085,6 +6099,12 @@ struct Tip {
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        self.element()
+    }
+}
+
+impl Tip {
+    fn element(&self) -> Div {
         div()
             .font_family(self.font.clone())
             .text_size(ui::font(ui::text::LABEL))
@@ -6109,6 +6129,26 @@ impl Render for Tip {
                     self.muted,
                 ))
             })
+    }
+}
+
+/// Bumped when the topmost overlay changes; a tooltip shown under an older
+/// value draws nothing, so none stays painted over a dialog opened after it.
+static TOOLTIP_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A [`Tip`] that retires itself when the overlay stack changes.
+#[derive(Clone)]
+struct EpochTip {
+    tip: Tip,
+    epoch: u64,
+}
+
+impl Render for EpochTip {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        if self.epoch != TOOLTIP_EPOCH.load(std::sync::atomic::Ordering::Relaxed) {
+            return div();
+        }
+        self.tip.element()
     }
 }
 
@@ -6405,7 +6445,17 @@ impl Workspace {
         }
     }
     fn tip(&self, label: &str, keys: &str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-        let tip = Tip {
+        let tip = self.tip_view(label, keys);
+        move |_, cx| {
+            let tip = EpochTip {
+                tip: tip.clone(),
+                epoch: TOOLTIP_EPOCH.load(std::sync::atomic::Ordering::Relaxed),
+            };
+            cx.new(|_| tip).into()
+        }
+    }
+    fn tip_view(&self, label: &str, keys: &str) -> Tip {
+        Tip {
             label: label.to_owned().into(),
             keys: keys.to_owned().into(),
             font: self.settings.interface_font.clone().into(),
@@ -6413,8 +6463,7 @@ impl Workspace {
             muted: self.muted(),
             bg: self.c("elevated_surface.background", "#1b1b1b"),
             border: self.c("border.variant", "#333333"),
-        };
-        move |_, cx| cx.new(|_| tip.clone()).into()
+        }
     }
     /// Plain muted key text, for in-control hints only (the decision bar's
     /// "P", "X", "1-5" inside the buttons they press). Anywhere else a
@@ -11783,7 +11832,19 @@ impl Workspace {
             .into_any_element()
     }
     fn preference_row(&self, label: &str, description: &str, controls: AnyElement) -> AnyElement {
+        let rows = self.pref_rows.clone();
         div()
+            .relative()
+            // First child, so its bounds are recorded before the controls'
+            // Tab reveal reads them in the same prepaint.
+            .child(
+                canvas(
+                    move |bounds, _, _| rows.borrow_mut().push(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .py(px(space::SM))
             .border_b_1()
             .border_color(self.border())
@@ -11916,6 +11977,7 @@ impl Workspace {
     /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         self.focus_scope(FocusScope::Preferences);
+        self.pref_rows.borrow_mut().clear();
         let s = self.preference_settings();
         // Controls are built only when their section draws them, in the
         // order it draws them: a control registers its Tab stop as it is
@@ -13060,6 +13122,14 @@ impl Workspace {
             self.drain_automation(window, cx);
         }
         self.reconcile_rating_filter();
+        // A modal opening or closing retires the tooltip shown before it: GPUI
+        // only re-tests hover on the next mouse move, so it would otherwise
+        // stay painted over the palette or Preferences (R5-overlays-06).
+        let top = self.top_overlay();
+        if top != self.last_top_overlay {
+            self.last_top_overlay = top;
+            TOOLTIP_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.apply_theme_mode(window);
         self.apply_ui_scale();
         self.dialog_focus.borrow_mut().begin_frame();

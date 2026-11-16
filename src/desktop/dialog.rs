@@ -277,11 +277,14 @@ impl Workspace {
     }
 
     /// The one dialog surface: elevated background, variant border and shadow.
+    /// `width` at 100% text; the surface widens with the Text size (up to the
+    /// window minus the scrim's margin), so a 125% palette or Preferences
+    /// keeps room for what it was sized for (R5-overlays-07).
     pub(super) fn modal_surface(&self, id: impl Into<ElementId>, width: f32) -> Stateful<Div> {
         div()
             .id(id)
             .occlude()
-            .w(px(width))
+            .w(px((width * ui::text_scale().max(1.)).round()))
             .max_w_full()
             .max_h_full()
             .flex()
@@ -529,6 +532,7 @@ impl Workspace {
     fn reveal_once(&self, key: &str, scroll: &ScrollHandle) -> AnyElement {
         let scroll = scroll.clone();
         let revealed = self.focus_revealed.clone();
+        let rows = self.pref_rows.clone();
         let key = SharedString::from(key.to_owned());
         canvas(
             move |bounds, window, _| {
@@ -536,6 +540,19 @@ impl Workspace {
                     return;
                 }
                 *revealed.borrow_mut() = Some(key.clone());
+                // The whole Preferences row the control sits in (its label
+                // and description), when one holds it (R5-overlays-05).
+                let bounds = rows
+                    .borrow()
+                    .iter()
+                    .find(|row| {
+                        row.top() <= bounds.center().y
+                            && bounds.center().y <= row.bottom()
+                            && row.left() <= bounds.center().x
+                            && bounds.center().x <= row.right()
+                    })
+                    .copied()
+                    .unwrap_or(bounds);
                 let view = scroll.bounds();
                 let offset = scroll.offset();
                 let margin = px(space::SM);
