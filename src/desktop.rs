@@ -1133,8 +1133,10 @@ struct AddHostForm {
     fields: [String; 2],
     active: usize,
     edit: text_input::Edit,
-    /// Validation message shown under the alias field; cleared by typing.
+    /// Validation or connection message, shown under the field it is most
+    /// likely about (`error_field`); cleared by typing.
     error: Option<String>,
+    error_field: usize,
     /// The host being checked after Add & connect: the dialog stays open,
     /// "Connecting…", until it connects (closes) or fails (says why here).
     connecting: Option<String>,
@@ -1155,6 +1157,7 @@ impl AddHostForm {
             active: 0,
             edit,
             error: None,
+            error_field: 0,
             connecting: None,
             failed: None,
         }
@@ -2209,6 +2212,23 @@ impl Workspace {
             }
         }
     }
+    /// Cancel (or Escape, or ×) in Add network host. While it is connecting,
+    /// or after its connection failed, the host it saved is removed again:
+    /// Cancel means nothing was added.
+    fn close_add_host(&mut self) {
+        let Some(form) = self.add_host.take() else {
+            return;
+        };
+        if let Some(id) = form.connecting.or(form.failed)
+            && self.enqueue(IoCommand::Remote(
+                shadowroom::network::RemoteCommand::Remove(id.clone()),
+            ))
+        {
+            self.remote_hosts.remove(&id);
+            self.palette_revision = self.palette_revision.wrapping_add(1);
+            self.announce(format!("{id} was not added"), Tone::Info);
+        }
+    }
     fn request_quit(&mut self, cx: &mut gpui::Context<Self>) {
         if self.deletion.executing() {
             // Keep the request: the drain loop re-enters once the report arrives.
@@ -2239,25 +2259,18 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // Imports publish verified groups atomically; let the active one finish (or
-        // cancel a paused one, which rolls back only the in-flight group) before closing.
-        // Cards queued behind it are not started: nothing of theirs was written.
-        if !self.import_ui.queue.is_empty() {
-            self.enqueue(IoCommand::IngestClearQueue);
+        // Imports publish verified groups atomically; let the active one finish
+        // before closing. Cards queued behind it do not start while closing, but
+        // stay queued until the app really closes: Escape keeps every one.
+        if !self.import_ui.queue.is_empty() && !self.import_ui.queue_held {
+            self.import_ui.queue_held = true;
+            self.enqueue(IoCommand::IngestHoldQueue(true));
         }
-        match self.import_ui.progress.phase {
-            Phase::Paused => {
-                self.enqueue(IoCommand::IngestCancel);
-                self.status = "Cancelling paused import before closing…".into();
-                cx.notify();
-                return;
-            }
-            phase if phase.is_active() => {
-                self.status = "Finishing import before closing…".into();
-                cx.notify();
-                return;
-            }
-            _ => {}
+        let phase = self.import_ui.progress.phase;
+        if phase.is_active() && phase != Phase::Paused {
+            self.status = copy::closing_import(self.import_ui.queue.len());
+            cx.notify();
+            return;
         }
         // Refused quits ask instead of dead-ending in a toast: Retry, Quit
         // Anyway (the recovery journal restores the changes) or Cancel.
@@ -2273,6 +2286,22 @@ impl Workspace {
         if self.awaiting > 0 || !self.outbox.is_empty() || self.prefs_sync == PrefsSync::Queued {
             cx.notify();
             return;
+        }
+        // The last step before closing: a paused import (a pulled card waiting
+        // for reinsertion) is cancelled, which rolls back only the in-flight
+        // group; its verified photos stay imported.
+        if phase == Phase::Paused {
+            if !self.import_ui.cancel_sent_for_quit {
+                self.import_ui.cancel_sent_for_quit = true;
+                self.enqueue(IoCommand::IngestCancel);
+            }
+            self.status = "Cancelling paused import before closing…".into();
+            cx.notify();
+            return;
+        }
+        // Nothing of the queued cards was written: they are dropped now.
+        if !self.import_ui.queue.is_empty() {
+            self.enqueue(IoCommand::IngestClearQueue);
         }
         self.quit = QuitState::Flushing;
         let (ack, done) = crossbeam_channel::bounded(1);
@@ -2344,25 +2373,9 @@ impl Workspace {
             dirty = true;
             match event {
                 IoEvent::Ingest(event) => self.ingest_event(event),
-                IoEvent::IngestDetected(path) => {
-                    if self.settings.ingest_on_insert == "auto" {
-                        self.import_ui.open = true;
-                    }
-                    // A second card is queued behind a running job by the worker;
-                    // never replace a running job's progress with a placeholder.
-                    // The card being copied coming back (after a pull) resumes
-                    // its own job and is not scanned again.
-                    let copying = self.import_ui.active()
-                        && self.import_ui.progress.source.as_ref() == Some(&path);
+                IoEvent::IngestDetected(path, volume) => {
                     let auto = self.settings.ingest_on_insert == "auto";
-                    if !copying && auto && !self.import_ui.active() {
-                        self.import_ui.progress = shadowroom::ingest::Progress {
-                            phase: Phase::Queued,
-                            source: Some(path.clone()),
-                            ..Default::default()
-                        };
-                        self.import_ui.source = path;
-                    } else if !copying && !auto {
+                    if self.import_ui.card_detected(path.clone(), volume, auto) {
                         self.scan_for_import(path);
                     }
                 }
@@ -2396,14 +2409,11 @@ impl Workspace {
                         } else if let Some(error) = snapshot.status.error() {
                             form.connecting = None;
                             form.failed = Some(snapshot.config.id.clone());
-                            let error = error.trim_end_matches('.');
-                            form.error = Some(if error.contains("Check ") {
-                                format!("Could not connect: {error}.")
-                            } else {
-                                format!(
-                                    "Could not connect: {error}. Check the alias and that shadowroom-remote is installed on the host."
-                                )
-                            });
+                            // Plain language, next to the field likely at fault.
+                            let (message, field) =
+                                copy::host_connect_error(&snapshot.config.ssh_alias, error);
+                            form.error = Some(message);
+                            form.error_field = field;
                         }
                     }
                     // Host failures arrive once as IoEvent::Error on each transition
@@ -2416,7 +2426,10 @@ impl Workspace {
                     self.remote_hosts.remove(&id);
                     self.palette_revision = self.palette_revision.wrapping_add(1);
                 }
-                IoEvent::Drives(d) => self.drives = d,
+                IoEvent::Drives(d) => {
+                    self.import_ui.drives_changed(&d);
+                    self.drives = d;
+                }
                 IoEvent::Status(s) => self.status = s,
                 // Add network host already says why its host failed, in place.
                 IoEvent::Error(s)
@@ -2625,6 +2638,7 @@ impl Workspace {
         if self.quit == QuitState::Draining {
             self.request_quit(cx);
         }
+        dirty |= self.release_quit_holds();
         dirty |= self.reconcile_quit_prompt();
         dirty |= self.feedback.expire(Instant::now());
         if self.unsaved.is_empty() {
@@ -3872,6 +3886,7 @@ impl Workspace {
                     // Validation stays next to the field.
                     if let (Some(message), Some(form)) = (invalid, &mut self.add_host) {
                         form.error = Some(message.into());
+                        form.error_field = 0;
                         form.focus(0);
                     }
                 }
@@ -4020,7 +4035,7 @@ impl Workspace {
                 } else if self.preferences {
                     self.dismiss_preferences(window, cx);
                 } else if self.add_host.is_some() {
-                    self.add_host = None;
+                    self.close_add_host();
                 } else if self.pending_bulk.take().is_some() {
                     self.announce("Batch decision cancelled", Tone::Info);
                 } else if self.import_ui.open {
@@ -4676,6 +4691,27 @@ impl Workspace {
                 Cmd::Ingest("cancel_now".into()),
             ),
             item(
+                "Retry Failed Photos",
+                "File · import only the photos that failed",
+                "",
+                "refresh",
+                Cmd::Ingest("retry_failed_any".into()),
+            ),
+            item(
+                "Skip Missing Card",
+                "File · its verified photos stay imported · the next card starts",
+                "",
+                "next",
+                Cmd::Ingest("skip".into()),
+            ),
+            item(
+                "Clear Import Queue",
+                "File · queued cards do not start · the running import continues",
+                "",
+                "close",
+                Cmd::Ingest("clear_queue".into()),
+            ),
+            item(
                 "Refresh Import Plan",
                 "File · recheck destination space and names",
                 "",
@@ -5241,6 +5277,13 @@ impl Workspace {
             Cmd::Ingest(action) => match action.as_str() {
                 "start" | "plan" => import_open && !importing_here,
                 "pause" | "cancel_now" => importing,
+                "retry_failed_any" => self.import_ui.retryable().is_some() && !importing_here,
+                "skip" => {
+                    importing
+                        && self.import_ui.progress.source_missing
+                        && !self.import_ui.queue.is_empty()
+                }
+                "clear_queue" => !self.import_ui.queue.is_empty(),
                 _ => true,
             },
             Cmd::CancelImport => self.busy,
@@ -5254,6 +5297,20 @@ impl Workspace {
             Cmd::Group(mode) => *mode != self.settings.grouping_mode,
             _ => true,
         });
+        // One row per queued card: the palette twin of its ✕ in the queue.
+        for job in &self.import_ui.queue {
+            let name = job.source.file_name().map_or_else(
+                || job.source.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            items.push(item(
+                &format!("Remove {name} from Import Queue"),
+                "File · the other cards keep their place",
+                "",
+                "close",
+                Cmd::Ingest(format!("dequeue:{}", job.source.display())),
+            ));
+        }
         for drive in &self.drives {
             items.push(item(
                 &format!("Eject {}", drive.name),
@@ -12524,7 +12581,8 @@ impl Workspace {
         {
             "← → resize · Shift for larger steps · Home to reset · Esc to finish".into()
         } else if self.quit.closing() {
-            self.status.clone()
+            // Says how to stay too, as Focus mode and lights-out do.
+            self.closing_text().unwrap_or_else(|| self.status.clone())
         } else if self.import_ui.active() {
             let progress = &self.import_ui.progress;
             // The open Import view says the pulled-card sentence in full;

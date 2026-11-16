@@ -1022,6 +1022,18 @@ pub struct Progress {
     /// a view showing another card never mistakes this job's events for its own.
     #[serde(default)]
     pub source: Option<PathBuf>,
+    /// Where the job reads now when the card came back at another mount point
+    /// (a stale `EOS_DIGITAL` makes it `EOS_DIGITAL1`); `None` while it reads
+    /// `source`. That path is this job's card too, never a new card.
+    #[serde(default)]
+    pub current_source: Option<PathBuf>,
+    /// The card's filesystem UUID identity (`uuid:…`) when it has one, so the
+    /// same card at any mount point is recognised as the copying card.
+    #[serde(default)]
+    pub volume: Option<String>,
+    /// `source` relative to the card's mount root (empty for a whole card).
+    #[serde(default)]
+    pub volume_path: Option<PathBuf>,
     /// The source disappeared mid-copy (card pulled, reader unplugged): the job
     /// waits, paused, and continues by itself when the same source returns.
     #[serde(default)]

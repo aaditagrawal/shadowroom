@@ -1560,42 +1560,7 @@ fn a_held_and_b_queued(
     PathBuf,
     PathBuf,
 ) {
-    use worker::{Command, Event, Worker};
-    let card_b = f.temp.path().join("card-b");
-    fs::create_dir(&card_b).unwrap();
-    fs::write(card_b.join("B_0001.mov"), b"card b one").unwrap();
-    let (events, rx) = crossbeam_channel::unbounded();
-    let (changed, _changed) = crossbeam_channel::bounded(8);
-    let card_a = f.source.clone();
-    let worker = Worker::start_with_hooks(
-        f.catalog.clone(),
-        events,
-        changed,
-        Arc::new(pull_card_after(card_a.clone(), 2)),
-    );
-    worker
-        .send(Command::Scan {
-            path: card_a.clone(),
-            auto: None,
-        })
-        .unwrap();
-    next_event(&rx, |e| matches!(e, Event::Scanned(_)));
-    worker.send(Command::Plan(queue_options(f))).unwrap();
-    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
-    worker.send(Command::Start).unwrap();
-    job_progress(&rx, &card_a, |p| p.source_missing);
-    worker
-        .send(Command::Scan {
-            path: card_b.clone(),
-            auto: None,
-        })
-        .unwrap();
-    next_event(&rx, |e| matches!(e, Event::Scanned(_)));
-    worker.send(Command::Plan(queue_options(f))).unwrap();
-    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
-    worker.send(Command::Start).unwrap();
-    next_event(&rx, |e| matches!(e, Event::Queue(q) if q.len() == 1));
-    (worker, rx, card_a, card_b)
+    a_held_and_b_queued_with(f, Arc::new(pull_card_after(f.source.clone(), 2)))
 }
 
 #[test]
@@ -1614,6 +1579,8 @@ fn cancel_skips_the_pulled_card_and_starts_the_queued_one() {
             auto: Some(queue_options(&f)),
         })
         .unwrap();
+    // The app hears the refusal, so a view waiting for that scan returns.
+    next_event(&rx, |e| matches!(e, Event::Busy(p) if *p == card_a));
     // "Skip CARD_A · start CARD_B": Cancel stops A only.
     worker.send(Command::Cancel).unwrap();
     let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
@@ -1856,8 +1823,14 @@ fn a_card_back_at_another_mount_point_resumes_there_without_duplicates() {
     );
     assert_eq!(report.progress.completed, 6);
     assert_eq!(report.progress.failed, 0);
-    // Progress keeps naming the scanned source, so the view still matches.
+    // Progress keeps naming the scanned source, so the view still matches,
+    // and says where the card is now and which card it is.
     assert_eq!(report.progress.source.as_deref(), Some(f.source.as_path()));
+    assert_eq!(
+        report.progress.current_source.as_deref(),
+        Some(moved.as_path())
+    );
+    assert_eq!(report.progress.volume.as_deref(), Some(TEST_CARD));
     let mut names: Vec<_> = fs::read_dir(f.temp.path().join("library"))
         .unwrap()
         .flatten()
@@ -1912,4 +1885,173 @@ fn a_label_only_card_is_not_followed_to_another_path() {
     let probe = plan.groups[0].group.primary.path.clone();
     assert!(!watch.present(&probe));
     assert!(!watch.relocate(&probe));
+}
+
+/// The job tells the app where it reads after the card came back elsewhere,
+/// and names failures under the scanned source (as the scan's tiles and
+/// "Retry failed" do), not the new mount point.
+#[test]
+fn a_relocated_source_is_reported_and_failures_keep_the_scanned_names() {
+    let f = Fixture::new();
+    for n in 0..2 {
+        f.write(&format!("IMG_{n:04}.mov"), format!("clip {n}").as_bytes());
+    }
+    let mut plan = f.plan();
+    for planned in &mut plan.groups {
+        planned.group.volume = TEST_CARD.into();
+    }
+    let mounted = Arc::new(std::sync::Mutex::new(Some(f.source.clone())));
+    let hooks = Remount {
+        mounted: mounted.clone(),
+        writes: std::sync::atomic::AtomicUsize::new(0),
+        pull_after: usize::MAX,
+    };
+    let control = Control::default();
+    let watch = super::copy::SourceWatch::new(&plan, &hooks, &control);
+    assert_eq!(watch.identity().as_deref(), Some(TEST_CARD));
+    assert_eq!(watch.inside(), Some(PathBuf::new()));
+    let probe = plan.groups[0].group.primary.path.clone();
+    let moved = f.temp.path().join("card1");
+    fs::rename(&f.source, &moved).unwrap();
+    fs::create_dir(&f.source).unwrap();
+    *mounted.lock().unwrap() = Some(moved.clone());
+    assert!(watch.relocate(&probe));
+    assert_eq!(watch.current(), moved);
+    assert_eq!(
+        watch.scanned(&moved.join("IMG_0001.mov")),
+        probe.with_file_name("IMG_0001.mov")
+    );
+    // A path outside the source is left alone.
+    let elsewhere = f.temp.path().join("other/x.mov");
+    assert_eq!(watch.scanned(&elsewhere), elsewhere);
+}
+
+/// Reads like `pull_card_after`, and keeps the dispatcher busy scanning
+/// `slow` for `delay` (a slow third card).
+struct SlowScan<H> {
+    inner: H,
+    slow: PathBuf,
+    delay: Duration,
+}
+impl<H: CopyHooks> CopyHooks for SlowScan<H> {
+    fn write_chunk(&self, path: &Path, output: &mut File, bytes: &[u8]) -> Result<()> {
+        self.inner.write_chunk(path, output, bytes)
+    }
+    fn before_scan(&self, path: &Path) {
+        if path == self.slow {
+            thread::sleep(self.delay);
+        }
+    }
+}
+
+/// Starts card A (pulled as its first photo is written, so its job holds),
+/// then scans, plans and queues card B behind it, through `hooks`.
+fn a_held_and_b_queued_with(
+    f: &Fixture,
+    hooks: Arc<dyn CopyHooks>,
+) -> (
+    worker::Worker,
+    crossbeam_channel::Receiver<crate::service::IoEvent>,
+    PathBuf,
+    PathBuf,
+) {
+    use worker::{Command, Event, Worker};
+    let card_b = f.temp.path().join("card-b");
+    fs::create_dir(&card_b).unwrap();
+    fs::write(card_b.join("B_0001.mov"), b"card b one").unwrap();
+    let (events, rx) = crossbeam_channel::unbounded();
+    let (changed, _changed) = crossbeam_channel::bounded(8);
+    let card_a = f.source.clone();
+    let worker = Worker::start_with_hooks(f.catalog.clone(), events, changed, hooks);
+    for card in [&card_a, &card_b] {
+        worker
+            .send(Command::Scan {
+                path: card.clone(),
+                auto: None,
+            })
+            .unwrap();
+        next_event(&rx, |e| matches!(e, Event::Scanned(_)));
+        worker.send(Command::Plan(queue_options(f))).unwrap();
+        next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
+        worker.send(Command::Start).unwrap();
+        if card == &card_a {
+            job_progress(&rx, &card_a, |p| p.source_missing);
+        }
+    }
+    next_event(&rx, |e| matches!(e, Event::Queue(q) if q.len() == 1));
+    (worker, rx, card_a, card_b)
+}
+
+/// R5-io-02: "Skip CARD_A · start CARD_B" while the dispatcher is busy
+/// scanning a third card. A ends during that scan, so the Cancel command and
+/// A's end are both waiting when the dispatcher returns; whichever it reads
+/// first, the Cancel never reaches B (it names A's launch).
+#[test]
+fn a_cancel_read_after_the_next_card_started_never_cancels_it() {
+    use worker::{Command, Event};
+    for round in 0..8 {
+        let f = Fixture::new();
+        f.write("A_0001.mov", b"card a one");
+        f.write("A_0002.mov", b"card a two");
+        let card_c = f.temp.path().join("card-c");
+        fs::create_dir(&card_c).unwrap();
+        fs::write(card_c.join("C_0001.mov"), b"card c one").unwrap();
+        let hooks = SlowScan {
+            inner: pull_card_after(f.source.clone(), 2),
+            slow: card_c.clone(),
+            delay: Duration::from_millis(400),
+        };
+        let (worker, rx, card_a, card_b) = a_held_and_b_queued_with(&f, Arc::new(hooks));
+        worker
+            .send(Command::Scan {
+                path: card_c.clone(),
+                auto: None,
+            })
+            .unwrap();
+        next_event(&rx, |e| matches!(e, Event::Scanning(p) if *p == card_c));
+        worker.send(Command::Cancel).unwrap();
+        let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
+        assert_eq!(a.phase, Phase::Cancelled, "round {round}: {a:?}");
+        let b = job_progress(&rx, &card_b, |p| p.phase.is_terminal());
+        assert_eq!(b.phase, Phase::Completed, "round {round}: {b:?}");
+        worker.stop().unwrap();
+        assert!(f.temp.path().join("library/B_0001.mov").is_file());
+    }
+}
+
+/// A quit holds the queue: the running card ends (here: cancelled while
+/// its card is out) and the queued card does not start; the queue is kept.
+/// Releasing it (Escape: Shadowroom stays open) starts the queued card.
+#[test]
+fn a_held_queue_keeps_its_cards_until_released() {
+    use worker::{Command, Event};
+    let f = Fixture::new();
+    f.write("A_0001.mov", b"card a one");
+    f.write("A_0002.mov", b"card a two");
+    let (worker, rx, card_a, card_b) = a_held_and_b_queued(&f);
+    worker.send(Command::HoldQueue(true)).unwrap();
+    worker.send(Command::Cancel).unwrap();
+    let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
+    assert_eq!(a.phase, Phase::Cancelled);
+    // B waits: no progress of B, and the queue is not emptied.
+    let deadline = std::time::Instant::now() + Duration::from_millis(800);
+    while let Ok(event) =
+        rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+    {
+        match event {
+            crate::service::IoEvent::Ingest(Event::Progress(p)) => {
+                assert_ne!(p.source.as_deref(), Some(card_b.as_path()), "{p:?}")
+            }
+            crate::service::IoEvent::Ingest(Event::Queue(q)) => {
+                assert_eq!(q.len(), 1, "{q:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(!f.temp.path().join("library/B_0001.mov").exists());
+    worker.send(Command::HoldQueue(false)).unwrap();
+    let b = job_progress(&rx, &card_b, |p| p.phase.is_terminal());
+    assert_eq!(b.phase, Phase::Completed, "{b:?}");
+    worker.stop().unwrap();
+    assert!(f.temp.path().join("library/B_0001.mov").is_file());
 }

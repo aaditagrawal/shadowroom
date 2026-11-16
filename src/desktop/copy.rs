@@ -11,6 +11,89 @@ pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{} {}", count(n), if n == 1 { one } else { many })
 }
 
+/// A failed Add network host check in plain language, and the field most
+/// likely at fault (0 the SSH alias, 1 the remote command). Protocol words
+/// ("hello", "transport", "stdout") never reach the user.
+pub(super) fn host_connect_error(alias: &str, error: &str) -> (String, usize) {
+    // The network layer's own advice (which names protocol parts) is not
+    // matched against: only the cause before it.
+    let cause = error.split(". Check the SSH alias").next().unwrap_or(error);
+    let lower = cause.to_ascii_lowercase();
+    let any = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
+    if any(&["device identity changed"]) {
+        return (
+            format!(
+                "{alias} answered as a different device than before. If the host was replaced, remove it and add it again."
+            ),
+            0,
+        );
+    }
+    if any(&[
+        "could not resolve hostname",
+        "name or service not known",
+        "no route to host",
+        "connection refused",
+        "connection timed out",
+        "network is unreachable",
+    ]) {
+        return (
+            format!(
+                "Could not reach {alias} over SSH. Check the alias (or use user@host) and that the host is on."
+            ),
+            0,
+        );
+    }
+    if any(&["permission denied", "host key verification failed"]) {
+        return (
+            format!(
+                "SSH refused the login to {alias}. Check that `ssh {alias}` works in a terminal (keys, known hosts)."
+            ),
+            0,
+        );
+    }
+    if any(&["version", "protocol mismatch", "unsupported"]) {
+        return (
+            format!(
+                "{alias} runs another version of shadowroom-remote. Install the same version as this app on the host."
+            ),
+            1,
+        );
+    }
+    // The agent answered, but not as shadowroom-remote does.
+    if any(&[
+        "unexpected hello",
+        "command not found",
+        "no such file",
+        "status 127",
+    ]) {
+        return (
+            "SSH connected, but shadowroom-remote did not answer. Is it installed and on PATH on the host, and does your login shell print anything?".into(),
+            1,
+        );
+    }
+    // SSH's own reason goes to its terminal output, not to the app: say
+    // what to check, starting with the alias.
+    (
+        format!(
+            "Could not start shadowroom-remote on {alias}. Check that `ssh {alias}` works in a terminal and that shadowroom-remote is installed and on PATH there."
+        ),
+        0,
+    )
+}
+
+/// While a quit waits for the running import: what closes when, and that
+/// the queued cards stay queued until then.
+pub(super) fn closing_import(queued: usize) -> String {
+    if queued == 0 {
+        "Finishing import before closing…".into()
+    } else {
+        format!(
+            "Closing after this card · {} will not start",
+            plural(queued, "queued card", "queued cards")
+        )
+    }
+}
+
 /// A count with comma thousands separators: "7", "2,113", "50,112".
 pub(super) fn count(n: usize) -> String {
     let digits = n.to_string();
@@ -181,6 +264,33 @@ pub(super) fn imported_count(progress: &Progress) -> String {
     media_count(progress.completed - videos, videos)
 }
 
+/// How far a job got: "4 of 5 imported and verified (3 photos, 1 video)";
+/// the split (and `verified`) are left out when nothing was imported
+/// ("0 of 5 imported"). Totals carry no noun: a job mixes photos and videos.
+pub(super) fn imported_of(progress: &Progress, verified: Option<&str>) -> String {
+    let mut text = format!(
+        "{} of {} imported",
+        count(progress.completed),
+        count(progress.total)
+    );
+    if progress.completed > 0 {
+        if let Some(verified) = verified {
+            text.push_str(&format!(" and {verified}"));
+        }
+        text.push_str(&format!(" ({})", imported_count(progress)));
+    }
+    text
+}
+
+/// A card the user skipped while it was out ("Skip CARD_A · start
+/// CARD_B"): what is safe and how to finish it later.
+pub(super) fn import_skipped(progress: &Progress) -> String {
+    format!(
+        "Skipped · {} · insert it again to import the rest",
+        imported_of(progress, None)
+    )
+}
+
 /// The one-line result of a finished import job, as the panel, the status
 /// bar and the desktop notification all say it.
 pub(super) fn import_result(progress: &Progress) -> String {
@@ -195,16 +305,18 @@ pub(super) fn import_result(progress: &Progress) -> String {
     } else {
         String::new()
     };
-    let imported = imported_count(progress);
     match progress.phase {
-        Phase::Completed => format!("Imported {imported} · {verified}{skipped}"),
+        Phase::Completed => format!(
+            "Imported {} · {verified}{skipped}",
+            imported_count(progress)
+        ),
         Phase::Cancelled => format!(
-            "Cancelled · {imported} of {} imported and {verified}{skipped}",
-            count(progress.total)
+            "Cancelled · {}{skipped}",
+            imported_of(progress, Some(&verified))
         ),
         _ => format!(
-            "Import stopped · {imported} of {} imported and {verified}{skipped} · {}",
-            count(progress.total),
+            "Import stopped · {}{skipped} · {}",
+            imported_of(progress, Some(&verified)),
             if progress.failed > 0 {
                 format!("{} failed", count(progress.failed))
             } else {
@@ -285,8 +397,8 @@ pub(super) fn import_progress(progress: &Progress) -> String {
         return format!(
             "{} was removed · {} of {} verified · reinsert the card to continue",
             source_name(progress),
-            progress.completed + progress.skipped,
-            plural(progress.total, "photo", "photos")
+            count(progress.completed + progress.skipped),
+            count(progress.total)
         );
     }
     let mut line = format!(
@@ -708,7 +820,7 @@ mod tests {
         };
         assert_eq!(
             import_result(&stopped),
-            "Import stopped · 3 photos of 5 imported and verified · 1 failed"
+            "Import stopped · 3 of 5 imported and verified (3 photos) · 1 failed"
         );
         let cancelled = Progress {
             phase: Phase::Cancelled,
@@ -719,11 +831,74 @@ mod tests {
         };
         assert_eq!(
             import_result(&cancelled),
-            "Cancelled · 1 video of 4 imported and verified"
+            "Cancelled · 1 of 4 imported and verified (1 video)"
         );
-        for text in [import_result(&progress), import_result(&cancelled)] {
-            assert!(!text.contains("5 photos"), "{text}");
+        // R5-io-03: 4 JPEG + 1 MOV never read "of 5 photos" or "photos of".
+        let mixed = Progress {
+            phase: Phase::Cancelled,
+            completed: 4,
+            completed_videos: 1,
+            total: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_result(&mixed),
+            "Cancelled · 4 of 5 imported and verified (3 photos, 1 video)"
+        );
+        let skipped = Progress {
+            phase: Phase::Cancelled,
+            total: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_skipped(&skipped),
+            "Skipped · 0 of 5 imported · insert it again to import the rest"
+        );
+        for text in [
+            import_result(&progress),
+            import_result(&cancelled),
+            import_result(&mixed),
+            import_result(&stopped),
+            import_skipped(&skipped),
+        ] {
+            assert!(
+                !text.contains("5 photos") && !text.contains("photos of"),
+                "{text}"
+            );
         }
+    }
+
+    #[test]
+    fn host_errors_are_plain_and_point_at_the_likely_field() {
+        let cases = [
+            (
+                "Connection/hello failed: Remote transport closed before hello. Check the SSH alias, remote command, agent version, and stdout banners.",
+                0,
+            ),
+            ("Connection/hello failed: Unexpected hello response", 1),
+            (
+                "ssh: Could not resolve hostname nohost.invalid: Name or service not known",
+                0,
+            ),
+            ("studio: Permission denied (publickey).", 0),
+            ("Remote agent protocol version 3 is unsupported", 1),
+        ];
+        for (error, field) in cases {
+            let (text, at) = host_connect_error("studio", error);
+            assert_eq!(at, field, "{error}");
+            for word in ["hello", "transport", "stdout"] {
+                assert!(!text.to_ascii_lowercase().contains(word), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn closing_with_queued_cards_says_they_wait_and_how_to_stay() {
+        assert_eq!(closing_import(0), "Finishing import before closing…");
+        assert_eq!(
+            closing_import(2),
+            "Closing after this card · 2 queued cards will not start"
+        );
     }
 
     #[test]
@@ -739,7 +914,7 @@ mod tests {
         };
         assert_eq!(
             import_progress(&progress),
-            "EOS_DIGITAL was removed · 120 of 612 photos verified · reinsert the card to continue"
+            "EOS_DIGITAL was removed · 120 of 612 verified · reinsert the card to continue"
         );
         assert_eq!(source_name(&Progress::default()), "The card");
     }

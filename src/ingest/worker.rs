@@ -22,13 +22,22 @@ pub enum Command {
     Start,
     Pause,
     Resume,
-    /// Stop the running import only; the next queued card starts.
+    /// Stop the running import only; the next queued card starts. With no
+    /// import running it stops the scan instead.
     Cancel,
+    /// What `Worker::send` turns a Cancel of the running import into: it
+    /// stopped that job at once, and the dispatcher must never apply it to
+    /// the next job (the one a queued card started meanwhile). The number is
+    /// the job's launch.
+    CancelJob(usize),
     /// Drop one waiting import (by its source) without touching the others.
     Dequeue(PathBuf),
     /// Drop the waiting imports and let the running one finish ("Clear queue",
     /// app exit).
     ClearQueue,
+    /// While held (the app is closing), no waiting or new import starts; the
+    /// queue is kept, so releasing it (the user stays) loses nothing.
+    HoldQueue(bool),
     History(usize),
     MarkImported(Vec<usize>),
     Eject(PathBuf),
@@ -36,6 +45,9 @@ pub enum Command {
 #[derive(Clone, Debug)]
 pub enum Event {
     Scanning(PathBuf),
+    /// A scan of this path was refused: it is the card being copied (at its
+    /// first or a new mount point) or a card already queued. Nothing scans.
+    Busy(PathBuf),
     Batch(Vec<IngestGroup>),
     Scanned(Arc<Scan>),
     Plan(Arc<PlanSummary>),
@@ -96,6 +108,10 @@ pub struct Worker {
     /// Bumped by every ClearQueue: queued imports from before it never start,
     /// even when the running job ends before the dispatcher reads it.
     cancel_epoch: Arc<AtomicUsize>,
+    /// Bumped by every job start, so a Cancel names the job it stopped.
+    launches: Arc<AtomicUsize>,
+    /// Set by HoldQueue: queued imports wait even after the running one ends.
+    held: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     activity: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
@@ -127,6 +143,10 @@ impl Worker {
         let worker_scan_control = scan_control.clone();
         let cancel_epoch = Arc::new(AtomicUsize::new(0));
         let worker_epoch = cancel_epoch.clone();
+        let launches = Arc::new(AtomicUsize::new(0));
+        let worker_launches = launches.clone();
+        let held = Arc::new(AtomicBool::new(false));
+        let worker_held = held.clone();
         let stopping = Arc::new(AtomicBool::new(false));
         let stop_worker = stopping.clone();
         let activity = Arc::new(AtomicUsize::new(0));
@@ -143,6 +163,8 @@ impl Worker {
                         control: worker_control,
                         scan: worker_scan_control,
                         cancel_epoch: worker_epoch,
+                        launches: worker_launches,
+                        held: worker_held,
                         hooks,
                     },
                     stop_worker,
@@ -155,6 +177,8 @@ impl Worker {
             control,
             scan_control,
             cancel_epoch,
+            launches,
+            held,
             stopping,
             activity,
             thread: Some(thread),
@@ -165,14 +189,30 @@ impl Worker {
         // and so are pause and resume: a second card's scan may be running on
         // the dispatcher, but the copy job must answer at once (the
         // acknowledgement follows from the dispatcher).
-        match command {
+        let command = match command {
             // Cancel stops the copying card, or the scan when nothing copies;
-            // a second card being scanned (or queued) is left alone.
-            Command::Cancel if self.control.snapshot().phase.is_active() => self.control.cancel(),
-            Command::Cancel => self.scan_control.cancel(),
+            // a second card being scanned (or queued) is left alone. It is
+            // applied here, once, and the dispatcher only learns which job it
+            // stopped: by the time it reads the command, that job may have
+            // ended and a queued card started on the same control.
+            Command::Cancel if self.control.snapshot().phase.is_active() => {
+                let job = self.launches.load(Ordering::Acquire);
+                self.control.cancel();
+                Command::CancelJob(job)
+            }
+            Command::Cancel => {
+                self.scan_control.cancel();
+                Command::Cancel
+            }
+            command => command,
+        };
+        match command {
             Command::ClearQueue => {
                 self.cancel_epoch.fetch_add(1, Ordering::AcqRel);
             }
+            // Immediate, so a job ending before the dispatcher reads the
+            // command cannot start the next card.
+            Command::HoldQueue(hold) => self.held.store(hold, Ordering::Release),
             Command::Pause if self.control.snapshot().phase.is_active() => self.control.pause(),
             Command::Resume if self.control.snapshot().phase.is_active() => self.control.resume(),
             _ => {}
@@ -231,6 +271,8 @@ struct Lanes {
     control: Control,
     scan: Control,
     cancel_epoch: Arc<AtomicUsize>,
+    launches: Arc<AtomicUsize>,
+    held: Arc<AtomicBool>,
     hooks: Arc<dyn CopyHooks>,
 }
 /// The running copy job and the imports waiting for it.
@@ -299,7 +341,12 @@ fn run(
     // A finished job wakes the dispatcher, which starts the next queued import.
     let (done_tx, done_rx) = bounded::<()>(4);
     let launch = |plan: IngestPlan, jobs: &mut Jobs, guard: Activity| {
+        // A Cancel read from now on names an earlier job unless it was sent
+        // after this job became the active one.
+        lanes.launches.fetch_add(1, Ordering::AcqRel);
         control.reset();
+        jobs.source = Some(plan.source.clone());
+        jobs.volume = plan.groups.first().map(|g| g.group.volume.clone());
         // A pause/resume acknowledged before the job thread first
         // reports must read as active, never as `Idle`.
         control.report(&Progress {
@@ -307,8 +354,6 @@ fn run(
             source: Some(plan.source.clone()),
             ..Progress::default()
         });
-        jobs.source = Some(plan.source.clone());
-        jobs.volume = plan.groups.first().map(|g| g.group.volume.clone());
         jobs.running = Some(start_job_with_hooks_and_activity(
             plan,
             catalog.clone(),
@@ -319,6 +364,34 @@ fn run(
             Some(guard),
             Some(done_tx.clone()),
         ));
+    };
+    // The job ended (or was cancelled), or the queue was released: start
+    // the oldest import still waiting, unless Clear queue since it was
+    // queued retired it, or the queue is held (the app is closing).
+    let start_next = |jobs: &mut Jobs| {
+        if jobs.running.is_some() || jobs.queue.is_empty() || lanes.held.load(Ordering::Acquire) {
+            return;
+        }
+        let epoch = lanes.cancel_epoch.load(Ordering::Acquire);
+        while let Some((plan, accepted, guard)) = jobs.queue.pop_front() {
+            if accepted != epoch {
+                continue;
+            }
+            match super::copy::preflight(&plan, &NativeFsStats) {
+                Ok(_) => {
+                    launch(plan, jobs, guard);
+                    break;
+                }
+                Err(error) => emit(
+                    &events,
+                    Event::Error(format!(
+                        "Queued import of {} cannot start: {error:#}",
+                        plan.source.display()
+                    )),
+                ),
+            }
+        }
+        emit(&events, Event::Queue(jobs.summary()));
     };
     loop {
         let command = crossbeam_channel::select! {
@@ -341,30 +414,7 @@ fn run(
             jobs.volume = None;
         }
         let Some(command) = command else {
-            // The job ended (or was cancelled): start the oldest import still
-            // waiting, unless Clear queue since it was queued retired it.
-            if jobs.running.is_none() && !jobs.queue.is_empty() {
-                let epoch = lanes.cancel_epoch.load(Ordering::Acquire);
-                while let Some((plan, accepted, guard)) = jobs.queue.pop_front() {
-                    if accepted != epoch {
-                        continue;
-                    }
-                    match super::copy::preflight(&plan, &NativeFsStats) {
-                        Ok(_) => {
-                            launch(plan, &mut jobs, guard);
-                            break;
-                        }
-                        Err(error) => emit(
-                            &events,
-                            Event::Error(format!(
-                                "Queued import of {} cannot start: {error:#}",
-                                plan.source.display()
-                            )),
-                        ),
-                    }
-                }
-                emit(&events, Event::Queue(jobs.summary()));
-            }
+            start_next(&mut jobs);
             continue;
         };
         let _command_activity = Activity(activity.clone());
@@ -377,9 +427,12 @@ fn run(
                     {
                         // The card being copied came back (reinserted after a
                         // pull): its job continues by itself; never rescan it
-                        // or queue it twice.
+                        // or queue it twice. The app hears so, and a view
+                        // waiting for this scan goes back to what it showed.
+                        emit(&events, Event::Busy(path));
                         return Ok(());
                     }
+                    lanes.hooks.before_scan(&path);
                     scan_control.reset();
                     scanned = None;
                     planned = None;
@@ -406,7 +459,7 @@ fn run(
                         let plan = planned.as_ref().unwrap();
                         ensure!(!plan.groups.is_empty(), "No new media to import");
                         super::copy::preflight(plan, &NativeFsStats)?;
-                        if jobs.running.is_some() {
+                        if jobs.running.is_some() || lanes.held.load(Ordering::Acquire) {
                             jobs.queue.push_back((
                                 plan.clone(),
                                 lanes.cancel_epoch.load(Ordering::Acquire),
@@ -446,7 +499,7 @@ fn run(
                     let plan = planned.as_ref().context("Compute an import plan first")?;
                     ensure!(!plan.groups.is_empty(), "No media selected for import");
                     super::copy::preflight(plan, &NativeFsStats)?;
-                    if jobs.running.is_some() {
+                    if jobs.running.is_some() || lanes.held.load(Ordering::Acquire) {
                         ensure!(
                             !jobs.busy_with(&plan.source, lanes.hooks.as_ref()),
                             "This source is already importing"
@@ -472,10 +525,12 @@ fn run(
                     control.resume();
                     emit(&events, Event::Control(control.snapshot()));
                 }
-                Command::Cancel => {
-                    // Cancel stops the running job only (already done in
-                    // `Worker::send`); its end starts the next queued card.
-                    if jobs.running.is_some() {
+                // A scan's cancel was immediate in `Worker::send`.
+                Command::Cancel => {}
+                Command::CancelJob(job) => {
+                    // Already stopped in `Worker::send`; its end starts the
+                    // next queued card, which this Cancel never touches.
+                    if jobs.running.is_some() && lanes.launches.load(Ordering::Acquire) == job {
                         control.cancel();
                     }
                 }
@@ -492,6 +547,9 @@ fn run(
                         emit(&events, Event::Queue(Vec::new()));
                     }
                 }
+                // Holding was immediate in `Worker::send`; a release starts
+                // the next card when nothing copies.
+                Command::HoldQueue(_) => start_next(&mut jobs),
                 Command::History(limit) => {
                     emit(&events, Event::History(catalog.ingest_history(limit)?))
                 }
