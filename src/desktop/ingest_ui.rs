@@ -1757,13 +1757,10 @@ impl Workspace {
                                         .min_w(px(0.))
                                         .overflow_hidden()
                                         .border_1()
-                                        // Included tiles get a neutral outline; the
-                                        // accent marks only the current tile.
-                                        .border_color(if selected {
-                                            this.control_border()
-                                        } else {
-                                            this.border()
-                                        })
+                                        // A hairline either way: the checkbox, text and
+                                        // image strength say "included"; the accent marks
+                                        // only the current tile.
+                                        .border_color(this.border())
                                         .when(cell.seen && !recent, |s| s.opacity(0.45))
                                         .cursor_pointer()
                                         .tooltip(this.shared_tip(cell.tip))

@@ -5721,10 +5721,17 @@ impl Workspace {
     fn well_bg(&self) -> Hsla {
         self.c("shadowroom.well", "#161616")
     }
-    /// Outline of an input or choice group (3:1 class), unlike decorative
-    /// `border` hairlines between panels.
+    /// Outline of an input with no other boundary (3:1 class): text fields
+    /// and the empty label swatch. Not for groups whose parts carry their own
+    /// state cue (segments, tiles, keycaps); those use `group_border`.
     fn control_border(&self) -> Hsla {
         self.c("shadowroom.control_border", "#707070")
+    }
+    /// Thin outline of a segmented control or keycap: the chosen segment is
+    /// marked by its text-coloured underline and fill, so the box itself
+    /// carries no state and stays a hairline.
+    fn group_border(&self) -> Hsla {
+        self.c("border.variant", "#333333")
     }
     /// Plate under every on-photo badge. Theme-independent: it sits on pixels.
     fn scrim(&self) -> Hsla {
@@ -5783,7 +5790,7 @@ impl Workspace {
     }
     fn keycap(&self, keys: &str) -> Div {
         div()
-            .text_size(px(11.))
+            .text_size(px(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
@@ -5814,7 +5821,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .border_1()
-                    .border_color(self.control_border())
+                    .border_color(self.group_border())
                     .bg(self.canvas_bg())
                     .text_size(px(ui::text::MICRO))
                     .text_color(self.muted())
@@ -5833,9 +5840,10 @@ impl Workspace {
         active: bool,
         cx: &gpui::Context<Self>,
     ) -> Stateful<Div> {
-        // Controls also appear on elevated surfaces; a ghost hover can match
-        // the dialog background exactly. Use the filled control hover there.
-        let hover = self.c("element.hover", "#303030");
+        // The translucent ghost hover sits a step below the selected fill on
+        // every surface (panel, dialog, canvas), so hovering a plain button
+        // never outranks a toggle that is on.
+        let hover = self.hover_bg();
         let icon_only = label.is_empty();
         div()
             .id(id)
@@ -5852,16 +5860,15 @@ impl Workspace {
             // Reserve the outline so keyboard selection never shifts layout.
             .border_1()
             .border_color(transparent_black())
-            .when(active, |s| {
-                s.bg(self.selected_bg())
-                    .border_color(self.c("border.focused", "#5b9bd5"))
-            })
-            .hover(move |s| s.bg(hover))
+            // Active is the toggle idiom: a quiet fill and a full-strength
+            // icon. The accent box is keyboard focus's alone.
+            .when(active, |s| s.bg(self.selected_bg()).text_color(self.text()))
+            .when(!active, |s| s.hover(move |s| s.bg(hover)))
             .when(!glyph.is_empty(), |s| {
                 s.child(icon(
                     glyph,
                     if active {
-                        self.accent()
+                        self.c("icon", "#b8b8b8")
                     } else {
                         self.icon_muted()
                     },
@@ -9263,7 +9270,7 @@ impl Workspace {
             .flex()
             .flex_shrink_0()
             .border_1()
-            .border_color(self.control_border());
+            .border_color(self.group_border());
         for (i, label) in ui::GRID_SIZE_LABELS.into_iter().enumerate() {
             segments = segments.child(
                 self.segment(
@@ -9470,7 +9477,7 @@ impl Workspace {
                     .id("histogram-scale")
                     .flex()
                     .border_1()
-                    .border_color(self.control_border())
+                    .border_color(self.group_border())
                     .child(
                         self.segment(
                             "histogram-lin",
@@ -10724,7 +10731,7 @@ impl Workspace {
             .flex()
             .flex_shrink_0()
             .border_1()
-            .border_color(self.control_border());
+            .border_color(self.group_border());
         for (i, (label, cmd, active)) in options.into_iter().enumerate() {
             row = row.child(self.segment(
                 SharedString::from(format!("{id}-{i}")),

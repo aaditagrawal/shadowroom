@@ -78,11 +78,12 @@ roles, not hex values.
 | `shadowroom.well` | `#161616` | `#e4e4e4` | thumbnail image wells in grid and filmstrip |
 | `text` / `text.muted` / `text.disabled` | `#e6e6e6` / `#9a9a9a` / `#666666` | `#292e37` / `#566070` / `#8992a0` | copy |
 | `text.accent`, `border.focused` | `#5b9bd5` | `#245c91`, `#3979b4` | the single accent (see below) |
-| `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions |
-| `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and other control boundaries that need 3:1 against every surface |
+| `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions; `border.variant` also outlines segmented controls and keycaps, whose state is shown by the chosen segment's bar |
+| `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and the empty label swatch: inputs with no other boundary, 3:1 against every surface |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
 | `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#765612` | decisions on chrome |
-| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#82abe0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#2560b0` `#8a3fa6` | label swatches; `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws the initial on them |
+| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#82abe0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#2560b0` `#8a3fa6` | inspector label swatches and thumbnail label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9) |
+| `shadowroom.histogram.background` / `shadowroom.histogram.grid` | `#0f0f0f` / `#1c1c1c` | `#ffffff` / `#00000014` | histogram plot plate and quarter-tone guides; a light plate switches the curves to darker inks |
 
 State ladder: hover is a fill only and always weaker than selection, on panels,
 dialogs and the canvas alike, which is why the ghost fills are translucent.
