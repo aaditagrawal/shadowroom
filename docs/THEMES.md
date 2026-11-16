@@ -118,6 +118,17 @@ dialogs and the canvas alike, which is why the ghost fills are translucent.
 Selection adds a second cue: the accent bar or underline for a location, a 2 px
 text-coloured bar on a chosen segment, or full-strength text and MEDIUM weight.
 
+**Choice groups** (Preferences choices, LIN/LOG, Catalog S/M/L) keep a
+`border.variant` hairline outline by design: every segment is identified by its
+text, and a 3:1 box around each group made the chrome noisier than the photos.
+The outline is therefore decorative under WCAG 1.4.11. What must reach 3:1 is
+the state: the chosen segment's 2 px text-coloured bar on its selected fill and
+the keyboard focus ring (`shadowroom.focus_ring`) on panels, bars and dialogs, in
+all four built-in palettes. A desktop test
+(`choice_group_state_and_focus_ring_reach_three_to_one`) holds those pairs.
+Text fields keep `shadowroom.control_border`, since an empty field has no other
+boundary.
+
 The accent means "you are here": the active view tab and inspector tab
 underline, the current collection's bar, the current photo's outline, the
 command palette's selected row, and keyboard focus. Toggles (panels,

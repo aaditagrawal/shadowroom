@@ -759,4 +759,41 @@ mod tests {
         assert_eq!(cycle_index(Some(1), 3, false), Some(2));
         assert_eq!(cycle_index(None, 0, false), None);
     }
+
+    /// Choice groups keep their hairline outline by design (docs/THEMES.md,
+    /// "Choice groups"); what must reach 3:1 (WCAG 1.4.11) is the state: the
+    /// chosen segment's text-coloured bar and the keyboard focus ring, on
+    /// every surface a group is drawn on, in all four built-in palettes.
+    #[test]
+    fn choice_group_state_and_focus_ring_reach_three_to_one() {
+        use shadowroom::theme::{Rgba, Theme};
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::high_contrast_dark(),
+            Theme::high_contrast_light(),
+        ] {
+            let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
+            for surface in [
+                "panel.background",
+                "elevated_surface.background",
+                "toolbar.background",
+            ] {
+                let s = c(surface);
+                let selected = c("ghost_element.selected").composite_over(s);
+                let name = &theme.name;
+                // The chosen segment's bar sits on its selected fill.
+                assert!(
+                    c("text").contrast_ratio(selected) >= 3.0,
+                    "{name}: segment bar on {surface}"
+                );
+                for under in [s, selected] {
+                    assert!(
+                        c("shadowroom.focus_ring").contrast_ratio(under) >= 3.0,
+                        "{name}: focus ring on {surface}"
+                    );
+                }
+            }
+        }
+    }
 }
