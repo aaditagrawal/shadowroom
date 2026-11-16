@@ -1029,6 +1029,13 @@ pub struct Progress {
     /// Scan group IDs that failed, so "Retry failed" can plan exactly those.
     #[serde(default)]
     pub failed_ids: Vec<usize>,
+    /// Primary source paths of the failed groups: "Retry failed" from another
+    /// card's view or from History rescans the source and checks these.
+    #[serde(default)]
+    pub failed_sources: Vec<PathBuf>,
+    /// Videos among `completed`, so results say "4 photos, 1 video".
+    #[serde(default)]
+    pub completed_videos: usize,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Report {
