@@ -677,7 +677,7 @@ impl Workspace {
                             .border_color(if state.address_focused {
                                 self.accent()
                             } else {
-                                self.border()
+                                self.control_border()
                             })
                             .child(self.input_field(
                                 &state.edit,

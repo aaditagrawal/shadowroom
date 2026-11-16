@@ -200,7 +200,7 @@ impl Theme {
                 // Neutral (R=G=B) so the photo's white balance is not tinted.
                 ("shadowroom.canvas", "#dcdcdc"),
                 ("shadowroom.well", "#e4e4e4"),
-                ("shadowroom.control_border", "#848d9b"),
+                ("shadowroom.control_border", "#717a88"),
                 ("shadowroom.pick", "#2f6844"),
                 ("shadowroom.reject", "#a53e42"),
                 ("shadowroom.rating", "#765612"),
@@ -794,6 +794,13 @@ mod tests {
                 assert!(
                     c("text.muted").contrast_ratio(selected) >= 4.5,
                     "{name} {surface}"
+                );
+            }
+            // Text fields sit on the window background, keycaps on the canvas.
+            for surface in ["background", "shadowroom.canvas"] {
+                assert!(
+                    c("shadowroom.control_border").contrast_ratio(c(surface)) >= 3.0,
+                    "{name}: control outline on {surface}"
                 );
             }
             for surface in ["panel.background", "shadowroom.canvas"] {

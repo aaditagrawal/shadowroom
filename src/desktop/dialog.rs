@@ -582,7 +582,8 @@ impl Workspace {
                             } else if *active == n {
                                 self.accent()
                             } else {
-                                self.border()
+                                // Text-field boundary: 3:1 (WCAG 1.4.11).
+                                self.control_border()
                             })
                             .bg(self.bg())
                             .overflow_hidden()

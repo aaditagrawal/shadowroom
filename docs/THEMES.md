@@ -79,7 +79,7 @@ roles, not hex values.
 | `text` / `text.muted` / `text.disabled` | `#e6e6e6` / `#9a9a9a` / `#666666` | `#292e37` / `#566070` / `#8992a0` | copy |
 | `text.accent`, `border.focused` | `#5b9bd5` | `#245c91`, `#3979b4` | the single accent (see below) |
 | `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions |
-| `shadowroom.control_border` | `#707070` | `#848d9b` | outlines of choice groups and keycaps (3:1 against surfaces) |
+| `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and other control boundaries that need 3:1 against every surface |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
 | `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#765612` | decisions on chrome |
 | `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#82abe0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#2560b0` `#8a3fa6` | label swatches; `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws the initial on them |

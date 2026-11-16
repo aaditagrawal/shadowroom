@@ -2044,7 +2044,11 @@ impl Workspace {
                     .min_w(px(0.))
                     .p(px(ui::FIELD_INSET))
                     .border_1()
-                    .border_color(if active { self.accent() } else { self.border() })
+                    .border_color(if active {
+                        self.accent()
+                    } else {
+                        self.control_border()
+                    })
                     .bg(self.bg())
                     .overflow_hidden()
                     .cursor(CursorStyle::IBeam)
