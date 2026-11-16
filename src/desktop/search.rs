@@ -25,20 +25,19 @@ fn starts_folded(haystack: &str, needle: &[u8]) -> bool {
 }
 
 impl Workspace {
-    /// Opens the palette for photos only (Ctrl/Cmd+F); pressing it again, or
-    /// Ctrl/Cmd+K, toggles back as the palette does.
+    /// Opens the palette for photos only (Ctrl/Cmd+F). From the full palette
+    /// it narrows to photos and keeps the query; pressing it again closes.
     pub(super) fn open_photo_search(&mut self) {
-        let reopen = self.palette && !self.palette_photos;
-        if self.palette && !reopen {
+        if self.palette && self.palette_photos {
             self.palette = false;
-        } else {
+        } else if !self.palette {
             self.getting_started = false;
             self.import_ui.menu = None;
             self.palette = true;
             self.palette_query.clear();
             self.palette_edit.focus("");
-            self.palette_index = 0;
         }
+        self.palette_index = 0;
         self.palette_photos = self.palette;
         self.palette_cache.borrow_mut().take();
     }

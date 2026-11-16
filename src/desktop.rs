@@ -3625,10 +3625,16 @@ impl Workspace {
                 // `focused_edit`/`ingest_key` defer to it while it is open).
                 self.getting_started = false;
                 self.import_ui.menu = None;
-                self.palette = !self.palette;
-                self.palette_photos = false;
-                self.palette_query.clear();
-                self.palette_edit.focus("");
+                if self.palette && self.palette_photos {
+                    // From photo search, Ctrl/Cmd+K widens to everything and
+                    // keeps the query.
+                    self.palette_photos = false;
+                } else {
+                    self.palette = !self.palette;
+                    self.palette_photos = false;
+                    self.palette_query.clear();
+                    self.palette_edit.focus("");
+                }
                 self.palette_cache.borrow_mut().take();
                 self.palette_index = 0;
             }
