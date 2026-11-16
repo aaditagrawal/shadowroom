@@ -3344,13 +3344,19 @@ impl Workspace {
             .occlude()
             .child(icon("import", on))
             .child(label.to_owned())
-            .child(div().text_size(px(ui::text::LABEL)).opacity(0.75).child(
-                if cfg!(target_os = "macos") {
-                    "⌘↵"
-                } else {
-                    "Ctrl+Enter"
-                },
-            ))
+            // The shortcut in full ink (a faded hint fell under 4.5:1 on the
+            // dark accent), set apart by a thin rule and regular weight.
+            .child(div().w(px(1.)).h(px(14.)).bg(on).opacity(0.5))
+            .child(
+                div()
+                    .text_size(px(ui::text::LABEL))
+                    .font_weight(FontWeight::NORMAL)
+                    .child(if cfg!(target_os = "macos") {
+                        "⌘↵"
+                    } else {
+                        "Ctrl+Enter"
+                    }),
+            )
             .when(disabled, |s| s.opacity(0.45))
             .when(!disabled, |s| {
                 s.cursor_pointer()
