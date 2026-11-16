@@ -357,6 +357,8 @@ impl Workspace {
             self.reject_color(),
         ];
         let accent = self.accent();
+        // The band's surface (filmstrip and Catalog band are both panels).
+        let surface = self.panel();
         let geometry = self.ledger_track.clone();
         let painted = ledger.clone();
         let track = canvas(
@@ -376,6 +378,15 @@ impl Workspace {
                 }
                 if painted.frames > 0 {
                     let (x, w) = track.playhead(current, painted.frames);
+                    // A 1 px knockout keeps the playhead distinct from the
+                    // tick under it (accent on pick green is ~1:1 in light).
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(px(left + x - 1.), px(top)),
+                            size(px(w + 2.), px(TRACK)),
+                        ),
+                        surface,
+                    ));
                     window.paint_quad(fill(
                         Bounds::new(
                             point(px(left + x), px(top - OVERSHOOT)),
