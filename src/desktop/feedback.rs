@@ -928,7 +928,15 @@ impl Workspace {
                 reveal: None,
             };
             let position = order.iter().position(|k| *k == key).unwrap_or(0);
-            self.focusable(element, key, 1 + position as isize, true, target, window, cx)
+            self.focusable(
+                element,
+                key,
+                1 + position as isize,
+                true,
+                target,
+                window,
+                cx,
+            )
         };
         let cancel = focusable(
             self.dialog_button("quit-cancel", "Cancel", ButtonKind::Secondary, false)

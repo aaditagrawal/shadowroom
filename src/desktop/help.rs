@@ -287,7 +287,10 @@ mod tests {
         // Enter follows the outline, not the pointer (R2-catalog-08).
         assert!(!text.contains("hovered or active"));
         assert!(!text.contains(" ;"));
-        assert!(!text.contains("…."), "an ellipsis label must not end a sentence");
+        assert!(
+            !text.contains("…."),
+            "an ellipsis label must not end a sentence"
+        );
         // One platform's key names, never "Ctrl/Cmd" (OV-17).
         assert!(!text.contains("Ctrl/Cmd"));
         assert!(!text.contains("Alt/Option"));
