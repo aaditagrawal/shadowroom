@@ -18,6 +18,8 @@ const STAMP_HOLD: Duration = Duration::from_millis(320);
 const STAMP_FADE: Duration = Duration::from_millis(180);
 /// With reduced motion the stamp holds a little longer and leaves at once.
 const STAMP_HOLD_STILL: Duration = Duration::from_millis(700);
+/// The stamp's plate opacity (the scrim colour, nearly opaque).
+const STAMP_PLATE_ALPHA: f32 = 0.94;
 
 /// The typed confirmation of a decision made in lights-out.
 pub(super) struct Stamp {
@@ -415,6 +417,12 @@ impl Workspace {
             return None;
         };
         let stamp = self.stamp.as_ref()?;
+        // A denser plate than the badges' scrim: 13 px words in the reject
+        // ink need 4.5:1 over a white sky (5.8:1 here, 3.9:1 on the scrim).
+        let plate = Hsla {
+            a: STAMP_PLATE_ALPHA,
+            ..self.scrim()
+        };
         Some(
             div()
                 .id("decision-stamp")
@@ -422,7 +430,7 @@ impl Workspace {
                 .px(px(space::MD))
                 .flex()
                 .items_center()
-                .bg(self.scrim())
+                .bg(plate)
                 .opacity(opacity)
                 .text_size(ui::font(ui::text::TITLE))
                 .font_weight(FontWeight::MEDIUM)

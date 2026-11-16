@@ -12661,11 +12661,23 @@ impl Workspace {
         } else {
             DECISION_HEIGHT
         };
+        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
+        // height: the ledger keeps its own band, as in the Catalog, and still
+        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
+        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
+        if strip_yields && !lights_out {
+            self.hint_once(
+                "filmstrip-yields",
+                "Filmstrip hidden to give the photo room · the ledger still jumps to any frame",
+            );
+        } else {
+            self.withdraw_notice("filmstrip-yields");
+        }
         let strip_height = if self.filtered.is_empty() || self.import_ui.open {
             0.
         } else if lights_out {
             ledger::LIGHTS_OUT_BAND
-        } else if self.mode == ViewMode::Grid {
+        } else if self.mode == ViewMode::Grid || strip_yields {
             // The Catalog has no filmstrip; the ledger gets its own band.
             if self.ledger_visible() {
                 ledger::ROW_HEIGHT
@@ -12767,7 +12779,7 @@ impl Workspace {
             main = main.child(self.trace.timed("ledger", band));
         } else if !self.filtered.is_empty() {
             main = main.child(self.trace.timed("rating_bar", self.rating_bar(cx)));
-            if self.mode != ViewMode::Grid {
+            if self.mode != ViewMode::Grid && !strip_yields {
                 let strip = self.filmstrip(cx);
                 main = main.child(self.trace.timed("filmstrip", strip));
             } else if self.ledger_visible() {

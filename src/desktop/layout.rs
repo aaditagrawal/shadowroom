@@ -93,6 +93,9 @@ pub(super) const TOOLBAR_HEIGHT: f32 = CONTROL_ROW_HEIGHT + HAIRLINE;
 pub(super) const DECISION_HEIGHT: f32 = CONTROL_ROW_HEIGHT + HAIRLINE;
 pub(super) const STATUS_HEIGHT: f32 = COMPACT_CONTROL_HEIGHT + 2. * STATUS_INSET + HAIRLINE;
 pub(super) const FILMSTRIP_HEIGHT: f32 = 96.;
+/// Below this window height the photo views trade the filmstrip for the
+/// ledger's own band.
+pub(super) const FILMSTRIP_MIN_WINDOW_HEIGHT: f32 = 600.;
 pub(super) const LIBRARY_WIDTH: f32 = 224.;
 pub(super) const INFO_WIDTH: f32 = 288.;
 pub(super) const LIBRARY_MIN_WIDTH: f32 = 180.;

@@ -71,7 +71,8 @@ and decision; the active pane's label is underlined, the only active-pane mark. 
 room: below 1280 px wide, Review, Compare and Survey hide the sidebar (and below
 1100 px, Compare and Survey also hide the inspector, as Review does below 960 px)
 without changing your panel settings; Ctrl/Cmd+B brings the sidebar back and `I`
-the inspector. Survey (`S`) shows a frozen Catalog
+the inspector. Below 600 px tall the filmstrip gives way to the cull ledger's own
+band, which still jumps to any frame. Survey (`S`) shows a frozen Catalog
 selection of two or more photos (**Selection · 4 photos**), otherwise the current
 burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column count that
 gives the largest frames; its header's
