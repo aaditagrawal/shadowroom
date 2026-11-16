@@ -1195,6 +1195,10 @@ pub struct Workspace {
     grid_range: Option<(usize, usize)>,
     last_media: u64,
     automation: Option<AutomationServer>,
+    /// The platform file chooser failed once (no portal): use the built-in picker.
+    native_chooser_failed: bool,
+    /// An automation client has sent a request this session.
+    automation_driven: bool,
     _poll: Task<()>,
     poll_wake: Rc<PollWake>,
     /// The pending repaint was requested by poll, not by input.
@@ -1671,6 +1675,8 @@ impl Workspace {
             grid_range: None,
             last_media: 0,
             automation,
+            native_chooser_failed: false,
+            automation_driven: false,
             _poll: poll,
             poll_wake,
             poll_render: false,
@@ -10087,6 +10093,11 @@ impl Workspace {
             "library_cursor":self.library_cursor_id().map(|id| id.to_string())});
         state["catalog_hover"] = json!(self.catalog_hover);
         state["fit_zoom_percent"] = json!(self.fit_scales.get()[1] * 100.);
+        state["accessibility"] = json!({"text_scale":ui::text_scale(),
+            "high_contrast":platform_prefs::high_contrast(),
+            "reduce_motion":self.reduce_motion(),
+            "native_chooser_failed":self.native_chooser_failed,
+            "automation_driven":self.automation_driven});
         state["review_subset"] = if self.review_folder == self.scope {
             json!(self.review_subset)
         } else {
@@ -10730,6 +10741,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
+        // A driven session keeps the built-in path picker, whose state
+        // automation can read; see `folder_picker::show_path_picker`.
+        self.automation_driven = true;
         if request.is_expired() {
             let _ = request.reply.try_send(Err(
                 "Request expired before reaching the UI; no action performed".into(),
