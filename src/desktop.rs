@@ -9504,43 +9504,26 @@ impl Workspace {
             // A batch shows what its members carry, not the primary photo.
             body = body.child(self.selection_inspector(&summary, cx));
         } else if let Some(p) = self.review_photo() {
+            // The culling line (design R7): what a culler checks between burst
+            // frames, under the filename, in the order it is read.
             let mut facts = Vec::new();
             if p.width > 0 && p.height > 0 {
                 facts.push(format!("{} × {}", p.width, p.height));
             }
             facts.push(format!("{:.1} MB", p.size_bytes as f64 / 1_000_000.));
-            if p.companion_path.is_some() {
-                facts.push(
-                    if p.companion_path
-                        .as_deref()
-                        .is_some_and(shadowroom::heif::is_heif)
-                    {
-                        "RAW + HEIF"
-                    } else {
-                        "RAW + JPEG"
-                    }
-                    .into(),
-                );
-            }
-            // The exposure triangle is what distinguishes frames in a burst, so
-            // it leads, in one scannable line.
-            let shutter = p.shutter.trim();
-            let exposure: Vec<String> = [
-                (!shutter.is_empty()).then(|| {
-                    if shutter.ends_with('s') {
-                        shutter.to_string()
-                    } else {
-                        format!("{shutter} s")
-                    }
-                }),
-                p.aperture.map(|n| format!("ƒ/{n:.1}")),
-                p.iso.map(|n| format!("ISO {n}")),
-                p.focal_length.map(|n| format!("{n:.0} mm")),
+            facts.push(file_type(p));
+            let exposure = exposure_line(p);
+            let captured = p.capture_display();
+            let capture_line: Vec<String> = [
+                p.capture_short(),
+                Some(p.camera.clone()),
+                Some(p.lens.clone()),
             ]
             .into_iter()
             .flatten()
+            .map(|fact| fact.trim().to_owned())
+            .filter(|fact| !fact.is_empty())
             .collect();
-            let captured = p.capture_display();
             body = body
                 .child(
                     div()
@@ -9557,33 +9540,79 @@ impl Workspace {
                 .when(!exposure.is_empty(), |s| {
                     s.child(
                         div()
-                            .pt(px(space::SM))
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(space::XS))
-                            .children(exposure.into_iter().map(|fact| {
-                                div()
-                                    .px(px(space::XS))
-                                    .h(px(ui::COMPACT_CONTROL_HEIGHT))
-                                    .flex()
-                                    .items_center()
-                                    .bg(self.selected_bg())
-                                    .text_size(px(ui::text::BODY))
-                                    .child(fact)
-                            })),
+                            .id("inspector-exposure")
+                            .pt(px(space::XS))
+                            .text_size(px(ui::text::BODY))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(exposure.join("  "))
+                            .tooltip(self.tip("Shutter · aperture · ISO · focal length", "")),
+                    )
+                })
+                .when(!capture_line.is_empty(), |s| {
+                    // The lens is last, so it is what ellipsizes first.
+                    s.child(
+                        div()
+                            .id("inspector-capture")
+                            .pt(px(space::XS))
+                            .text_size(px(ui::text::LABEL))
+                            .text_color(self.muted())
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(capture_line.join(" · "))
+                            .tooltip(
+                                self.tip(
+                                    &[
+                                        (captured != "—").then(|| format!("Captured {captured}")),
+                                        (!p.camera.trim().is_empty()).then(|| p.camera.clone()),
+                                        (!p.lens.trim().is_empty()).then(|| p.lens.clone()),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                    "",
+                                ),
+                            ),
                     )
                 })
                 .child(
                     div()
-                        .pt(px(space::SM))
-                        .text_size(px(11.))
+                        .pt(px(space::XS))
+                        .text_size(px(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(facts.join(" · ")),
                 );
-            if self.inspector_info && !captured.is_empty() && captured != "—" {
+            if self.inspector_info {
                 body = body
-                    .child(self.inspector_section("File information"))
-                    .child(self.metadata_row("Captured", captured));
+                    .child(self.inspector_section("File"))
+                    .child(
+                        self.metadata_row(
+                            "Folder",
+                            copy::middle_path(
+                                &photo_folder(p),
+                                // Geist Mono advances 0.6 em; the label and gap take the rest.
+                                ((self.docks.inspector
+                                    - 2. * ui::PANEL_INSET
+                                    - 6. * 7.2
+                                    - space::MD)
+                                    / 7.2)
+                                    .max(8.) as usize,
+                            ),
+                        ),
+                    )
+                    .child(self.metadata_row("Type", file_type(p)))
+                    .child(self.metadata_row(
+                        "Size",
+                        format!("{:.1} MB", p.size_bytes as f64 / 1_000_000.),
+                    ));
+                if captured != "—" {
+                    body = body
+                        .child(self.inspector_section("Capture"))
+                        .child(self.metadata_row("Captured", captured));
+                }
             }
             if p.is_remote() {
                 body = body.child(
@@ -9720,30 +9749,6 @@ impl Workspace {
                             .child(div().text_color(self.text()).child(label_name)),
                     )
                     .child(labels);
-                body = body
-                    .child(self.inspector_section("Selection"))
-                    .child(
-                        self.metadata_row(
-                            "Flag",
-                            // Same words as the sidebar: no flag and no stars
-                            // is "Unreviewed"; stars without a flag, "No flag".
-                            match p.flag {
-                                Flag::Pick => "Pick",
-                                Flag::Reject => "Reject",
-                                Flag::None if p.rating == 0 => "Unreviewed",
-                                Flag::None => "No flag",
-                            }
-                            .into(),
-                        ),
-                    )
-                    .child(self.metadata_row(
-                        "Rating",
-                        if p.rating == 0 {
-                            "Unrated".into()
-                        } else {
-                            format!("{} / 5", p.rating)
-                        },
-                    ));
             }
             if self.inspector_info {
                 let gear: Vec<(&str, String)> =
@@ -9908,6 +9913,48 @@ impl Workspace {
     }
 }
 
+/// The exposure triangle and focal length, the facts that separate burst
+/// frames: "1/250 s", "ƒ/2.8", "ISO 400", "35 mm".
+fn exposure_line(p: &Photo) -> Vec<String> {
+    let shutter = p.shutter.trim();
+    [
+        (!shutter.is_empty()).then(|| {
+            if shutter.ends_with('s') {
+                shutter.to_string()
+            } else {
+                format!("{shutter} s")
+            }
+        }),
+        p.aperture.map(|n| format!("ƒ/{n:.1}")),
+        p.iso.map(|n| format!("ISO {n}")),
+        p.focal_length.map(|n| format!("{n:.0} mm")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+/// "JPEG", "CR3 + JPEG", "ARW + HEIF": the original's extension and its pair.
+fn file_type(p: &Photo) -> String {
+    let extension = |path: &Path| {
+        path.extension()
+            .map(|ext| ext.to_string_lossy().to_uppercase())
+            .map(|ext| if ext == "JPG" { "JPEG".to_owned() } else { ext })
+    };
+    let primary = extension(&p.path).unwrap_or_else(|| "File".into());
+    match p.companion_path.as_deref() {
+        Some(companion) if shadowroom::heif::is_heif(companion) => format!("{primary} + HEIF"),
+        Some(_) => format!("{primary} + JPEG"),
+        None => primary,
+    }
+}
+/// The folder an original lives in, as the Info tab shows it.
+fn photo_folder(p: &Photo) -> String {
+    if p.is_remote() {
+        format!("Remote · {}", p.folder)
+    } else {
+        p.folder.clone()
+    }
+}
 /// Whether this process talks to a Wayland compositor. The environment is
 /// fixed for the process lifetime, so render reads a cached answer instead of
 /// locking and scanning the environment twice per frame.
