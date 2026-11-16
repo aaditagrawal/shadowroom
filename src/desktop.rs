@@ -1237,7 +1237,7 @@ pub struct Workspace {
     focus_peaking: bool,
     /// An aid switched on whose overlay copy is still being painted: its
     /// effect bit and the notice to show once it is on the photo.
-    pending_aid: Option<(u8, String)>,
+    pending_aid: Option<(u8, String, String)>,
     /// Effect bits last shown per photo (`loupe_aids::shown_effect`).
     shown_effects: Vec<(i64, u8)>,
     /// Clipping overlay (J): blown highlights red, crushed shadows blue.
@@ -9755,7 +9755,22 @@ impl Workspace {
             // "Reset" text.
             space::SM + 5. * char_w,
         ];
-        let kept = ui::fit_prefix(width, base, &optional);
+        // In Focus mode a docked notice outranks the optional items, and if
+        // it still does not fit, the stars yield to it for its lifetime
+        // (they stay on their keys); the culling line reserves room for its
+        // capture time (R5-review-01).
+        let (slot_need, notice_docked) = if self.chrome_visible() {
+            (0., false)
+        } else {
+            self.focus_slot_need(small_char, char_w)
+        };
+        let stars_yield = notice_docked && base + slot_need > width;
+        let base = if stars_yield {
+            base - stars_width - gap
+        } else {
+            base
+        };
+        let kept = ui::fit_prefix(width, base + slot_need, &optional);
         let (flag_keys, flag_labels, pin_survey, zoom_steps, progress, reset_label) =
             (kept > 0, kept > 1, kept > 2, kept > 3, kept > 4, kept > 5);
         let hover = self.hover_bg();
@@ -9861,8 +9876,8 @@ impl Workspace {
                 self.reject_color(),
             ))
             .child(self.control_divider())
-            .child(stars)
-            .when(flag_keys, |bar| {
+            .when(!stars_yield, |bar| bar.child(stars))
+            .when(flag_keys && !stars_yield, |bar| {
                 bar.child(self.keycap("1-5").flex_shrink_0())
             })
             .when(mixed_rating, |bar| {

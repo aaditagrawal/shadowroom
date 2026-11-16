@@ -136,17 +136,21 @@ impl Workspace {
             CLIPPING_BIT,
             self.clipping,
             "clipping",
-            "Clipping shown · magenta stripes mark blown highlights, blue crushed shadows · J toggles"
-                .into(),
+            (
+                "Clipping shown · magenta stripes mark blown highlights, blue crushed shadows · J toggles"
+                    .into(),
+                "Clipping on · magenta highlights, blue shadows · J".into(),
+            ),
             "Clipping hidden",
         );
     }
 
     pub(super) fn toggle_peaking(&mut self) {
         self.focus_peaking = !self.focus_peaking;
-        let shown = format!(
-            "Focus peaking on · {} marks sharp edges · F toggles",
-            self.peaking_style().color.name().to_lowercase()
+        let color = self.peaking_style().color.name().to_lowercase();
+        let shown = (
+            format!("Focus peaking on · {color} marks sharp edges · F toggles"),
+            format!("Peaking on · {color} edges · F"),
         );
         self.announce_aid(
             PEAKING_BIT,
@@ -160,9 +164,16 @@ impl Workspace {
     /// Says an aid is on only once its overlay is on the photo (R4-review-04):
     /// until the background pass has painted the copy, the notice reads
     /// "Preparing …" and [`Self::settle_aid`] swaps in the real text.
-    fn announce_aid(&mut self, bit: u8, on: bool, name: &str, shown: String, hidden: &str) {
+    fn announce_aid(
+        &mut self,
+        bit: u8,
+        on: bool,
+        name: &str,
+        shown: (String, String),
+        hidden: &str,
+    ) {
         if !on {
-            if self.pending_aid.as_ref().is_some_and(|(b, _)| *b == bit) {
+            if self.pending_aid.as_ref().is_some_and(|(b, ..)| *b == bit) {
                 self.pending_aid = None;
             }
             self.announce(hidden, Tone::Info);
@@ -177,10 +188,10 @@ impl Workspace {
                 .is_some_and(|p| self.effect_ready(p, self.wanted_kind()));
         if ready {
             self.pending_aid = None;
-            self.announce(shown, Tone::Info);
+            self.announce_short(shown.0, shown.1, Tone::Info);
         } else {
             self.announce(format!("Preparing {name}…"), Tone::Info);
-            self.pending_aid = Some((bit, shown));
+            self.pending_aid = Some((bit, shown.0, shown.1));
         }
     }
 
@@ -207,13 +218,13 @@ impl Workspace {
     /// Called by the loupe each frame: once the pending aid's overlay is on
     /// the photo, the notice says so.
     pub(super) fn settle_aid(&mut self, p: &Photo, kind: PreviewKind) {
-        let Some((bit, _)) = &self.pending_aid else {
+        let Some((bit, ..)) = &self.pending_aid else {
             return;
         };
         if (self.display_effect(kind) & bit == 0 || self.effect_ready(p, kind))
-            && let Some((_, shown)) = self.pending_aid.take()
+            && let Some((_, shown, short)) = self.pending_aid.take()
         {
-            self.announce(shown, Tone::Info);
+            self.announce_short(shown, short, Tone::Info);
         }
     }
 
@@ -277,10 +288,11 @@ impl Workspace {
             self.lights_out = false;
             self.hint_once(
                 "focus-mode",
+                // Short: it docks in the decision bar, the only chrome left.
                 if self.lights_out_applies() {
-                    "Focus mode · Shift+Tab again for lights out · Esc to exit"
+                    "Focus mode · Shift+Tab: lights out · Esc exits"
                 } else {
-                    "Focus mode · Esc or Shift+Tab to exit"
+                    "Focus mode · Esc or Shift+Tab exits"
                 },
             );
         } else if !self.lights_out() && self.lights_out_applies() {
@@ -468,20 +480,63 @@ impl Workspace {
         if notice.is_some() || save.is_some() {
             return Some(row().children(notice).children(save).into_any_element());
         }
-        let p = self.review_photo()?;
-        let mut line = exposure_line(p).join("  ");
-        if let Some(time) = p.capture_short() {
-            if !line.is_empty() {
-                line.push_str(" · ");
-            }
-            line.push_str(&time);
-        }
-        (!line.is_empty()).then(|| {
+        let (line, _) = self.culling_line()?;
+        Some(
             row()
                 .text_color(self.muted())
-                .child(ellipsis(line))
-                .into_any_element()
-        })
+                .child(ellipsis(line.clone()))
+                .tooltip(self.tip(&line, ""))
+                .into_any_element(),
+        )
+    }
+
+    /// The compact culling line: capture time first, the one fact that tells
+    /// burst frames apart, then exposure; with the time's length in chars.
+    fn culling_line(&self) -> Option<(String, usize)> {
+        let p = self.review_photo()?;
+        let time = p.capture_short().unwrap_or_default();
+        let exposure = exposure_line(p).join("  ");
+        let line = match (time.is_empty(), exposure.is_empty()) {
+            (true, true) => return None,
+            (false, true) => time.clone(),
+            (true, false) => exposure,
+            (false, false) => format!("{time} · {exposure}"),
+        };
+        Some((line, time.chars().count()))
+    }
+
+    /// Room Focus mode's docked slot asks of the decision bar, and whether it
+    /// holds a notice (which may push the stars out) rather than the culling
+    /// line (which reserves only its capture time). `small` and `body` are
+    /// the 11 and 12 px advances.
+    pub(super) fn focus_slot_need(&self, small: f32, body: f32) -> (f32, bool) {
+        let pad = 2. * space::SM;
+        let cap = ui::scaled(420.);
+        if let Some(closing) = self.closing_text() {
+            return (
+                (closing.chars().count() as f32 * small + pad).min(cap),
+                true,
+            );
+        }
+        let failed = self.recovery_broken
+            || self.settings_failure.is_some()
+            || self.save_state() == SaveState::Failed;
+        let save = if failed { 12. * small + 20. } else { 0. };
+        if let Some(flash) = self.feedback.flash.as_ref() {
+            let glyph = if flash.tone == Tone::Info { 0. } else { 22. };
+            let action = flash.action.as_ref().map_or(0., |action| {
+                action.label.chars().count() as f32 * body + pad + space::SM
+            });
+            let text = self.flash_text(flash).chars().count() as f32 * small;
+            return ((text + glyph + action + pad + save).min(cap), true);
+        }
+        if failed {
+            return (save + pad, true);
+        }
+        match self.culling_line() {
+            Some((_, time)) if time > 0 => (time as f32 * small + pad, false),
+            _ => (0., false),
+        }
     }
 
     /// Lights-out's bottom-centre column above the ledger: the decision
