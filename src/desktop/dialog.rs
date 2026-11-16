@@ -501,10 +501,51 @@ impl Workspace {
             focus.targets.insert(key, target);
         }
         let ring = self.focus_visible && handle.is_focused(window);
+        // Tab into a scrolled-away Preferences control brings it into view.
+        let reveal = (ring && self.dialog_focus.borrow().scope == FocusScope::Preferences)
+            .then(|| self.reveal_once(key, &self.prefs_scroll));
         element
             .track_focus(&handle)
             .relative()
             .when(ring, |s| s.child(self.focus_ring_overlay()))
+            .children(reveal)
+    }
+
+    /// An invisible layer that scrolls `scroll` once so the focused control
+    /// it sits in is fully visible (with a small margin), then stays out of
+    /// the way: the wheel can move the view again while focus stays put.
+    fn reveal_once(&self, key: &str, scroll: &ScrollHandle) -> AnyElement {
+        let scroll = scroll.clone();
+        let revealed = self.focus_revealed.clone();
+        let key = SharedString::from(key.to_owned());
+        canvas(
+            move |bounds, window, _| {
+                if revealed.borrow().as_ref() == Some(&key) {
+                    return;
+                }
+                *revealed.borrow_mut() = Some(key.clone());
+                let view = scroll.bounds();
+                let offset = scroll.offset();
+                let margin = px(space::SM);
+                let mut y = offset.y;
+                if bounds.bottom() + margin > view.bottom() {
+                    y -= bounds.bottom() + margin - view.bottom();
+                }
+                if bounds.top() - margin < view.top() {
+                    y += view.top() - (bounds.top() - margin);
+                }
+                let y = y.clamp(-scroll.max_offset().height, px(0.));
+                if y != offset.y {
+                    scroll.set_offset(point(offset.x, y));
+                    // A refresh during prepaint is lost; draw the scrolled frame next.
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
     }
 
     /// Runs the focused dialog control's command (Space, or Return on a button).

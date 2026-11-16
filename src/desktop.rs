@@ -1244,6 +1244,11 @@ pub struct Workspace {
     theme_list_scroll: ScrollHandle,
     /// Getting Started body: the scrollbar and keyboard scrolling share it.
     guide_scroll: ScrollHandle,
+    /// Preferences body, with its scrollbar (R4-overlays-03).
+    prefs_scroll: ScrollHandle,
+    /// The focus target last scrolled into view, so a control is revealed
+    /// once when the keyboard reaches it and never fights the wheel.
+    focus_revealed: Rc<RefCell<Option<SharedString>>>,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     /// The pane F6 moved keyboard focus to (`panes.rs`).
@@ -1741,6 +1746,8 @@ impl Workspace {
             dialog_focus: RefCell::default(),
             theme_list_scroll: ScrollHandle::new(),
             guide_scroll: ScrollHandle::new(),
+            prefs_scroll: ScrollHandle::new(),
+            focus_revealed: Rc::default(),
             focus_visible: false,
             pane: panes::Pane::default(),
             pane_ring: false,
@@ -3824,7 +3831,13 @@ impl Workspace {
                 self.preferences_section = PreferencesSection::Appearance;
                 self.palette = false;
             }
-            Cmd::PreferencesSection(section) => self.preferences_section = section,
+            Cmd::PreferencesSection(section) => {
+                if self.preferences_section != section {
+                    self.prefs_scroll.set_offset(point(px(0.), px(0.)));
+                    self.focus_revealed.borrow_mut().take();
+                }
+                self.preferences_section = section;
+            }
             Cmd::Close => {
                 if self.folder_picker.take().is_some() {
                     self.refocus_ingest_field();
@@ -11119,6 +11132,13 @@ impl Workspace {
             let matched = HighlightStyle {
                 color: Some(self.text()),
                 font_weight: Some(FontWeight::MEDIUM),
+                // MEDIUM alone is subtle in Geist Mono; a text-coloured underline
+                // marks the letters without borrowing the accent.
+                underline: Some(UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(self.text()),
+                    wavy: false,
+                }),
                 ..HighlightStyle::default()
             };
             // "Category · description": description inline, category in a right column.
@@ -11174,7 +11194,7 @@ impl Workspace {
                             .gap(px(space::SM))
                             .whitespace_nowrap()
                             .overflow_hidden()
-                            // Matched letters in MEDIUM and full text colour say
+                            // Matched letters, MEDIUM and underlined, say
                             // why a row is listed (OV-19).
                             .child(
                                 div().flex_shrink_0().child(
@@ -11195,6 +11215,8 @@ impl Workspace {
                                     .text_color(self.muted())
                                     .overflow_hidden()
                                     .text_ellipsis()
+                                    .whitespace_normal()
+                                    .line_clamp(1)
                                     .child(description),
                             ),
                     )
@@ -11441,220 +11463,255 @@ impl Workspace {
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         self.focus_scope(FocusScope::Preferences);
         let s = self.preference_settings();
-        let fonts = self.pref_choices(
-            "font",
-            INTERFACE_FONTS
-                .iter()
-                .copied()
-                .map(|f| (f.to_string(), Cmd::Font(f.into()), s.interface_font == f)),
-            false,
-            window,
-            cx,
-        );
-        let groups = self.pref_choices(
-            "group-mode",
-            [
-                ("off", "Off"),
-                ("time", "Time"),
-                ("visual", "Visual"),
-                ("burst", "Burst"),
-            ]
-            .map(|(k, l)| (l.to_string(), Cmd::Group(k.into()), s.grouping_mode == k)),
-            false,
-            window,
-            cx,
-        );
+        // Controls are built only when their section draws them, in the
+        // order it draws them: a control registers its Tab stop as it is
+        // built, so Tab follows the visual order and never lands on a hidden
+        // section's control.
+        let fonts = || {
+            self.pref_choices(
+                "font",
+                INTERFACE_FONTS
+                    .iter()
+                    .copied()
+                    .map(|f| (f.to_string(), Cmd::Font(f.into()), s.interface_font == f)),
+                false,
+                window,
+                cx,
+            )
+        };
+        let groups = || {
+            self.pref_choices(
+                "group-mode",
+                [
+                    ("off", "Off"),
+                    ("time", "Time"),
+                    ("visual", "Visual"),
+                    ("burst", "Burst"),
+                ]
+                .map(|(k, l)| (l.to_string(), Cmd::Group(k.into()), s.grouping_mode == k)),
+                false,
+                window,
+                cx,
+            )
+        };
         // Every grouping mode splits on the time gap; only Visual and Burst
         // compare frames (`grouping::group_nodes`).
         let gap_applies = s.grouping_mode != "off";
         let similarity_applies = matches!(s.grouping_mode.as_str(), "visual" | "burst");
-        let gaps = self.pref_choices(
-            "gap",
-            [500u64, 1000, 2000, 5000].map(|g| {
-                (
-                    format!("{}s", g as f32 / 1000.),
-                    Cmd::Gap(g),
-                    s.burst_gap_ms == g,
-                )
-            }),
-            !gap_applies,
-            window,
-            cx,
-        );
-        let thresholds = self.pref_choices(
-            "threshold",
-            [(4, "Strict"), (8, "Balanced"), (14, "Loose")]
-                .map(|(n, l)| (l.to_string(), Cmd::Threshold(n), s.visual_threshold == n)),
-            !similarity_applies,
-            window,
-            cx,
-        );
-        let advance = self.pref_choices(
-            "pref-advance",
-            [
-                (
-                    "Off".to_string(),
-                    Cmd::SetAutoAdvance(false),
-                    !s.auto_advance,
-                ),
-                ("On".to_string(), Cmd::SetAutoAdvance(true), s.auto_advance),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let gaps = || {
+            self.pref_choices(
+                "gap",
+                [500u64, 1000, 2000, 5000].map(|g| {
+                    (
+                        format!("{}s", g as f32 / 1000.),
+                        Cmd::Gap(g),
+                        s.burst_gap_ms == g,
+                    )
+                }),
+                !gap_applies,
+                window,
+                cx,
+            )
+        };
+        let thresholds = || {
+            self.pref_choices(
+                "threshold",
+                [(4, "Strict"), (8, "Balanced"), (14, "Loose")]
+                    .map(|(n, l)| (l.to_string(), Cmd::Threshold(n), s.visual_threshold == n)),
+                !similarity_applies,
+                window,
+                cx,
+            )
+        };
+        let advance = || {
+            self.pref_choices(
+                "pref-advance",
+                [
+                    (
+                        "Off".to_string(),
+                        Cmd::SetAutoAdvance(false),
+                        !s.auto_advance,
+                    ),
+                    ("On".to_string(), Cmd::SetAutoAdvance(true), s.auto_advance),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let reduce_motion = s
             .extra
             .get("reduce_motion")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let motion = self.pref_choices(
-            "pref-motion",
-            [
-                ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
-                ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
-            ],
-            false,
-            window,
-            cx,
-        );
-        let (text_sizes, text_size_description) = self.text_size_choices(s);
-        let text_sizes = self.pref_choices("pref-text-size", text_sizes, false, window, cx);
+        let motion = || {
+            self.pref_choices(
+                "pref-motion",
+                [
+                    ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
+                    ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
+        let text_size_description = self.text_size_choices(s).1;
+        let text_sizes = || {
+            let options = self.text_size_choices(s).0;
+            self.pref_choices("pref-text-size", options, false, window, cx)
+        };
         let motion_description = if motion::system_reduces_motion() {
             "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
         } else {
             "Menus, dialogs and notices appear without fading. Also on when the system asks for reduced motion."
         };
-        let drives = self.pref_choices(
-            "pref-drives",
-            [
-                (
-                    "Manual".to_string(),
-                    Cmd::SetAutoDrives(false),
-                    !s.auto_discover_drives,
-                ),
-                (
-                    "Automatic".to_string(),
-                    Cmd::SetAutoDrives(true),
-                    s.auto_discover_drives,
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
-        let trash = self.pref_choices(
-            "trash-mode",
-            [
-                (
-                    "OS Trash".into(),
-                    Cmd::TrashMode("system".into()),
-                    s.trash_mode == "system",
-                ),
-                (
-                    "In-app".into(),
-                    Cmd::TrashMode("in_app".into()),
-                    s.trash_mode == "in_app",
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let drives = || {
+            self.pref_choices(
+                "pref-drives",
+                [
+                    (
+                        "Manual".to_string(),
+                        Cmd::SetAutoDrives(false),
+                        !s.auto_discover_drives,
+                    ),
+                    (
+                        "Automatic".to_string(),
+                        Cmd::SetAutoDrives(true),
+                        s.auto_discover_drives,
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
+        let trash = || {
+            self.pref_choices(
+                "trash-mode",
+                [
+                    (
+                        "OS Trash".into(),
+                        Cmd::TrashMode("system".into()),
+                        s.trash_mode == "system",
+                    ),
+                    (
+                        "In-app".into(),
+                        Cmd::TrashMode("in_app".into()),
+                        s.trash_mode == "in_app",
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let peaking = loupe_aids::peaking_style_of(s);
-        let peaking_colors = self.pref_choices(
-            "peaking-color",
-            shadowroom::peaking::PeakingColor::ALL.map(|color| {
-                (
-                    color.name().to_string(),
-                    Cmd::PeakingColor(color),
-                    peaking.color == color,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let peaking_levels = self.pref_choices(
-            "peaking-sensitivity",
-            shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
-                (
-                    level.name().to_string(),
-                    Cmd::PeakingSensitivity(level),
-                    peaking.sensitivity == level,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let memory = self.pref_choices(
-            "memory",
-            [0, 128, 256, 512, 1024, 2048].map(|mb| {
-                (
-                    if mb == 0 {
-                        "Auto".into()
-                    } else if mb >= 1024 {
-                        format!("{} GB", mb / 1024)
-                    } else {
-                        format!("{mb} MB")
-                    },
-                    Cmd::Memory(mb),
-                    s.memory_budget_mb == mb,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let disk = self.pref_choices(
-            "disk",
-            [2048, 8192, 32768].map(|mb| {
-                (
-                    format!("{} GB", mb / 1024),
-                    Cmd::Disk(mb),
-                    s.cache_budget_mb == mb,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let guide = self.pref_choices(
-            "guide-startup-pref",
-            [
-                (
-                    "Show".into(),
-                    Cmd::StartupGuide(true),
-                    s.show_getting_started,
-                ),
-                (
-                    "Hide".into(),
-                    Cmd::StartupGuide(false),
-                    !s.show_getting_started,
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let peaking_colors = || {
+            self.pref_choices(
+                "peaking-color",
+                shadowroom::peaking::PeakingColor::ALL.map(|color| {
+                    (
+                        color.name().to_string(),
+                        Cmd::PeakingColor(color),
+                        peaking.color == color,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let peaking_levels = || {
+            self.pref_choices(
+                "peaking-sensitivity",
+                shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
+                    (
+                        level.name().to_string(),
+                        Cmd::PeakingSensitivity(level),
+                        peaking.sensitivity == level,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let memory = || {
+            self.pref_choices(
+                "memory",
+                [0, 128, 256, 512, 1024, 2048].map(|mb| {
+                    (
+                        if mb == 0 {
+                            "Auto".into()
+                        } else if mb >= 1024 {
+                            format!("{} GB", mb / 1024)
+                        } else {
+                            format!("{mb} MB")
+                        },
+                        Cmd::Memory(mb),
+                        s.memory_budget_mb == mb,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let disk = || {
+            self.pref_choices(
+                "disk",
+                [2048, 8192, 32768].map(|mb| {
+                    (
+                        format!("{} GB", mb / 1024),
+                        Cmd::Disk(mb),
+                        s.cache_budget_mb == mb,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let guide = || {
+            self.pref_choices(
+                "guide-startup-pref",
+                [
+                    (
+                        "Show".into(),
+                        Cmd::StartupGuide(true),
+                        s.show_getting_started,
+                    ),
+                    (
+                        "Hide".into(),
+                        Cmd::StartupGuide(false),
+                        !s.show_getting_started,
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let mode = s
             .extra
             .get("theme_mode")
             .and_then(Value::as_str)
             .unwrap_or("manual");
-        let theme_mode = self.pref_choices(
-            "theme-mode",
-            [
-                ("manual", "Manual"),
-                ("system", "System"),
-                ("zed", "Follow Zed"),
-            ]
-            .map(|(k, l)| (l.to_string(), Cmd::ThemeMode(k.into()), mode == k)),
-            false,
-            window,
-            cx,
-        );
+        let theme_mode = || {
+            self.pref_choices(
+                "theme-mode",
+                [
+                    ("manual", "Manual"),
+                    ("system", "System"),
+                    ("zed", "Follow Zed"),
+                ]
+                .map(|(k, l)| (l.to_string(), Cmd::ThemeMode(k.into()), mode == k)),
+                false,
+                window,
+                cx,
+            )
+        };
         let hover = self.hover_bg();
         let light_theme = s
             .extra
@@ -11681,186 +11738,188 @@ impl Workspace {
             }
             _ => "Choose an installed theme or import a Zed JSON / JSONC file.".into(),
         };
-        let mut theme_list = div()
-            .id("theme-list")
-            .track_scroll(&self.theme_list_scroll)
-            .max_h(px(240.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(self.border());
-        let mut sorted_themes: Vec<_> = self.preference_themes().iter().enumerate().collect();
-        sorted_themes.sort_by_cached_key(|(_, theme)| {
-            (theme.appearance == "light", theme.name.to_lowercase())
-        });
-        let light_fallback = Theme::light();
-        let dark_fallback = Theme::dark();
-        let mut last_appearance = None;
-        let mut child = 0;
-        let theme_count = sorted_themes.len();
-        let selected_position = sorted_themes
-            .iter()
-            .position(|(_, theme)| {
+        let theme_list = || {
+            let mut theme_list = div()
+                .id("theme-list")
+                .track_scroll(&self.theme_list_scroll)
+                .max_h(px(240.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(self.border());
+            let mut sorted_themes: Vec<_> = self.preference_themes().iter().enumerate().collect();
+            sorted_themes.sort_by_cached_key(|(_, theme)| {
+                (theme.appearance == "light", theme.name.to_lowercase())
+            });
+            let light_fallback = Theme::light();
+            let dark_fallback = Theme::dark();
+            let mut last_appearance = None;
+            let mut child = 0;
+            let theme_count = sorted_themes.len();
+            let selected_position = sorted_themes
+                .iter()
+                .position(|(_, theme)| {
+                    let light = theme.appearance == "light";
+                    if mode == "system" {
+                        theme.name == if light { light_theme } else { dark_theme }
+                    } else {
+                        theme.name == s.theme
+                    }
+                })
+                .unwrap_or(0);
+            for (position, (i, theme)) in sorted_themes.into_iter().enumerate() {
                 let light = theme.appearance == "light";
-                if mode == "system" {
+                if last_appearance != Some(light) {
+                    theme_list = theme_list.child(
+                        div()
+                            .flex_shrink_0()
+                            .px(px(space::MD))
+                            .pt(px(space::SM))
+                            .pb(px(space::XS))
+                            .text_size(ui::font(ui::text::LABEL))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.muted())
+                            .child(if light { "LIGHT" } else { "DARK" }),
+                    );
+                    last_appearance = Some(light);
+                    child += 1;
+                }
+                let active = theme.name == s.theme;
+                let selected = if mode == "system" {
                     theme.name == if light { light_theme } else { dark_theme }
                 } else {
-                    theme.name == s.theme
-                }
-            })
-            .unwrap_or(0);
-        for (position, (i, theme)) in sorted_themes.into_iter().enumerate() {
-            let light = theme.appearance == "light";
-            if last_appearance != Some(light) {
-                theme_list = theme_list.child(
-                    div()
-                        .flex_shrink_0()
-                        .px(px(space::MD))
-                        .pt(px(space::SM))
-                        .pb(px(space::XS))
-                        .text_size(ui::font(ui::text::LABEL))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.muted())
-                        .child(if light { "LIGHT" } else { "DARK" }),
-                );
-                last_appearance = Some(light);
-                child += 1;
-            }
-            let active = theme.name == s.theme;
-            let selected = if mode == "system" {
-                theme.name == if light { light_theme } else { dark_theme }
-            } else {
-                active
-            };
-            let name = theme.name.clone();
-            let palette = shadowroom::theme::PreparedColors::new(
-                theme,
-                if light {
-                    &light_fallback
-                } else {
-                    &dark_fallback
-                },
-                [
-                    ("editor.background", "#0f0f0f"),
-                    ("text.accent", "#5b9bd5"),
-                    ("text", "#e6e6e6"),
-                ],
-            );
-            let mut swatches = div().flex().flex_shrink_0().gap(px(space::XS));
-            for role in 0..3 {
-                let color = palette.get(role);
-                let color = rgba(
-                    (u32::from(color.r) << 24)
-                        | (u32::from(color.g) << 16)
-                        | (u32::from(color.b) << 8)
-                        | u32::from(color.a),
-                );
-                swatches = swatches.child(
-                    div()
-                        .size(px(10.))
-                        .bg(color)
-                        .border_1()
-                        .border_color(self.c("border.variant", "#333333")),
-                );
-            }
-            let choose = if mode == "system" {
-                Cmd::SystemTheme(name.clone())
-            } else {
-                Cmd::Theme(name.clone())
-            };
-            let row = div()
-                .id(("theme", i))
-                .h(px(ui::ROW_HEIGHT))
-                .flex_shrink_0()
-                .px(px(space::MD))
-                .flex()
-                .items_center()
-                .gap(px(space::MD))
-                .cursor_pointer()
-                .when(selected, |s| s.bg(self.selected_bg()))
-                .when(!selected, |s| s.hover(move |s| s.bg(hover)))
-                .child(swatches)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_normal()
-                        .line_clamp(1)
-                        .child(theme.name.clone()),
-                )
-                .child(
-                    div()
-                        .w(px(16.))
-                        .flex_shrink_0()
-                        .when(selected, |s| s.child(icon("check", self.accent()))),
-                )
-                .tooltip(self.tip(
-                    &if theme.author.is_empty() {
-                        theme.name.clone()
+                    active
+                };
+                let name = theme.name.clone();
+                let palette = shadowroom::theme::PreparedColors::new(
+                    theme,
+                    if light {
+                        &light_fallback
                     } else {
-                        format!("{} · {}", theme.name, theme.author)
+                        &dark_fallback
                     },
-                    "",
-                ))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let system = this
-                        .preference_settings()
-                        .extra
-                        .get("theme_mode")
-                        .and_then(Value::as_str)
-                        == Some("system");
-                    this.execute(
-                        if system {
-                            Cmd::SystemTheme(name.clone())
+                    [
+                        ("editor.background", "#0f0f0f"),
+                        ("text.accent", "#5b9bd5"),
+                        ("text", "#e6e6e6"),
+                    ],
+                );
+                let mut swatches = div().flex().flex_shrink_0().gap(px(space::XS));
+                for role in 0..3 {
+                    let color = palette.get(role);
+                    let color = rgba(
+                        (u32::from(color.r) << 24)
+                            | (u32::from(color.g) << 16)
+                            | (u32::from(color.b) << 8)
+                            | u32::from(color.a),
+                    );
+                    swatches = swatches.child(
+                        div()
+                            .size(px(10.))
+                            .bg(color)
+                            .border_1()
+                            .border_color(self.c("border.variant", "#333333")),
+                    );
+                }
+                let choose = if mode == "system" {
+                    Cmd::SystemTheme(name.clone())
+                } else {
+                    Cmd::Theme(name.clone())
+                };
+                let row = div()
+                    .id(("theme", i))
+                    .h(px(ui::ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .px(px(space::MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::MD))
+                    .cursor_pointer()
+                    .when(selected, |s| s.bg(self.selected_bg()))
+                    .when(!selected, |s| s.hover(move |s| s.bg(hover)))
+                    .child(swatches)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .child(theme.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .flex_shrink_0()
+                            .when(selected, |s| s.child(icon("check", self.accent()))),
+                    )
+                    .tooltip(self.tip(
+                        &if theme.author.is_empty() {
+                            theme.name.clone()
                         } else {
-                            Cmd::Theme(name.clone())
+                            format!("{} · {}", theme.name, theme.author)
                         },
+                        "",
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let system = this
+                            .preference_settings()
+                            .extra
+                            .get("theme_mode")
+                            .and_then(Value::as_str)
+                            == Some("system");
+                        this.execute(
+                            if system {
+                                Cmd::SystemTheme(name.clone())
+                            } else {
+                                Cmd::Theme(name.clone())
+                            },
+                            window,
+                            cx,
+                        )
+                    }));
+                theme_list = theme_list.child(
+                    self.focusable(
+                        row,
+                        &format!("theme-{position}"),
+                        2,
+                        position == selected_position,
+                        FocusTarget::option(choose, "theme".into(), position, theme_count)
+                            .reveal(&self.theme_list_scroll, child),
                         window,
                         cx,
-                    )
-                }));
-            theme_list = theme_list.child(
-                self.focusable(
-                    row,
-                    &format!("theme-{position}"),
-                    2,
-                    position == selected_position,
-                    FocusTarget::option(choose, "theme".into(), position, theme_count)
-                        .reveal(&self.theme_list_scroll, child),
-                    window,
-                    cx,
-                ),
-            );
-            child += 1;
-        }
+                    ),
+                );
+                child += 1;
+            }
+            theme_list
+        };
         let stats = self.media.stats();
         let section = self.preferences_section;
         let body = div()
             .id("preferences-body")
-            .flex_1()
-            .min_h(px(0.))
+            .track_scroll(&self.prefs_scroll)
+            .size_full()
             .overflow_y_scroll()
             .px(px(ui::DIALOG_INSET))
             .pt(px(space::SM))
             .pb(px(ui::DIALOG_INSET))
             .when(section == PreferencesSection::Import, |body| body.child(self.ingest_preferences(window, cx)))
             .when(section == PreferencesSection::Culling, |body| body
-            .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
-            .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash))
-            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors))
-            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels))
-            .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
-            .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps))
-            .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds))
-            .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
+            .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance()))
+            .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash()))
+            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors()))
+            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels()))
+            .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups()))
+            .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps()))
+            .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds()))
+            .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives())))
+            // The theme list leads, so it stays in view at large text sizes
+            // and in small windows; type and motion follow (R4-overlays-03).
             .when(section == PreferencesSection::Appearance, |body| body
-            .child(self.preference_row("Font", "Interface typeface", fonts))
-            .child(self.preference_row("Text size", &text_size_description, text_sizes))
-            .child(self.preference_row("Reduce motion", motion_description, motion))
-            .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
+            .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode()))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
             .child(div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(source_description))
             .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(note)))
@@ -11881,15 +11940,19 @@ impl Workspace {
                         cx,
                     )),
             )
-            .child(theme_list)
+            .child(theme_list())
             .child(div().pt(px(space::SM)).text_size(ui::font(11.)).text_color(self.muted()).child(match mode {
                 "system" => "Choose a light or dark theme to update its system appearance slot.",
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
-            })))
+            }))
+            .child(div().pt(px(space::SM)))
+            .child(self.preference_row("Font", "Interface typeface", fonts()))
+            .child(self.preference_row("Text size", &text_size_description, text_sizes()))
+            .child(self.preference_row("Reduce motion", motion_description, motion())))
             .when(section == PreferencesSection::Performance, |body| body
-            .child(self.preference_row("Preview memory", "Auto adapts to this computer; shared by decoded images and display copies", memory))
-            .child(self.preference_row("Disk cache", "Reuses thumbnails and previews across launches; originals stay read-only", disk))
+            .child(self.preference_row("Preview memory", "Auto adapts to this computer; shared by decoded images and display copies", memory()))
+            .child(self.preference_row("Disk cache", "Reuses thumbnails and previews across launches; originals stay read-only", disk()))
             .child(div().pt(px(space::SM)).text_color(self.muted()).child("The next and previous frames are read ahead for comparison, including while zoomed. Inspection prefers a paired JPEG or embedded camera preview."))
             .child(
                 div()
@@ -11908,7 +11971,7 @@ impl Workspace {
                     )),
             ))
             .when(section == PreferencesSection::Help, |body| body
-                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide))
+                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide()))
                 .child(self.preference_row(
                     "Getting Started",
                     "Open the guide now; F1 opens it from anywhere",
@@ -12154,7 +12217,12 @@ impl Workspace {
                     .h_full()
                     .child(self.modal_header(settings_noun(), None, cx).child(close))
                     .child(sections)
-                    .child(body)
+                    .child(div().flex_1().min_h(px(0.)).child(self.scrollable(
+                        "prefs-scrollbar",
+                        &self.prefs_scroll,
+                        body.into_any_element(),
+                        cx,
+                    )))
                     .child(
                         self.modal_footer()
                             .text_size(ui::font(11.))
@@ -13379,6 +13447,18 @@ mod ui_tests {
                 expected.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// A Preferences control registers its Tab stop when it is built, so
+    /// every one is built inside the section that draws it: Tab then follows
+    /// the visual order and never reaches a hidden section.
+    #[test]
+    fn preferences_controls_are_built_where_they_are_drawn() {
+        let source = include_str!("desktop.rs");
+        let view = &source[source.find("fn preferences_view(").expect("view")..];
+        let view = &view[..view.find("\n    }\n").expect("end of view")];
+        assert!(!view.contains(concat!("= self.", "pref_choices(")));
+        assert!(view.contains("let theme_list = || {"));
     }
 
     /// Beside photo results the palette keeps title matches only, at most
