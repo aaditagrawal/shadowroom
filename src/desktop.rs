@@ -11,6 +11,7 @@ mod ingest_ui;
 mod layout;
 mod ledger;
 mod motion;
+mod panes;
 mod platform_prefs;
 mod preferences;
 mod prefetch;
@@ -1130,6 +1131,12 @@ pub struct Workspace {
     guide_scroll: ScrollHandle,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
+    /// The pane F6 moved keyboard focus to (`panes.rs`).
+    pane: panes::Pane,
+    /// F6 was used and the pointer has not taken over since: ring the pane.
+    pane_ring: bool,
+    /// Keyboard cursor over `library_targets()` while the library has focus.
+    library_cursor: usize,
     deletion: deletion_ui::State,
     folder_picker: Option<folder_picker::State>,
     getting_started: bool,
@@ -1606,6 +1613,9 @@ impl Workspace {
             theme_list_scroll: ScrollHandle::new(),
             guide_scroll: ScrollHandle::new(),
             focus_visible: false,
+            pane: panes::Pane::default(),
+            pane_ring: false,
+            library_cursor: 0,
             deletion: deletion_ui::State::default(),
             folder_picker: None,
             getting_started,
@@ -5047,6 +5057,10 @@ impl Workspace {
             {
                 self.import_ui.active_field = None;
                 cx.notify();
+            } else if self.top_overlay().is_none() && self.focused_pane() != panes::Pane::Canvas {
+                // From the library or inspector, Escape returns to the photos.
+                self.pane = panes::Pane::Canvas;
+                cx.notify();
             } else {
                 self.execute(Cmd::Close, window, cx);
             }
@@ -5076,6 +5090,24 @@ impl Workspace {
             // Quit, F1, the palette and Esc were routed above.
             self.preferences_key(event, window, cx);
             return;
+        }
+        if !self.palette && self.add_host.is_none() {
+            // F6 / Shift+F6 move focus between library, photos and inspector
+            // (`panes.rs`); Shift+F10 or the Menu key opens the image menu
+            // for the current photo, as a right-click does.
+            if key == "f6" && !primary && !modifiers.alt {
+                self.cycle_pane(modifiers.shift, cx);
+                return;
+            }
+            if (key == "f10" && modifiers.shift && !primary && !modifiers.alt) || key == "menu" {
+                if !self.import_ui.open {
+                    self.open_image_context_from_keyboard(cx);
+                }
+                return;
+            }
+            if self.pane_key(event, window, cx) {
+                return;
+            }
         }
         if !self.palette && self.add_host.is_none() && self.ingest_key(event, cx) {
             return;
@@ -6469,6 +6501,8 @@ impl Workspace {
         let hover = self.hover_bg();
         // While Import replaces the centre, only its source drive is current.
         let importing = self.import_ui.open;
+        // F6 keyboard cursor (`panes.rs`).
+        let cursor = self.library_cursor_id();
         let row = |id: ElementId,
                    glyph: &'static str,
                    label: String,
@@ -6477,7 +6511,9 @@ impl Workspace {
             let active = active && (!importing || glyph == "drive");
             // One zero rule: no "0" except on the collection being viewed.
             let count = count.filter(|n| *n > 0 || active);
+            let focused = cursor.as_ref() == Some(&id);
             div()
+                .when(focused, |s| s.relative().child(self.library_cursor_ring()))
                 .id(id)
                 .h(px(ui::ROW_HEIGHT))
                 .pl(px(ui::PANEL_INSET - 2.))
@@ -6679,8 +6715,10 @@ impl Workspace {
                 continue;
             }
             let active = self.label_filter == Some(label);
+            let focused = cursor.as_ref() == Some(&ElementId::from(("smart-label", n)));
             body = body.child(
                 div()
+                    .when(focused, |s| s.relative().child(self.library_cursor_ring()))
                     .id(("smart-label", n))
                     .h(px(ui::ROW_HEIGHT))
                     .pl(px(ui::PANEL_INSET - 2.))
@@ -6759,14 +6797,7 @@ impl Workspace {
                 row(("folder", n).into(), "folder", name, Some(*count), active)
                     .tooltip(self.tip(path, ""))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scope = Some(scope.clone());
-                        this.duplicates_only = false;
-                        this.label_filter = None;
-                        this.bursts_only = false;
-                        this.filter = Filter::All;
-                        this.settings.filter = "all".into();
-                        this.save_settings();
-                        this.rebuild(None);
+                        this.show_folder(scope.clone());
                         cx.notify();
                     })),
             );
@@ -10052,6 +10083,8 @@ impl Workspace {
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
         state["label_filter"] = json!(self.label_filter.map(ColorLabel::as_str));
         state["image_context"] = self.image_context_state();
+        state["pane"] = json!({"focused":self.focused_pane().as_str(),"ring":self.pane_ring,
+            "library_cursor":self.library_cursor_id().map(|id| id.to_string())});
         state["catalog_hover"] = json!(self.catalog_hover);
         state["fit_zoom_percent"] = json!(self.fit_scales.get()[1] * 100.);
         state["review_subset"] = if self.review_folder == self.scope {
@@ -12318,6 +12351,7 @@ impl Workspace {
         if self.docks.inspector > 0. {
             body = body.child(self.dock_resize_grip(DockSide::Inspector, window, cx));
         }
+        body = body.children(self.pane_ring_view());
         let mut root = div()
             .id("shadowroom")
             .track_focus(&self.focus)
@@ -12358,7 +12392,8 @@ impl Workspace {
                     this.trace
                         .input("mouse_down", &format!("{:?}", event.button));
                 }
-                if std::mem::take(&mut this.focus_visible) {
+                // `|` so both run: the F6 pane hands focus back to the photos.
+                if std::mem::take(&mut this.focus_visible) | this.release_pane_focus() {
                     cx.notify();
                 }
             }))
@@ -13213,6 +13248,7 @@ mod ui_tests {
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
             ("motion.rs", include_str!("desktop/motion.rs")),
+            ("panes.rs", include_str!("desktop/panes.rs")),
             (
                 "platform_prefs.rs",
                 include_str!("desktop/platform_prefs.rs"),
@@ -13352,6 +13388,45 @@ mod ui_tests {
             .find("self.getting_started_key(event, window, cx)")
             .expect("guide keyboard routing");
         assert!(quit < guide, "guide keys route after quit");
+        // F6 pane focus, Shift+F10 / Menu (the keyboard image menu) and the
+        // open image menu's own keys route after the chord, and neither the
+        // menu nor a focused pane claims Q: Ctrl+Q quits with the image menu
+        // open and with the library or inspector focused.
+        for routed in [
+            "self.image_context_key(event, window, cx)",
+            "self.cycle_pane(modifiers.shift, cx)",
+            "self.open_image_context_from_keyboard(cx)",
+            "self.pane_key(event, window, cx)",
+        ] {
+            let at = body
+                .find(routed)
+                .unwrap_or_else(|| panic!("{routed} routing"));
+            assert!(quit < at, "{routed} routes after quit");
+        }
+        for (file, handler) in [
+            ("review_actions.rs", "fn image_context_key("),
+            ("panes.rs", "fn pane_key("),
+        ] {
+            let source = sources.iter().find(|(name, _)| *name == file).unwrap().1;
+            let start = source.find(handler).expect(handler);
+            let end = start + source[start..].find("\n    }\n").unwrap();
+            let handler_body = &source[start..end];
+            assert!(
+                !handler_body.contains("\"q\""),
+                "{handler} must not claim the quit key"
+            );
+        }
+        // Menu accelerators exclude chords: ImageAction::for_key never sees
+        // Ctrl/Cmd, so Ctrl+Q cannot run a menu action.
+        let menu = sources
+            .iter()
+            .find(|(name, _)| *name == "review_actions.rs")
+            .unwrap()
+            .1;
+        let accelerators = &menu[menu.find("fn for_key(").expect("for_key")..];
+        let accelerators = &accelerators[..accelerators.find("\n    }\n").unwrap()];
+        assert!(!accelerators.contains("\"q\""));
+        assert!(menu.contains("key if plain =>"));
     }
 
     #[test]
