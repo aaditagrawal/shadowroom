@@ -266,6 +266,8 @@ enum Cmd {
     ConfirmDelete,
     CancelDelete,
     TrashMode(String),
+    /// Show the operating system's Trash in the file manager.
+    OpenSystemTrash,
     ScanDuplicates,
     CancelDuplicates,
     ShowDuplicates,
@@ -4151,6 +4153,17 @@ impl Workspace {
                 }
             }
             Cmd::RevealPath(path) => cx.reveal_path(&path),
+            Cmd::OpenSystemTrash => {
+                if cfg!(target_os = "macos") {
+                    if let Some(home) = std::env::var_os("HOME") {
+                        cx.open_with_system(&PathBuf::from(home).join(".Trash"));
+                    }
+                } else {
+                    // GIO's trash: location, which xdg-open hands to the
+                    // desktop's file manager.
+                    cx.open_with_system(Path::new("trash:///"));
+                }
+            }
             Cmd::AllSelect => {
                 self.multi = self.filtered.iter().map(|&i| self.photos[i].id).collect();
             }
@@ -4377,6 +4390,13 @@ impl Workspace {
                 "",
                 "trash",
                 Cmd::Filter(Filter::Trash),
+            ),
+            item(
+                "Open System Trash",
+                "Library · where deleted files go",
+                "",
+                "trash",
+                Cmd::OpenSystemTrash,
             ),
             item(
                 copy::SCAN_DUPLICATES,
@@ -4816,6 +4836,7 @@ impl Workspace {
             Cmd::RetryPreview => preview_failed,
             Cmd::CancelDuplicates => scanning,
             Cmd::RetrySaves => save_failed,
+            Cmd::OpenSystemTrash => self.settings.trash_mode == "system",
             Cmd::Trash(restore) => *restore != in_trash,
             Cmd::Filter(Filter::Trash) => !in_trash,
             Cmd::NextGroup | Cmd::PreviousGroup | Cmd::ResolveBurst => grouped,
