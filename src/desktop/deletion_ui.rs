@@ -602,14 +602,17 @@ impl Workspace {
                 .child(body)
                 .child(
                     self.modal_footer()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_size(ui::font(11.))
-                                .text_color(self.muted())
-                                .child("Cancel is the default. Tab switches; Enter activates."),
-                        )
+                        // Cancel is the default; Enter names the ringed button,
+                        // and Esc is listed once it no longer repeats Enter.
+                        .child(self.key_hints(&if confirm_focused {
+                            vec![
+                                ("Tab", "Switch"),
+                                ("Enter", if c.permanent { "Delete" } else { "Move" }),
+                                ("Esc", "Cancel"),
+                            ]
+                        } else {
+                            vec![("Tab", "Switch"), ("Enter", "Cancel")]
+                        }))
                         .child(
                             div()
                                 .flex()

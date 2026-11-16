@@ -26,29 +26,34 @@ fn guide_sections() -> Vec<(&'static str, String)> {
     let (primary, alt, settings) = (primary(), alt(), settings_noun());
     vec![
         (
-            "1. Add or open photos",
+            "1. Open or import photos",
             format!(
-                "Add Photos ({}) opens Import for a card or folder. Copy and verify the photos into your library and optional backups, or cull them in place first and import only what you keep. Originals keep their bytes and metadata; the folder list switches between shoots.",
-                shortcut("⌘O")
+                "{open} ({}) culls photos where they are; nothing is copied. {import} ({}) copies and verifies a card or folder into your library and optional backups; Import Picks from This Card lets you cull first and copy only what you keep. Originals keep their bytes and metadata; the folder list switches between shoots.",
+                shortcut("⌘O"),
+                shortcut("⌘⇧I"),
+                open = copy::OPEN_FOLDER,
+                import = copy::IMPORT_FROM_CARD,
             ),
         ),
         (
             "2. Work on one set at a time",
             format!(
-                "In Catalog, Enter or L opens Review at the outlined photo; double-click opens the full folder at the photo under the pointer. Select multiple photos first to review only that set. {primary}-click adds frames; Shift-click / Shift+Arrow selects a range. G returns to Catalog; Show full folder leaves a subset."
+                "In Catalog, Enter or L opens Review at the outlined photo; double-click opens the full folder at the photo under the pointer. Select multiple photos first to review only that set. {primary}-click adds frames; Shift-click / Shift+Arrow selects a range. G returns to Catalog; {} leaves a subset.",
+                copy::SHOW_FULL_FOLDER
             ),
         ),
         (
             "3. Cull, then rate your keepers",
             format!(
-                "Use P to pick, X to reject and U to clear the flag. Keys 0–5 set stars; repeating a rating or flag keeps that decision. R resets stars and pick/reject together, keeps the color label and never auto-advances. Use Unreviewed for a first pass, then Picks for keeper ratings. The bottom bar shows your position (2 / 7) and the auto-advance toggle; Shift+A toggles it. {} undoes a decision, including a reset. A decision on 1,000 or more selected photos waits for Enter.",
-                shortcut("⌘Z")
+                "Use P to pick, X to reject and U to clear the flag. Keys 0–5 set stars; repeating a rating or flag keeps that decision. R ({reset}) clears stars and pick/reject together, keeps the color label and never auto-advances. Use Unreviewed for a first pass, then Picks for keeper ratings. The bottom bar shows your position (2 / 7) and the auto-advance toggle; Shift+A toggles it. {} undoes a decision, including a reset. A decision on 1,000 or more selected photos waits for Enter.",
+                shortcut("⌘Z"),
+                reset = copy::RESET_DECISION,
             ),
         ),
         (
             "4. Inspect fine detail",
             format!(
-                "Left/Right switches frames and preserves zoom and pan. Click the photo, or press Z or Space with the pointer on it, to see 100% right there; click again or press Esc for Fit. - and = change magnification, and {primary}+scroll zooms around the pointer. Drag, scroll, {alt}+arrows or the navigator inset move the view; Home re-centres it. B pins a reference and C compares: in Compare, B keeps the better frame as the reference and brings in the next one, Shift+B swaps the panes, Tab changes the active pane and Shift+C links or unlinks their pans. F toggles focus peaking (red by default; color and sensitivity in Preferences → Culling), a detail aid rather than a focus guarantee, and J shows clipped highlights in red and shadows in blue. {alt}+1, +2 and +4 jump to 100%, 200% and 400%; {alt}+0 returns to Fit."
+                "Left/Right switches frames and preserves zoom and pan. Click the photo, or press Z or Space with the pointer on it, to see 100% right there; click again or press Esc for Fit. - and = change magnification, and {primary}+scroll zooms around the pointer. Drag, scroll, {alt}+arrows or the navigator inset move the view; Home re-centres it. B pins a reference and C compares: in Compare, B keeps the better frame as the reference and brings in the next one, Shift+B swaps the panes, Tab changes the active pane and Shift+C links or unlinks their pans. F toggles focus peaking (red by default; color and sensitivity in {settings} → Culling), a detail aid rather than a focus guarantee, and J shows clipped highlights in red and shadows in blue. {alt}+1, +2 and +4 jump to 100%, 200% and 400%; {alt}+0 returns to Fit."
             ),
         ),
         (
@@ -65,7 +70,14 @@ fn guide_sections() -> Vec<(&'static str, String)> {
         ),
         (
             "Image actions",
-            "Right-click an image for Show in folder, Show in review, Survey, Compare, Pick, Reject, Reset and deletion actions. Right-click a selected Catalog photo to keep the batch, or another photo to target it instead. Up/Down and Enter choose an action; Escape closes the menu.".into(),
+            format!(
+                "Right-click an image, or press Shift+F10 or the Menu key, for {} (outside Review), Survey, Compare, Pick, Reject, Rating, Label, {}, {}, then {} and {} at the bottom. Right-click a selected Catalog photo to keep the batch, or another photo to target it instead. Up/Down and Enter choose an action; Escape closes the menu.",
+                copy::OPEN_IN_REVIEW,
+                copy::RESET_DECISION,
+                reveal_label(),
+                copy::MOVE_TO_TRASH,
+                copy::DELETE_PERMANENTLY,
+            ),
         ),
         (
             "Delete deliberately",
@@ -108,7 +120,7 @@ impl Workspace {
             "enter" => {
                 self.execute(Cmd::Close, window, cx);
                 if self.photos.is_empty() {
-                    self.execute(Cmd::OpenFolder, window, cx);
+                    self.execute(Cmd::Import, window, cx);
                 }
                 return;
             }
@@ -205,18 +217,42 @@ impl Workspace {
                                 cx,
                             ))
                             .child(if self.photos.is_empty() {
-                                // An empty library's next step is adding photos.
-                                self.dialog_button(
-                                    "guide-done",
-                                    "Open Folder…",
-                                    ButtonKind::Primary,
-                                    false,
-                                )
-                                .tooltip(self.tip("Open Folder… · cull in place", "Enter"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.execute(Cmd::Close, window, cx);
-                                    this.execute(Cmd::OpenFolder, window, cx);
-                                }))
+                                // An empty library's next step is adding photos:
+                                // the empty state's two verbs, in its order and
+                                // weight, so both answer "how do I start" alike.
+                                div()
+                                    .flex()
+                                    .gap(px(space::SM))
+                                    .child(
+                                        self.dialog_button(
+                                            "guide-open-folder",
+                                            copy::OPEN_FOLDER,
+                                            ButtonKind::Secondary,
+                                            false,
+                                        )
+                                        .tooltip(self.tip(
+                                            "Cull where the files are; nothing is copied",
+                                            "⌘O",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.execute(Cmd::Close, window, cx);
+                                            this.execute(Cmd::OpenFolder, window, cx);
+                                        })),
+                                    )
+                                    .child(
+                                        self.dialog_button(
+                                            "guide-done",
+                                            copy::IMPORT_FROM_CARD,
+                                            ButtonKind::Primary,
+                                            false,
+                                        )
+                                        .tooltip(self.tip("Copy and verify into your library", "Enter"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.execute(Cmd::Close, window, cx);
+                                            this.execute(Cmd::Import, window, cx);
+                                        })),
+                                    )
+                                    .into_any_element()
                             } else {
                                 self.action_button(
                                     "guide-done",
@@ -227,6 +263,7 @@ impl Workspace {
                                     cx,
                                 )
                                 .tooltip(self.tip("Start culling", "Enter"))
+                                .into_any_element()
                             }),
                     ),
             )
@@ -236,7 +273,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::guide_sections;
+    use super::{Workspace, copy, guide_sections, reveal_label, shortcut};
 
     #[test]
     fn guide_copy_matches_current_behaviour() {
@@ -250,11 +287,80 @@ mod tests {
         // Enter follows the outline, not the pointer (R2-catalog-08).
         assert!(!text.contains("hovered or active"));
         assert!(!text.contains(" ;"));
+        assert!(
+            !text.contains("…."),
+            "an ellipsis label must not end a sentence"
+        );
         // One platform's key names, never "Ctrl/Cmd" (OV-17).
         assert!(!text.contains("Ctrl/Cmd"));
         assert!(!text.contains("Alt/Option"));
         if cfg!(target_os = "macos") {
             assert!(!text.contains("Preferences"));
+        }
+        // The two entry verbs, each with its own shortcut (R4-overlays-01).
+        assert!(text.contains(&format!("{} ({})", copy::OPEN_FOLDER, shortcut("⌘O"))));
+        assert!(text.contains(&format!("{} ({})", copy::IMPORT_FROM_CARD, shortcut("⌘⇧I"))));
+        for stale in [
+            "Add Photos",
+            "Show in folder",
+            "Show in review",
+            "Reset Stars",
+        ] {
+            assert!(!text.contains(stale), "the guide still says {stale:?}");
+        }
+    }
+
+    /// Every control the guide names exists under that exact name in the
+    /// image menu or the command palette (R4-overlays-01, R4-catalog-01).
+    #[test]
+    fn guide_names_only_labels_that_exist() {
+        let text: String = guide_sections()
+            .into_iter()
+            .map(|(title, body)| format!("{title} {body} "))
+            .collect();
+        let mut labels: Vec<String> = super::super::review_actions::image_action_labels()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        labels.extend(
+            Workspace::command_items()
+                .into_iter()
+                .map(|item| item.title),
+        );
+        let known = |label: &str| labels.iter().any(|l| l == label);
+        for quoted in [
+            copy::OPEN_FOLDER,
+            copy::IMPORT_FROM_CARD,
+            "Import Picks from This Card",
+            copy::SHOW_FULL_FOLDER,
+            copy::RESET_DECISION,
+            copy::OPEN_IN_REVIEW,
+            copy::MOVE_TO_TRASH,
+            copy::DELETE_PERMANENTLY,
+            reveal_label(),
+            "Survey",
+            "Compare",
+            "Rating",
+            "Label",
+        ] {
+            assert!(
+                text.contains(quoted),
+                "the guide no longer names {quoted:?}"
+            );
+            assert!(
+                known(quoted),
+                "the guide names {quoted:?}, which no menu or command has"
+            );
+        }
+        // Any "Title Case…" command in the guide is a real one: the last one
+        // to four words before each ellipsis must form a known label.
+        for (n, _) in text.match_indices('…') {
+            let words: Vec<&str> = text[..n].split_whitespace().rev().take(4).collect();
+            let found = (1..=words.len()).any(|count| {
+                let phrase: Vec<&str> = words[..count].iter().rev().copied().collect();
+                known(&format!("{}…", phrase.join(" ")))
+            });
+            assert!(found, "unknown command before an ellipsis: {:?}", words);
         }
     }
 }

@@ -23,8 +23,8 @@ pub(super) mod space {
 /// Five-step mono type scale. Roles, not sizes: hierarchy also comes from
 /// weight (MEDIUM never reflows in Geist Mono) and colour.
 /// MICRO is for glyph-like text only (thumbnail badges, keycaps, axis ticks);
-/// readable copy never goes below LABEL. Nothing is drawn below 11 px at
-/// 100%; every size passes through [`font`], so the Text size preference
+/// readable copy never goes below LABEL. Nothing is drawn below 11 px, even
+/// at 90%; every size passes through [`font`], so the Text size preference
 /// scales the whole scale.
 pub(super) mod text {
     /// Thumbnail badges, keycaps, histogram axis ticks.
@@ -61,9 +61,19 @@ pub(super) fn set_text_scale(factor: f32) -> bool {
     TEXT_SCALE.swap(factor.to_bits(), Ordering::Relaxed) != factor.to_bits()
 }
 
-/// A type-scale size (or any font size) at the current text size.
+/// A type-scale size (or any font size) at the current text size. Sizes of
+/// 11 px and up never scale below the 11 px floor (90% Text size).
 pub(super) fn font(size: f32) -> gpui::Pixels {
-    gpui::px(size * text_scale())
+    gpui::px(scaled_font(size, text_scale()))
+}
+
+fn scaled_font(size: f32, factor: f32) -> f32 {
+    let scaled = size * factor;
+    if size >= text::LABEL {
+        scaled.max(text::LABEL)
+    } else {
+        scaled
+    }
 }
 
 /// A text-bearing length (line box, field or section height) at the current
@@ -171,6 +181,20 @@ pub(super) fn fit_docks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_size_never_drops_readable_roles_below_eleven_px() {
+        for role in [text::MICRO, text::LABEL, text::BODY, text::TITLE] {
+            assert!(scaled_font(role, 0.9) >= 11.);
+        }
+        assert_eq!(scaled_font(text::DISPLAY, 0.9), 16. * 0.9);
+        assert_eq!(scaled_font(text::BODY, 1.5), 18.);
+        assert_eq!(
+            scaled_font(8., 0.9),
+            8. * 0.9,
+            "glyph sizes below the floor scale freely"
+        );
+    }
 
     #[test]
     fn dock_width_matrix_keeps_photo_space_and_restores_preferences() {

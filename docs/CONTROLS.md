@@ -96,14 +96,14 @@ photo under the pointer. With two or more selected photos, **Enter/L** freezes t
 selection for Review navigation. Compare also constrains a multiple selection.
 Decisions in Review/Compare affect the current frame. Double-click and the
 **Open in Review** menu action always open the full current collection.
-**Show full folder** leaves a subset. Returning to Catalog restores its selection.
+**Show Full Folder** leaves a subset. Returning to Catalog restores its selection.
 
 Right-click a Catalog photo, Review image, or filmstrip thumbnail (or press
 Shift+F10 or the Menu key for the current photo) for the image menu. Its groups,
-separated by rules, are **Open in Review**, **Survey** (**Survey Burst** when the
+separated by rules, are **Open in Review** (outside Review), **Survey** (**Survey Burst** when the
 photo is in a burst) and **Compare**; **Pick** and **Reject** (checked when the
 photo, or every selected photo, has that flag), **Rating** and **Label** chips
-(the current value outlined) and **Reset Stars and Flag**; **Show in Files**
+(the current value outlined) and **Reset Rating and Flag**; **Show in Files**
 (**Reveal in Finder** on macOS); and **Move to Trash…** and, in the error colour,
 **Delete Permanently…**. Each row shows its key on the right. Right-clicking a
 selected Catalog photo keeps that batch; right-clicking a different photo makes

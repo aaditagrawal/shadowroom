@@ -7,8 +7,8 @@ const MENU_ROW: f32 = 28.;
 const MENU_PADDING: f32 = 5.;
 /// A hairline rule with 4 px above and below.
 const MENU_SEPARATOR: f32 = 2. * space::XS + 1.;
-/// Rating and label chips inside their menu rows.
-const MENU_CHIP: f32 = 20.;
+/// Rating and label chips inside their menu rows: 24 px targets (WCAG 2.5.8).
+const MENU_CHIP: f32 = 24.;
 
 /// Menu width at the current text size.
 fn menu_width() -> f32 {
@@ -56,19 +56,41 @@ impl MenuRow {
     }
 }
 
+/// Every image-menu label, for the Getting Started copy test.
+#[cfg(test)]
+pub(super) fn image_action_labels() -> Vec<&'static str> {
+    use ImageAction as A;
+    let actions = [
+        A::Review,
+        A::Survey,
+        A::Compare,
+        A::Pick,
+        A::Reject,
+        A::Reset,
+        A::Reveal,
+        A::Trash,
+        A::PermanentDelete,
+        A::Rating(0),
+        A::Label(ColorLabel::None),
+    ];
+    let mut labels: Vec<_> = actions.iter().map(|a| a.label(false)).collect();
+    labels.push(A::Survey.label(true));
+    labels
+}
+
 impl ImageAction {
     fn label(self, in_burst: bool) -> &'static str {
         match self {
-            Self::Review => "Open in Review",
+            Self::Review => copy::OPEN_IN_REVIEW,
             Self::Survey if in_burst => "Survey Burst",
             Self::Survey => "Survey",
             Self::Compare => "Compare",
             Self::Pick => "Pick",
             Self::Reject => "Reject",
-            Self::Reset => "Reset Stars and Flag",
+            Self::Reset => copy::RESET_DECISION,
             Self::Reveal => reveal_label(),
-            Self::Trash => "Move to Trash…",
-            Self::PermanentDelete => "Delete Permanently…",
+            Self::Trash => copy::MOVE_TO_TRASH,
+            Self::PermanentDelete => copy::DELETE_PERMANENTLY,
             Self::Rating(_) => "Rating",
             Self::Label(_) => "Label",
         }
@@ -359,25 +381,28 @@ impl Workspace {
     }
 
     /// The menu's rows: open / decide / reveal / delete, separated by rules.
-    /// Survey is named for the burst only when the photo is in one.
+    /// Survey is named for the burst only when the photo is in one, and
+    /// "Open in Review" is offered only outside Review (R4-catalog-06).
     fn image_menu_rows(&self) -> Vec<MenuRow> {
         use ImageAction as A;
-        vec![
-            MenuRow::Action(A::Review),
-            MenuRow::Action(A::Survey),
-            MenuRow::Action(A::Compare),
-            MenuRow::Separator,
-            MenuRow::Action(A::Pick),
-            MenuRow::Action(A::Reject),
-            MenuRow::Ratings,
-            MenuRow::Labels,
-            MenuRow::Action(A::Reset),
-            MenuRow::Separator,
-            MenuRow::Action(A::Reveal),
-            MenuRow::Separator,
-            MenuRow::Action(A::Trash),
-            MenuRow::Action(A::PermanentDelete),
-        ]
+        let open = (self.mode != ViewMode::Loupe).then_some(MenuRow::Action(A::Review));
+        open.into_iter()
+            .chain([
+                MenuRow::Action(A::Survey),
+                MenuRow::Action(A::Compare),
+                MenuRow::Separator,
+                MenuRow::Action(A::Pick),
+                MenuRow::Action(A::Reject),
+                MenuRow::Ratings,
+                MenuRow::Labels,
+                MenuRow::Action(A::Reset),
+                MenuRow::Separator,
+                MenuRow::Action(A::Reveal),
+                MenuRow::Separator,
+                MenuRow::Action(A::Trash),
+                MenuRow::Action(A::PermanentDelete),
+            ])
+            .collect()
     }
 
     /// The rows Up/Down/Enter move through, in order.
@@ -534,7 +559,10 @@ impl Workspace {
                     .overflow_hidden()
                     .text_ellipsis()
                     .whitespace_nowrap()
-                    .when(destructive, |s| s.text_color(error))
+                    // On the selection fill the error colour falls below 4.5:1
+                    // in dark themes, so the highlighted row's label turns to
+                    // text colour; the warning icon keeps the error colour.
+                    .when(destructive && !selected, |s| s.text_color(error))
                     .child(action.label(in_burst)),
             )
             .child(div().w(px(16.)).flex_shrink_0().when(checked, |s| {
@@ -575,7 +603,7 @@ impl Workspace {
         } else {
             ImageAction::Label(ColorLabel::None)
         };
-        let mut chips = div().flex().items_center().gap(px(space::TINY));
+        let mut chips = div().flex().items_center().gap(px(space::XS));
         let values: Vec<ImageAction> = if ratings {
             (0..=5).map(ImageAction::Rating).collect()
         } else {
@@ -629,11 +657,25 @@ impl Workspace {
                     .text_size(ui::font(ui::text::LABEL))
                     .text_color(if on { self.text() } else { self.muted() })
                     .child(stars.to_string()),
+                // Each label chip carries its initial, so no label is told
+                // apart by hue alone, Purple included (R4-a11y-06).
                 ImageAction::Label(label) => match self.label_color(label) {
-                    Some(color) => chip.child(div().size(px(12.)).bg(color)),
+                    Some(color) => chip.child(
+                        div()
+                            .size(px(MENU_CHIP - 2. * space::XS))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(color)
+                            .text_size(ui::font(ui::text::MICRO))
+                            .line_height(ui::font(ui::text::MICRO))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
+                            .child(label_initial(label)),
+                    ),
                     None => chip.child(
                         div()
-                            .size(px(12.))
+                            .size(px(MENU_CHIP - 2. * space::XS))
                             .border_1()
                             .border_color(self.control_border()),
                     ),
@@ -678,25 +720,14 @@ impl Workspace {
         let all = |flag: Flag| !targets.is_empty() && targets.iter().all(|p| p.flag == flag);
         let (picked, rejected) = (all(Flag::Pick), all(Flag::Reject));
         let in_burst = self.burst_slot(menu.photo_id).is_some();
-        let mut contents = div()
+        let mut contents = self
+            .menu_surface()
             .id("image-context-menu")
-            .occlude()
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(width))
             .p(px(MENU_PADDING))
-            .flex()
-            .flex_col()
-            .bg(self.c("elevated_surface.background", "#202020"))
-            .border_1()
-            .border_color(self.border())
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(

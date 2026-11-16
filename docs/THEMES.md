@@ -4,7 +4,7 @@ Shadowroom includes restrained **Shadowroom Dark** and **Shadowroom Light** pale
 
 ## Appearance controls
 
-Click the active theme name in the status bar, open **Preferences → Appearance**
+Click the theme icon in the status bar (its tooltip names the active theme), open **Preferences → Appearance**
 with **Cmd/Ctrl+,**, or search **Appearance & Themes** in **Cmd/Ctrl+K**. Appearance
 is the first preferences section. Culling, Performance, Controller and Help have their
 own sections so a large theme collection does not bury other settings.
@@ -44,7 +44,7 @@ immediately.
   theme file or settings are unavailable. Selecting a theme explicitly switches
   to Manual.
 
-The selected palette is named in Preferences; the status bar retains the active palette until Apply. Theme source
+The selected palette is named in Preferences; the window keeps the active palette until Apply. Theme source
 can also be changed through the palette's **Theme Source** commands.
 
 ### Motion
@@ -74,7 +74,8 @@ settings applies to the next menu without reopening Preferences.
 box: **90%**, **100%**, **110%**, **125%**, **150%**, or **System** (the
 default), which follows the desktop's text-scaling factor (GNOME **Large Text** /
 `text-scaling-factor`, read through the portal or `gsettings` and followed live;
-100% on macOS). At 100% no interface text is smaller than 11 px. Controls keep
+100% on macOS). No interface text is smaller than 11 px, at 90% either; histogram
+ticks and readouts and keycaps grow with the text. Controls keep
 their 24/28 px boxes, which hold a 150% line, and spacing stays on the 4 px grid,
 so layouts keep their shape while text grows; the image menu widens with the text.
 `SHADOWROOM_TEXT_SCALE=1.25` overrides the desktop factor for measurements.
@@ -117,6 +118,17 @@ State ladder: hover is a fill only and always weaker than selection, on panels,
 dialogs and the canvas alike, which is why the ghost fills are translucent.
 Selection adds a second cue: the accent bar or underline for a location, a 2 px
 text-coloured bar on a chosen segment, or full-strength text and MEDIUM weight.
+
+**Choice groups** (Preferences choices, LIN/LOG, Catalog S/M/L) keep a
+`border.variant` hairline outline by design: every segment is identified by its
+text, and a 3:1 box around each group made the chrome noisier than the photos.
+The outline is therefore decorative under WCAG 1.4.11. What must reach 3:1 is
+the state: the chosen segment's 2 px text-coloured bar on its selected fill and
+the keyboard focus ring (`shadowroom.focus_ring`) on panels, bars and dialogs, in
+all four built-in palettes. A desktop test
+(`choice_group_state_and_focus_ring_reach_three_to_one`) holds those pairs.
+Text fields keep `shadowroom.control_border`, since an empty field has no other
+boundary.
 
 The accent means "you are here": the active view tab and inspector tab
 underline, the current collection's bar, the current photo's outline, the

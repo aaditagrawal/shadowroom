@@ -678,7 +678,7 @@ impl Workspace {
             )
             .children(toast.detail.map(|detail| {
                 div()
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(detail)
             }))
@@ -686,7 +686,7 @@ impl Workspace {
                 s.child(
                     div()
                         .mt(px(space::XS))
-                        .text_size(ui::font(11.))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(notice.text.clone()),
                 )
@@ -913,7 +913,13 @@ impl Workspace {
     ) -> Option<AnyElement> {
         let prompt = self.feedback.quit_prompt.as_ref()?;
         self.focus_scope(FocusScope::QuitPrompt);
-        // Keyboard focus: visual order (equal tab index), ring after Tab.
+        // Keyboard focus follows the platform's visual order, which differs
+        // from the build order on macOS (R4-overlays-08); ring after Tab.
+        let order: [&str; 3] = if cfg!(target_os = "macos") {
+            ["quit-anyway", "quit-cancel", "quit-retry"]
+        } else {
+            ["quit-cancel", "quit-anyway", "quit-retry"]
+        };
         let focusable = |element: Stateful<Div>, key: &str| {
             let target = FocusTarget {
                 cmd: None,
@@ -921,7 +927,16 @@ impl Workspace {
                 button: true,
                 reveal: None,
             };
-            self.focusable(element, key, 1, true, target, window, cx)
+            let position = order.iter().position(|k| *k == key).unwrap_or(0);
+            self.focusable(
+                element,
+                key,
+                1 + position as isize,
+                true,
+                target,
+                window,
+                cx,
+            )
         };
         let cancel = focusable(
             self.dialog_button("quit-cancel", "Cancel", ButtonKind::Secondary, false)

@@ -298,7 +298,8 @@ impl Workspace {
             }])
     }
 
-    /// 45 px title bar: 13 px medium title, optional close button on the right.
+    /// 45 px title bar: a MEDIUM title in the TITLE role (13 px at 100%),
+    /// optional close button on the right.
     pub(super) fn modal_header(
         &self,
         title: impl IntoElement,
@@ -323,7 +324,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(space::SM))
-                    .text_size(ui::font(13.))
+                    .text_size(ui::font(ui::text::TITLE))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
@@ -348,6 +349,55 @@ impl Workspace {
             .gap(px(space::MD))
             .border_t_1()
             .border_color(self.border())
+    }
+
+    /// A floating menu's surface: elevated fill, hairline border, the shared
+    /// 4/14 px shadow tooltips use, and 4 px padding. Every popover menu draws
+    /// on it, so none sits flat on the grid (R4-catalog-05).
+    pub(super) fn menu_surface(&self) -> Div {
+        div()
+            .occlude()
+            .p(px(space::XS))
+            .flex()
+            .flex_col()
+            .bg(self.c("elevated_surface.background", "#202020"))
+            .border_1()
+            .border_color(self.c("border.variant", "#333333"))
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.35),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(14.),
+                spread_radius: px(0.),
+            }])
+    }
+
+    /// The keyboard hints at the left of a dialog footer: boxed keys and the
+    /// verb each runs, "⌘L Path · Enter Go into · Esc Cancel". One component
+    /// for every footer, as the palette draws its bindings (R2-overlays-08).
+    /// A verb should be the first word of the button the key presses.
+    pub(super) fn key_hints(&self, hints: &[(&str, &str)]) -> Div {
+        let mut row = div()
+            .flex_shrink()
+            .min_w(px(0.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(space::MD))
+            .gap_y(px(space::XS))
+            .text_size(ui::font(ui::text::LABEL))
+            .text_color(self.muted());
+        for (keys, verb) in hints {
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(space::XS))
+                    .child(self.keycaps(keys))
+                    .child((*verb).to_owned()),
+            );
+        }
+        row
     }
 
     /// A dialog button without a click handler, for callers with their own action.
@@ -472,10 +522,51 @@ impl Workspace {
             focus.targets.insert(key, target);
         }
         let ring = self.focus_visible && handle.is_focused(window);
+        // Tab into a scrolled-away Preferences control brings it into view.
+        let reveal = (ring && self.dialog_focus.borrow().scope == FocusScope::Preferences)
+            .then(|| self.reveal_once(key, &self.prefs_scroll));
         element
             .track_focus(&handle)
             .relative()
             .when(ring, |s| s.child(self.focus_ring_overlay()))
+            .children(reveal)
+    }
+
+    /// An invisible layer that scrolls `scroll` once so the focused control
+    /// it sits in is fully visible (with a small margin), then stays out of
+    /// the way: the wheel can move the view again while focus stays put.
+    fn reveal_once(&self, key: &str, scroll: &ScrollHandle) -> AnyElement {
+        let scroll = scroll.clone();
+        let revealed = self.focus_revealed.clone();
+        let key = SharedString::from(key.to_owned());
+        canvas(
+            move |bounds, window, _| {
+                if revealed.borrow().as_ref() == Some(&key) {
+                    return;
+                }
+                *revealed.borrow_mut() = Some(key.clone());
+                let view = scroll.bounds();
+                let offset = scroll.offset();
+                let margin = px(space::SM);
+                let mut y = offset.y;
+                if bounds.bottom() + margin > view.bottom() {
+                    y -= bounds.bottom() + margin - view.bottom();
+                }
+                if bounds.top() - margin < view.top() {
+                    y += view.top() - (bounds.top() - margin);
+                }
+                let y = y.clamp(-scroll.max_offset().height, px(0.));
+                if y != offset.y {
+                    scroll.set_offset(point(offset.x, y));
+                    // A refresh during prepaint is lost; draw the scrolled frame next.
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
     }
 
     /// Runs the focused dialog control's command (Space, or Return on a button).
@@ -607,7 +698,7 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap(px(space::XS))
-                                .text_size(ui::font(11.))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(error_color)
                                 .child(icon("warning", error_color).size(px(12.)))
                                 .child(message.clone()),
@@ -668,5 +759,42 @@ mod tests {
         assert_eq!(cycle_index(Some(0), 3, true), Some(2));
         assert_eq!(cycle_index(Some(1), 3, false), Some(2));
         assert_eq!(cycle_index(None, 0, false), None);
+    }
+
+    /// Choice groups keep their hairline outline by design (docs/THEMES.md,
+    /// "Choice groups"); what must reach 3:1 (WCAG 1.4.11) is the state: the
+    /// chosen segment's text-coloured bar and the keyboard focus ring, on
+    /// every surface a group is drawn on, in all four built-in palettes.
+    #[test]
+    fn choice_group_state_and_focus_ring_reach_three_to_one() {
+        use shadowroom::theme::{Rgba, Theme};
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::high_contrast_dark(),
+            Theme::high_contrast_light(),
+        ] {
+            let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
+            for surface in [
+                "panel.background",
+                "elevated_surface.background",
+                "toolbar.background",
+            ] {
+                let s = c(surface);
+                let selected = c("ghost_element.selected").composite_over(s);
+                let name = &theme.name;
+                // The chosen segment's bar sits on its selected fill.
+                assert!(
+                    c("text").contrast_ratio(selected) >= 3.0,
+                    "{name}: segment bar on {surface}"
+                );
+                for under in [s, selected] {
+                    assert!(
+                        c("shadowroom.focus_ring").contrast_ratio(under) >= 3.0,
+                        "{name}: focus ring on {surface}"
+                    );
+                }
+            }
+        }
     }
 }

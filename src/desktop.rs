@@ -358,13 +358,19 @@ impl PaletteCache {
                 )
             });
         } else {
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            // Titles that contain the query, then titles that match it
+            // loosely, then rows matched only through their description.
+            scored.sort_by_cached_key(|&(score, i)| {
+                (match_tier(query, &self.items[i].title), -score)
+            });
         }
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
     }
     /// Adds photo and folder results after the commands whose title contains
-    /// the query and before the looser fuzzy matches; photo mode shows only them.
+    /// the query; photo mode shows only them. Beside real results the palette
+    /// stays precise (R4-overlays-04): at most [`PALETTE_LOOSE`] commands whose
+    /// title matches loosely follow, and description-only matches are dropped.
     fn merge_found(&mut self, found: Vec<PaletteItem>, query: &str, photos_only: bool) {
         let start = self.items.len();
         let found_rows = start..start + found.len();
@@ -376,17 +382,87 @@ impl PaletteCache {
         if found_rows.is_empty() {
             return;
         }
-        let query = query.trim().to_lowercase();
-        let (exact, loose): (Vec<usize>, Vec<usize>) = self
-            .matches
-            .iter()
-            .partition(|&&i| self.items[i].title.to_lowercase().contains(&query));
-        self.matches = exact.into_iter().chain(found_rows).chain(loose).collect();
+        let tier = |i: usize| match_tier(query, &self.items[i].title);
+        let exact = self.matches.iter().copied().filter(|&i| tier(i) == 0);
+        let loose = self.matches.iter().copied().filter(|&i| tier(i) == 1);
+        self.matches = exact
+            .chain(found_rows)
+            .chain(loose.take(PALETTE_LOOSE))
+            .collect();
     }
 }
 
 /// Rows the palette shows at once; PageUp/PageDown move by this many.
 const PALETTE_PAGE: usize = 12;
+/// The palette's right-hand category column ("Appearance" fits), at 100% text.
+const PALETTE_CATEGORY_WIDTH: f32 = 80.;
+/// Inspector histogram plot height; its label rows are added at the Text size.
+const HISTOGRAM_PLOT: f32 = 94.;
+/// Loose command matches kept beside photo and folder results.
+const PALETTE_LOOSE: usize = 3;
+/// The rating filter menu at 100% text: label, count and digit key.
+const RATING_MENU_WIDTH: f32 = 240.;
+
+/// How a palette title answers the query: 0 contains it, 1 matches its
+/// letters in order, 2 does not (the row matched through its description).
+fn match_tier(query: &str, title: &str) -> u8 {
+    let query = query.trim();
+    if query.is_empty() || title.to_lowercase().contains(&query.to_lowercase()) {
+        0
+    } else if fuzzy_score(query, title).is_some() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Byte ranges of `title` that answer `query`, for highlighting: the first
+/// case-insensitive occurrence, else the in-order letters fuzzy matching
+/// used (whitespace in the query is skipped). Empty when nothing matches.
+fn title_match(query: &str, title: &str) -> Vec<std::ops::Range<usize>> {
+    let wanted: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<(usize, char)> = title.char_indices().collect();
+    let same = |c: char, q: char| c.to_lowercase().eq(std::iter::once(q));
+    let phrase: Vec<char> = query.trim().chars().flat_map(char::to_lowercase).collect();
+    // A contiguous occurrence of the query as typed (spaces included).
+    if !phrase.is_empty() {
+        for start in 0..chars.len() {
+            if start + phrase.len() > chars.len() {
+                break;
+            }
+            if (0..phrase.len()).all(|k| same(chars[start + k].1, phrase[k])) {
+                let end = chars
+                    .get(start + phrase.len())
+                    .map_or(title.len(), |&(byte, _)| byte);
+                return std::iter::once(chars[start].0..end).collect();
+            }
+        }
+    }
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut next = 0;
+    for &(byte, c) in &chars {
+        if next < wanted.len() && same(c, wanted[next]) {
+            next += 1;
+            let end = byte + c.len_utf8();
+            match ranges.last_mut() {
+                Some(last) if last.end == byte => last.end = end,
+                _ => ranges.push(byte..end),
+            }
+        }
+    }
+    if next == wanted.len() {
+        ranges
+    } else {
+        Vec::new()
+    }
+}
 
 /// The palette selection after an arrow or page key: arrows wrap around
 /// the ends, pages stop at them.
@@ -537,6 +613,8 @@ struct CollectionCounts {
     trash: usize,
     rated: usize,
     labels: [usize; 6],
+    /// Photos per star count, 0-5, for the rating menu's counts.
+    ratings: [usize; 6],
 }
 fn label_index(label: ColorLabel) -> usize {
     match label {
@@ -575,6 +653,11 @@ impl CollectionCounts {
             bump(&mut self.rated);
         }
         bump(&mut self.labels[label_index(d.label)]);
+        bump(&mut self.ratings[usize::from(d.rating.min(5))]);
+    }
+    /// Photos rated `stars` or more.
+    fn rated_at_least(&self, stars: u8) -> usize {
+        self.ratings[usize::from(stars.min(5))..].iter().sum()
     }
     fn from_photos(photos: &[Photo]) -> Self {
         let mut counts = Self::default();
@@ -1172,6 +1255,11 @@ pub struct Workspace {
     theme_list_scroll: ScrollHandle,
     /// Getting Started body: the scrollbar and keyboard scrolling share it.
     guide_scroll: ScrollHandle,
+    /// Preferences body, with its scrollbar (R4-overlays-03).
+    prefs_scroll: ScrollHandle,
+    /// The focus target last scrolled into view, so a control is revealed
+    /// once when the keyboard reaches it and never fights the wheel.
+    focus_revealed: Rc<RefCell<Option<SharedString>>>,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     /// The pane F6 moved keyboard focus to (`panes.rs`).
@@ -1669,6 +1757,8 @@ impl Workspace {
             dialog_focus: RefCell::default(),
             theme_list_scroll: ScrollHandle::new(),
             guide_scroll: ScrollHandle::new(),
+            prefs_scroll: ScrollHandle::new(),
+            focus_revealed: Rc::default(),
             focus_visible: false,
             pane: panes::Pane::default(),
             pane_ring: false,
@@ -3752,7 +3842,13 @@ impl Workspace {
                 self.preferences_section = PreferencesSection::Appearance;
                 self.palette = false;
             }
-            Cmd::PreferencesSection(section) => self.preferences_section = section,
+            Cmd::PreferencesSection(section) => {
+                if self.preferences_section != section {
+                    self.prefs_scroll.set_offset(point(px(0.), px(0.)));
+                    self.focus_revealed.borrow_mut().take();
+                }
+                self.preferences_section = section;
+            }
             Cmd::Close => {
                 if self.folder_picker.take().is_some() {
                     self.refocus_ingest_field();
@@ -4428,8 +4524,10 @@ impl Workspace {
         cx.notify();
     }
 
-    fn palette_items(&self) -> Vec<PaletteItem> {
-        let mut items = vec![
+    /// The fixed commands; `palette_items` adds the rating, grouping, label,
+    /// font, theme and host rows.
+    fn command_items() -> Vec<PaletteItem> {
+        vec![
             item(
                 "Show Import Panel",
                 "File",
@@ -4480,14 +4578,14 @@ impl Workspace {
                 Cmd::Ingest("plan".into()),
             ),
             item(
-                "Open Folder…",
+                copy::OPEN_FOLDER,
                 "File · cull where the files are; nothing is copied",
                 "⌘O",
                 "folder-opened",
                 Cmd::OpenFolder,
             ),
             item(
-                "Import from Card…",
+                copy::IMPORT_FROM_CARD,
                 "File · copy and verify into your library",
                 "⌘⇧I",
                 "import",
@@ -4536,21 +4634,21 @@ impl Workspace {
                 Cmd::Flag(Flag::None),
             ),
             item(
-                "Reset Rating and Flag",
+                copy::RESET_DECISION,
                 "Review · clear stars and pick/reject without advancing; keep color label",
                 "R",
                 "reset",
                 Cmd::ResetDecision,
             ),
             item(
-                "Move to Trash",
+                copy::MOVE_TO_TRASH,
                 "Review · confirm configured Trash destination",
                 "Delete",
                 "trash",
                 Cmd::Trash(true),
             ),
             item(
-                "Delete Permanently…",
+                copy::DELETE_PERMANENTLY,
                 "File · confirm photo/file counts and original locations",
                 "Shift Delete",
                 "trash",
@@ -4677,7 +4775,10 @@ impl Workspace {
             ),
             item(
                 "Focus Peaking",
-                "View · mark sharp edges; color in Preferences → Culling",
+                &format!(
+                    "View · mark sharp edges; color in {} → Culling",
+                    settings_noun()
+                ),
                 "F",
                 "peaking",
                 Cmd::FocusPeaking,
@@ -4697,7 +4798,7 @@ impl Workspace {
                 Cmd::SearchPhotos,
             ),
             item(
-                "Show Full Folder",
+                copy::SHOW_FULL_FOLDER,
                 "Review · leave selected subset",
                 "",
                 "folder",
@@ -4905,7 +5006,10 @@ impl Workspace {
                 "close",
                 Cmd::Quit,
             ),
-        ];
+        ]
+    }
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let mut items = Self::command_items();
         for rating in 0..=5 {
             items.push(item(
                 &if rating == 0 {
@@ -4913,7 +5017,11 @@ impl Workspace {
                 } else {
                     format!("Rate {}", "★".repeat(rating as usize))
                 },
-                &format!("Review · {rating} stars"),
+                &if rating == 0 {
+                    "Review · remove stars".to_string()
+                } else {
+                    format!("Review · {}", plural(rating as usize, "star", "stars"))
+                },
                 &rating.to_string(),
                 "star",
                 Cmd::Rating(rating),
@@ -5656,6 +5764,14 @@ fn contained(well_w: f32, well_h: f32, width: u32, height: u32) -> (f32, f32) {
     )
 }
 
+/// What a chrome label swatch shows: its key, or Purple's initial (no key).
+fn label_glyph(label: ColorLabel) -> &'static str {
+    match label_key(label) {
+        "" => label_initial(label),
+        key => key,
+    }
+}
+
 fn label_key(label: ColorLabel) -> &'static str {
     match label {
         ColorLabel::Red => "6",
@@ -5744,7 +5860,7 @@ impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
             .font_family(self.font.clone())
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.fg)
             .bg(self.bg)
             .border_1()
@@ -6098,8 +6214,8 @@ impl Workspace {
         for cap in caps {
             row = row.child(
                 div()
-                    .min_w(px(18.))
-                    .h(px(18.))
+                    .min_w(px(ui::scaled(18.)))
+                    .h(px(ui::scaled(18.)))
                     .px(px(space::XS))
                     .flex()
                     .items_center()
@@ -6299,7 +6415,7 @@ impl Workspace {
             .h(px(ui::CONTROL_HEIGHT))
             .px(px(space::SM))
             // Explicit metrics keep the label vertically centred at every scale factor.
-            .text_size(ui::font(12.))
+            .text_size(ui::font(ui::text::BODY))
             .line_height(px(ui::scaled(16.)))
             .overflow_hidden()
             .cursor_pointer()
@@ -6349,18 +6465,23 @@ impl Workspace {
             ))
             .on_click(cx.listener(move |this, _, window, cx| this.execute(cmd.clone(), window, cx)))
     }
-    fn section(&self, label: &str) -> Div {
+    /// The one section-header style (R2-design-04): LABEL size, MEDIUM,
+    /// muted, sentence case. Callers add only spacing and rules.
+    fn section_header(&self, label: impl Into<SharedString>) -> Div {
         div()
+            .text_size(ui::font(ui::text::LABEL))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(self.muted())
+            .child(label.into())
+    }
+    fn section(&self, label: &str) -> Div {
+        self.section_header(label.to_owned())
             .h(px(ui::scaled(ui::SECTION_HEIGHT)))
             .mt(px(space::LG))
             .px(px(ui::PANEL_INSET))
             .flex()
             .items_center()
             .justify_between()
-            .text_size(ui::font(11.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
-            .child(label.to_owned())
     }
     /// Display name for a library scope: "Host / root" for remote roots,
     /// otherwise the folder's own name. Never shows internal scope ids.
@@ -6523,7 +6644,7 @@ impl Workspace {
                     .when(!narrow, |s| {
                         s.child(
                             div()
-                                .text_size(ui::font(13.))
+                                .text_size(ui::font(ui::text::TITLE))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Shadowroom"),
                         )
@@ -6705,7 +6826,7 @@ impl Workspace {
                 .when_some(count, |s, n| {
                     s.child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(copy::count(n)),
                     )
@@ -6726,7 +6847,7 @@ impl Workspace {
                     .child(
                         self.button(
                             "catalog-add-photos",
-                            "Import from Card…",
+                            copy::IMPORT_FROM_CARD,
                             "import",
                             Cmd::Import,
                             false,
@@ -6786,7 +6907,7 @@ impl Workspace {
                 .when_some(rated.filter(|_| count > 0 || active), |s, rated| {
                     s.child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(format!("{} of {}", copy::count(rated), copy::count(count))),
                     )
@@ -6908,7 +7029,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(copy::count(count)),
                     )
@@ -6928,7 +7049,7 @@ impl Workspace {
                 row(
                     "sidebar-open-empty".into(),
                     "folder-opened",
-                    "Open Folder…".into(),
+                    copy::OPEN_FOLDER.into(),
                     None,
                     false,
                 )
@@ -7041,18 +7162,32 @@ impl Workspace {
         }
         for (n, drive) in self.drives.iter().enumerate() {
             let path = drive.path.clone();
+            // The copy state is the row's right-hand column, like the counts
+            // above it: the name ellipsizes, the state never does (R4-catalog-02).
+            let state = self.import_ui.drive_state(&drive.path);
+            let tip = match &state {
+                Some(state) => format!("{} · {state} · import from this drive", drive.name),
+                None => format!("{} · import from this drive", drive.name),
+            };
             body = body.child(
                 row(
                     ("drive", n).into(),
                     "drive",
-                    match self.import_ui.drive_state(&drive.path) {
-                        Some(state) => format!("{} · {state}", drive.name),
-                        None => drive.name.clone(),
-                    },
+                    drive.name.clone(),
                     None,
                     importing && drive.path == self.import_ui.source,
                 )
-                .tooltip(self.tip("Import from drive", ""))
+                .when_some(state, |row, state| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .text_size(ui::font(ui::text::LABEL))
+                            .text_color(self.muted())
+                            .child(state),
+                    )
+                })
+                .tooltip(self.tip(&tip, ""))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.scan_for_import(path.clone());
                     cx.notify();
@@ -7140,7 +7275,11 @@ impl Workspace {
             if let Some(ids) = &self.review_subset {
                 crumb = crumb.child(self.toggle_button(
                     "clear-review-subset",
-                    &format!("{} selected · Show full folder", copy::count(ids.len())),
+                    &format!(
+                        "{} selected · {}",
+                        copy::count(ids.len()),
+                        copy::SHOW_FULL_FOLDER
+                    ),
                     "",
                     Cmd::ClearReviewSubset,
                     true,
@@ -7204,7 +7343,7 @@ impl Workspace {
                     .size(px(12.))
                     .text_color(self.icon_muted()),
             )
-            .tooltip(self.tip("Filter by minimum rating", ""));
+            .tooltip(self.tip("Filter by minimum rating · 0-5 choose in the menu", ""));
         let grouping = self.settings.grouping_mode.clone();
         let grouped = grouping != "off";
         let (group_label, group_tip) = match grouping.as_str() {
@@ -7380,16 +7519,12 @@ impl Workspace {
         }
     }
     fn rating_filter_menu(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let mut options = div()
-            .w(px(208.))
-            .p(px(space::XS))
-            .flex()
-            .flex_col()
-            .gap(px(0.))
-            .bg(self.c("elevated_surface.background", "#202020"))
-            .border_1()
-            .border_color(self.c("border.variant", "#333333"))
-            .occlude()
+        // The shared floating surface (shadow included), a count per level for
+        // the current scope and the digit that picks it (R4-catalog-05, CAT-16).
+        let counts = self.scope_counts.as_ref().unwrap_or(&self.counts);
+        let mut options = self
+            .menu_surface()
+            .w(px(ui::scaled(RATING_MENU_WIDTH)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         for r in 0..=5u8 {
             let active = self.min_rating == r;
@@ -7405,7 +7540,21 @@ impl Workspace {
                 .h(px(ui::ROW_HEIGHT))
                 .w_full()
                 .when(self.rating_filter_index == r, |s| s.bg(self.hover_bg()))
-                .justify_start(),
+                .justify_start()
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(ui::font(ui::text::LABEL))
+                        .text_color(self.muted())
+                        .child(copy::count(counts.rated_at_least(r))),
+                )
+                .child(
+                    div()
+                        .w(px(ui::scaled(24.)))
+                        .flex()
+                        .justify_end()
+                        .child(self.keycaps(&r.to_string())),
+                ),
             );
         }
         div()
@@ -8896,9 +9045,10 @@ impl Workspace {
         })
     }
     /// Inspector label swatch: the chrome label colour carrying its key
-    /// (6-9; Purple has none), a text-coloured ring with an inset gap when
-    /// chosen. The R/Y/G/B/P initials stay on photo badges, where they are the
-    /// colour-blind shape code; here a letter would read as a keycap.
+    /// (6-9), a text-coloured ring with an inset gap when chosen. Purple has
+    /// no key, so it carries its initial instead: no swatch relies on hue
+    /// alone (R4-a11y-06). The other initials stay on photo badges, where they
+    /// are the colour-blind shape code; here they would read as keycaps.
     fn label_swatch(
         &self,
         id: impl Into<ElementId>,
@@ -8929,7 +9079,7 @@ impl Workspace {
                     .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                    .when_some(color, |s, c| s.bg(c).child(label_key(label)))
+                    .when_some(color, |s, c| s.bg(c).child(label_glyph(label)))
                     // The empty choice is an input with no fill of its own.
                     .when(color.is_none(), |s| {
                         s.border_1().border_color(self.control_border())
@@ -9240,7 +9390,7 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(11.)).text_color(self.muted()).child(
+                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(
                     "Originals stay in their source folders. Ratings and flags are preserved.",
                 ))
                 .into_any_element();
@@ -9460,7 +9610,10 @@ impl Workspace {
                     cx,
                 )
                 .tooltip(self.tip(
-                    "Reset rating and pick/reject · keep color label · stay on this photo",
+                    &format!(
+                        "{} · keep color label · stay on this photo",
+                        copy::RESET_DECISION
+                    ),
                     "R",
                 )),
             )
@@ -9618,7 +9771,7 @@ impl Workspace {
             .child(self.control_divider())
             .child(
                 self.button("trash-selection", "", "trash", Cmd::Trash(true), false, cx)
-                    .tooltip(self.tip("Move to Trash…", "Delete")),
+                    .tooltip(self.tip(copy::MOVE_TO_TRASH, "Delete")),
             )
             .into_any_element()
     }
@@ -9654,7 +9807,7 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT - 2.))
                     .px(px(space::SM))
-                    .text_size(ui::font(12.))
+                    .text_size(ui::font(ui::text::BODY))
                     .line_height(px(ui::scaled(16.)))
                     .border_b_2()
                     .border_color(transparent_black())
@@ -9715,7 +9868,7 @@ impl Workspace {
             .into_any_element()
     }
     fn inspector_section(&self, label: &str) -> Div {
-        div()
+        self.section_header(label.to_owned())
             .h(px(ui::scaled(ui::INSPECTOR_SECTION_HEIGHT)))
             .flex_shrink_0()
             .mt(px(space::LG))
@@ -9726,10 +9879,6 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(ui::font(11.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
-            .child(label.to_owned())
     }
     fn inspector_view(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let mut body = div()
@@ -9949,7 +10098,7 @@ impl Workspace {
                     body = body.child(crate::histogram::histogram_with(
                         &preview.histogram,
                         (self.docks.inspector - 2. * ui::PANEL_INSET - 1.).max(1.),
-                        122.,
+                        HISTOGRAM_PLOT + crate::histogram::label_rows_height(ui::text_scale()),
                         crate::histogram::HistogramOptions {
                             scale: if self.histogram_log {
                                 crate::histogram::HistogramScale::Log
@@ -9969,11 +10118,17 @@ impl Workspace {
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
+                            text_scale: ui::text_scale(),
                             ..Default::default()
                         },
                     ));
                 } else {
-                    body = body.child(div().h(px(122.)).bg(self.histogram_plate()));
+                    body = body.child(
+                        div()
+                            .h(px(HISTOGRAM_PLOT
+                                + crate::histogram::label_rows_height(ui::text_scale())))
+                            .bg(self.histogram_plate()),
+                    );
                 }
             }
             if !self.inspector_info {
@@ -10048,7 +10203,7 @@ impl Workspace {
                     if let Some(note) = &preview.rendering_note {
                         body = body.child(self.inspector_section("Rendering")).child(
                             div()
-                                .text_size(ui::font(11.))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(self.muted())
                                 .child(note.clone()),
                         );
@@ -11025,6 +11180,18 @@ impl Workspace {
             let cmd = item.command.clone();
             let title = item.title.clone();
             let recent = self.palette_query.is_empty() && self.palette_recent.contains(&item.title);
+            let matched = HighlightStyle {
+                color: Some(self.text()),
+                font_weight: Some(FontWeight::MEDIUM),
+                // MEDIUM alone is subtle in Geist Mono; a text-coloured underline
+                // marks the letters without borrowing the accent.
+                underline: Some(UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(self.text()),
+                    wavy: false,
+                }),
+                ..HighlightStyle::default()
+            };
             // "Category · description": description inline, category in a right column.
             let (category, description) = match item.detail.split_once(" · ") {
                 Some((category, description)) => (category.to_string(), description.to_string()),
@@ -11078,20 +11245,44 @@ impl Workspace {
                             .gap(px(space::SM))
                             .whitespace_nowrap()
                             .overflow_hidden()
-                            .child(item.title.clone())
+                            // Matched letters, MEDIUM and underlined, say
+                            // why a row is listed (OV-19).
+                            .child(
+                                div().flex_shrink_0().child(
+                                    StyledText::new(item.title.clone()).with_highlights(
+                                        title_match(&self.palette_query, &item.title)
+                                            .into_iter()
+                                            .map(|range| (range, matched)),
+                                    ),
+                                ),
+                            )
+                            // The description gives way first and ends in an
+                            // ellipsis, never mid-glyph (R4-overlays-07).
                             .child(
                                 div()
-                                    .text_size(ui::font(11.))
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(ui::font(ui::text::LABEL))
                                     .text_color(self.muted())
                                     .overflow_hidden()
                                     .text_ellipsis()
+                                    .whitespace_normal()
+                                    .line_clamp(1)
                                     .child(description),
                             ),
                     )
+                    // Keys, then the category in a fixed column, so categories
+                    // line up whether or not a row has a key (OV-20).
+                    .when(!item.shortcut.is_empty(), |s| {
+                        s.child(self.keycaps(&item.shortcut))
+                    })
                     .child(
                         div()
+                            .w(px(ui::scaled(PALETTE_CATEGORY_WIDTH)))
                             .flex_shrink_0()
-                            .text_size(ui::font(11.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(ui::font(ui::text::LABEL))
                             // Blue marks only where you are; "Recent" is a
                             // plain tag (and full text on the active row).
                             .text_color(if active { self.text() } else { self.muted() })
@@ -11101,9 +11292,6 @@ impl Workspace {
                                 category
                             }),
                     )
-                    .when(!item.shortcut.is_empty(), |s| {
-                        s.child(self.keycaps(&item.shortcut))
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_palette_command(cmd.clone(), title.clone(), window, cx);
                     })),
@@ -11138,7 +11326,7 @@ impl Workspace {
                     .child(title)
                     .child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(hint),
                     ),
@@ -11171,7 +11359,7 @@ impl Workspace {
                             .gap(px(space::SM))
                             .border_b_1()
                             .border_color(self.border())
-                            .text_size(ui::font(13.))
+                            .text_size(ui::font(ui::text::TITLE))
                             .child(icon("search", self.icon_muted()))
                             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(
                                 self.input_field(
@@ -11211,7 +11399,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_color(self.muted())
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .child(description.to_owned()),
                     ),
             )
@@ -11274,7 +11462,7 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT))
                     .px(px(space::SM))
-                    .text_size(ui::font(12.))
+                    .text_size(ui::font(ui::text::BODY))
                     .line_height(px(ui::scaled(16.)))
                     .text_color(if active { self.text() } else { self.muted() })
                     .when(active, |s| s.bg(self.selected_bg()))
@@ -11326,220 +11514,255 @@ impl Workspace {
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         self.focus_scope(FocusScope::Preferences);
         let s = self.preference_settings();
-        let fonts = self.pref_choices(
-            "font",
-            INTERFACE_FONTS
-                .iter()
-                .copied()
-                .map(|f| (f.to_string(), Cmd::Font(f.into()), s.interface_font == f)),
-            false,
-            window,
-            cx,
-        );
-        let groups = self.pref_choices(
-            "group-mode",
-            [
-                ("off", "Off"),
-                ("time", "Time"),
-                ("visual", "Visual"),
-                ("burst", "Burst"),
-            ]
-            .map(|(k, l)| (l.to_string(), Cmd::Group(k.into()), s.grouping_mode == k)),
-            false,
-            window,
-            cx,
-        );
+        // Controls are built only when their section draws them, in the
+        // order it draws them: a control registers its Tab stop as it is
+        // built, so Tab follows the visual order and never lands on a hidden
+        // section's control.
+        let fonts = || {
+            self.pref_choices(
+                "font",
+                INTERFACE_FONTS
+                    .iter()
+                    .copied()
+                    .map(|f| (f.to_string(), Cmd::Font(f.into()), s.interface_font == f)),
+                false,
+                window,
+                cx,
+            )
+        };
+        let groups = || {
+            self.pref_choices(
+                "group-mode",
+                [
+                    ("off", "Off"),
+                    ("time", "Time"),
+                    ("visual", "Visual"),
+                    ("burst", "Burst"),
+                ]
+                .map(|(k, l)| (l.to_string(), Cmd::Group(k.into()), s.grouping_mode == k)),
+                false,
+                window,
+                cx,
+            )
+        };
         // Every grouping mode splits on the time gap; only Visual and Burst
         // compare frames (`grouping::group_nodes`).
         let gap_applies = s.grouping_mode != "off";
         let similarity_applies = matches!(s.grouping_mode.as_str(), "visual" | "burst");
-        let gaps = self.pref_choices(
-            "gap",
-            [500u64, 1000, 2000, 5000].map(|g| {
-                (
-                    format!("{}s", g as f32 / 1000.),
-                    Cmd::Gap(g),
-                    s.burst_gap_ms == g,
-                )
-            }),
-            !gap_applies,
-            window,
-            cx,
-        );
-        let thresholds = self.pref_choices(
-            "threshold",
-            [(4, "Strict"), (8, "Balanced"), (14, "Loose")]
-                .map(|(n, l)| (l.to_string(), Cmd::Threshold(n), s.visual_threshold == n)),
-            !similarity_applies,
-            window,
-            cx,
-        );
-        let advance = self.pref_choices(
-            "pref-advance",
-            [
-                (
-                    "Off".to_string(),
-                    Cmd::SetAutoAdvance(false),
-                    !s.auto_advance,
-                ),
-                ("On".to_string(), Cmd::SetAutoAdvance(true), s.auto_advance),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let gaps = || {
+            self.pref_choices(
+                "gap",
+                [500u64, 1000, 2000, 5000].map(|g| {
+                    (
+                        format!("{}s", g as f32 / 1000.),
+                        Cmd::Gap(g),
+                        s.burst_gap_ms == g,
+                    )
+                }),
+                !gap_applies,
+                window,
+                cx,
+            )
+        };
+        let thresholds = || {
+            self.pref_choices(
+                "threshold",
+                [(4, "Strict"), (8, "Balanced"), (14, "Loose")]
+                    .map(|(n, l)| (l.to_string(), Cmd::Threshold(n), s.visual_threshold == n)),
+                !similarity_applies,
+                window,
+                cx,
+            )
+        };
+        let advance = || {
+            self.pref_choices(
+                "pref-advance",
+                [
+                    (
+                        "Off".to_string(),
+                        Cmd::SetAutoAdvance(false),
+                        !s.auto_advance,
+                    ),
+                    ("On".to_string(), Cmd::SetAutoAdvance(true), s.auto_advance),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let reduce_motion = s
             .extra
             .get("reduce_motion")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let motion = self.pref_choices(
-            "pref-motion",
-            [
-                ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
-                ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
-            ],
-            false,
-            window,
-            cx,
-        );
-        let (text_sizes, text_size_description) = self.text_size_choices(s);
-        let text_sizes = self.pref_choices("pref-text-size", text_sizes, false, window, cx);
+        let motion = || {
+            self.pref_choices(
+                "pref-motion",
+                [
+                    ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
+                    ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
+        let text_size_description = self.text_size_choices(s).1;
+        let text_sizes = || {
+            let options = self.text_size_choices(s).0;
+            self.pref_choices("pref-text-size", options, false, window, cx)
+        };
         let motion_description = if motion::system_reduces_motion() {
             "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
         } else {
             "Menus, dialogs and notices appear without fading. Also on when the system asks for reduced motion."
         };
-        let drives = self.pref_choices(
-            "pref-drives",
-            [
-                (
-                    "Manual".to_string(),
-                    Cmd::SetAutoDrives(false),
-                    !s.auto_discover_drives,
-                ),
-                (
-                    "Automatic".to_string(),
-                    Cmd::SetAutoDrives(true),
-                    s.auto_discover_drives,
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
-        let trash = self.pref_choices(
-            "trash-mode",
-            [
-                (
-                    "OS Trash".into(),
-                    Cmd::TrashMode("system".into()),
-                    s.trash_mode == "system",
-                ),
-                (
-                    "In-app".into(),
-                    Cmd::TrashMode("in_app".into()),
-                    s.trash_mode == "in_app",
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let drives = || {
+            self.pref_choices(
+                "pref-drives",
+                [
+                    (
+                        "Manual".to_string(),
+                        Cmd::SetAutoDrives(false),
+                        !s.auto_discover_drives,
+                    ),
+                    (
+                        "Automatic".to_string(),
+                        Cmd::SetAutoDrives(true),
+                        s.auto_discover_drives,
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
+        let trash = || {
+            self.pref_choices(
+                "trash-mode",
+                [
+                    (
+                        "OS Trash".into(),
+                        Cmd::TrashMode("system".into()),
+                        s.trash_mode == "system",
+                    ),
+                    (
+                        "In-app".into(),
+                        Cmd::TrashMode("in_app".into()),
+                        s.trash_mode == "in_app",
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let peaking = loupe_aids::peaking_style_of(s);
-        let peaking_colors = self.pref_choices(
-            "peaking-color",
-            shadowroom::peaking::PeakingColor::ALL.map(|color| {
-                (
-                    color.name().to_string(),
-                    Cmd::PeakingColor(color),
-                    peaking.color == color,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let peaking_levels = self.pref_choices(
-            "peaking-sensitivity",
-            shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
-                (
-                    level.name().to_string(),
-                    Cmd::PeakingSensitivity(level),
-                    peaking.sensitivity == level,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let memory = self.pref_choices(
-            "memory",
-            [0, 128, 256, 512, 1024, 2048].map(|mb| {
-                (
-                    if mb == 0 {
-                        "Auto".into()
-                    } else if mb >= 1024 {
-                        format!("{} GB", mb / 1024)
-                    } else {
-                        format!("{mb} MB")
-                    },
-                    Cmd::Memory(mb),
-                    s.memory_budget_mb == mb,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let disk = self.pref_choices(
-            "disk",
-            [2048, 8192, 32768].map(|mb| {
-                (
-                    format!("{} GB", mb / 1024),
-                    Cmd::Disk(mb),
-                    s.cache_budget_mb == mb,
-                )
-            }),
-            false,
-            window,
-            cx,
-        );
-        let guide = self.pref_choices(
-            "guide-startup-pref",
-            [
-                (
-                    "Show".into(),
-                    Cmd::StartupGuide(true),
-                    s.show_getting_started,
-                ),
-                (
-                    "Hide".into(),
-                    Cmd::StartupGuide(false),
-                    !s.show_getting_started,
-                ),
-            ],
-            false,
-            window,
-            cx,
-        );
+        let peaking_colors = || {
+            self.pref_choices(
+                "peaking-color",
+                shadowroom::peaking::PeakingColor::ALL.map(|color| {
+                    (
+                        color.name().to_string(),
+                        Cmd::PeakingColor(color),
+                        peaking.color == color,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let peaking_levels = || {
+            self.pref_choices(
+                "peaking-sensitivity",
+                shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
+                    (
+                        level.name().to_string(),
+                        Cmd::PeakingSensitivity(level),
+                        peaking.sensitivity == level,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let memory = || {
+            self.pref_choices(
+                "memory",
+                [0, 128, 256, 512, 1024, 2048].map(|mb| {
+                    (
+                        if mb == 0 {
+                            "Auto".into()
+                        } else if mb >= 1024 {
+                            format!("{} GB", mb / 1024)
+                        } else {
+                            format!("{mb} MB")
+                        },
+                        Cmd::Memory(mb),
+                        s.memory_budget_mb == mb,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let disk = || {
+            self.pref_choices(
+                "disk",
+                [2048, 8192, 32768].map(|mb| {
+                    (
+                        format!("{} GB", mb / 1024),
+                        Cmd::Disk(mb),
+                        s.cache_budget_mb == mb,
+                    )
+                }),
+                false,
+                window,
+                cx,
+            )
+        };
+        let guide = || {
+            self.pref_choices(
+                "guide-startup-pref",
+                [
+                    (
+                        "Show".into(),
+                        Cmd::StartupGuide(true),
+                        s.show_getting_started,
+                    ),
+                    (
+                        "Hide".into(),
+                        Cmd::StartupGuide(false),
+                        !s.show_getting_started,
+                    ),
+                ],
+                false,
+                window,
+                cx,
+            )
+        };
         let mode = s
             .extra
             .get("theme_mode")
             .and_then(Value::as_str)
             .unwrap_or("manual");
-        let theme_mode = self.pref_choices(
-            "theme-mode",
-            [
-                ("manual", "Manual"),
-                ("system", "System"),
-                ("zed", "Follow Zed"),
-            ]
-            .map(|(k, l)| (l.to_string(), Cmd::ThemeMode(k.into()), mode == k)),
-            false,
-            window,
-            cx,
-        );
+        let theme_mode = || {
+            self.pref_choices(
+                "theme-mode",
+                [
+                    ("manual", "Manual"),
+                    ("system", "System"),
+                    ("zed", "Follow Zed"),
+                ]
+                .map(|(k, l)| (l.to_string(), Cmd::ThemeMode(k.into()), mode == k)),
+                false,
+                window,
+                cx,
+            )
+        };
         let hover = self.hover_bg();
         let light_theme = s
             .extra
@@ -11566,189 +11789,187 @@ impl Workspace {
             }
             _ => "Choose an installed theme or import a Zed JSON / JSONC file.".into(),
         };
-        let mut theme_list = div()
-            .id("theme-list")
-            .track_scroll(&self.theme_list_scroll)
-            .max_h(px(240.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(self.border());
-        let mut sorted_themes: Vec<_> = self.preference_themes().iter().enumerate().collect();
-        sorted_themes.sort_by_cached_key(|(_, theme)| {
-            (theme.appearance == "light", theme.name.to_lowercase())
-        });
-        let light_fallback = Theme::light();
-        let dark_fallback = Theme::dark();
-        let mut last_appearance = None;
-        let mut child = 0;
-        let theme_count = sorted_themes.len();
-        let selected_position = sorted_themes
-            .iter()
-            .position(|(_, theme)| {
+        let theme_list = || {
+            let mut theme_list = div()
+                .id("theme-list")
+                .track_scroll(&self.theme_list_scroll)
+                .max_h(px(240.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(self.border());
+            let mut sorted_themes: Vec<_> = self.preference_themes().iter().enumerate().collect();
+            sorted_themes.sort_by_cached_key(|(_, theme)| {
+                (theme.appearance == "light", theme.name.to_lowercase())
+            });
+            let light_fallback = Theme::light();
+            let dark_fallback = Theme::dark();
+            let mut last_appearance = None;
+            let mut child = 0;
+            let theme_count = sorted_themes.len();
+            let selected_position = sorted_themes
+                .iter()
+                .position(|(_, theme)| {
+                    let light = theme.appearance == "light";
+                    if mode == "system" {
+                        theme.name == if light { light_theme } else { dark_theme }
+                    } else {
+                        theme.name == s.theme
+                    }
+                })
+                .unwrap_or(0);
+            for (position, (i, theme)) in sorted_themes.into_iter().enumerate() {
                 let light = theme.appearance == "light";
-                if mode == "system" {
+                if last_appearance != Some(light) {
+                    theme_list = theme_list.child(
+                        self.section_header(if light { "Light" } else { "Dark" })
+                            .flex_shrink_0()
+                            .px(px(space::MD))
+                            .pt(px(space::SM))
+                            .pb(px(space::XS)),
+                    );
+                    last_appearance = Some(light);
+                    child += 1;
+                }
+                let active = theme.name == s.theme;
+                let selected = if mode == "system" {
                     theme.name == if light { light_theme } else { dark_theme }
                 } else {
-                    theme.name == s.theme
-                }
-            })
-            .unwrap_or(0);
-        for (position, (i, theme)) in sorted_themes.into_iter().enumerate() {
-            let light = theme.appearance == "light";
-            if last_appearance != Some(light) {
-                theme_list = theme_list.child(
-                    div()
-                        .flex_shrink_0()
-                        .px(px(space::MD))
-                        .pt(px(space::SM))
-                        .pb(px(space::XS))
-                        .text_size(ui::font(ui::text::LABEL))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(self.muted())
-                        .child(if light { "LIGHT" } else { "DARK" }),
-                );
-                last_appearance = Some(light);
-                child += 1;
-            }
-            let active = theme.name == s.theme;
-            let selected = if mode == "system" {
-                theme.name == if light { light_theme } else { dark_theme }
-            } else {
-                active
-            };
-            let name = theme.name.clone();
-            let palette = shadowroom::theme::PreparedColors::new(
-                theme,
-                if light {
-                    &light_fallback
-                } else {
-                    &dark_fallback
-                },
-                [
-                    ("editor.background", "#0f0f0f"),
-                    ("text.accent", "#5b9bd5"),
-                    ("text", "#e6e6e6"),
-                ],
-            );
-            let mut swatches = div().flex().flex_shrink_0().gap(px(space::XS));
-            for role in 0..3 {
-                let color = palette.get(role);
-                let color = rgba(
-                    (u32::from(color.r) << 24)
-                        | (u32::from(color.g) << 16)
-                        | (u32::from(color.b) << 8)
-                        | u32::from(color.a),
-                );
-                swatches = swatches.child(
-                    div()
-                        .size(px(10.))
-                        .bg(color)
-                        .border_1()
-                        .border_color(self.c("border.variant", "#333333")),
-                );
-            }
-            let choose = if mode == "system" {
-                Cmd::SystemTheme(name.clone())
-            } else {
-                Cmd::Theme(name.clone())
-            };
-            let row = div()
-                .id(("theme", i))
-                .h(px(ui::ROW_HEIGHT))
-                .flex_shrink_0()
-                .px(px(space::MD))
-                .flex()
-                .items_center()
-                .gap(px(space::MD))
-                .cursor_pointer()
-                .when(selected, |s| s.bg(self.selected_bg()))
-                .when(!selected, |s| s.hover(move |s| s.bg(hover)))
-                .child(swatches)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_normal()
-                        .line_clamp(1)
-                        .child(theme.name.clone()),
-                )
-                .child(
-                    div()
-                        .w(px(16.))
-                        .flex_shrink_0()
-                        .when(selected, |s| s.child(icon("check", self.accent()))),
-                )
-                .tooltip(self.tip(
-                    &if theme.author.is_empty() {
-                        theme.name.clone()
+                    active
+                };
+                let name = theme.name.clone();
+                let palette = shadowroom::theme::PreparedColors::new(
+                    theme,
+                    if light {
+                        &light_fallback
                     } else {
-                        format!("{} · {}", theme.name, theme.author)
+                        &dark_fallback
                     },
-                    "",
-                ))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let system = this
-                        .preference_settings()
-                        .extra
-                        .get("theme_mode")
-                        .and_then(Value::as_str)
-                        == Some("system");
-                    this.execute(
-                        if system {
-                            Cmd::SystemTheme(name.clone())
+                    [
+                        ("editor.background", "#0f0f0f"),
+                        ("text.accent", "#5b9bd5"),
+                        ("text", "#e6e6e6"),
+                    ],
+                );
+                let mut swatches = div().flex().flex_shrink_0().gap(px(space::XS));
+                for role in 0..3 {
+                    let color = palette.get(role);
+                    let color = rgba(
+                        (u32::from(color.r) << 24)
+                            | (u32::from(color.g) << 16)
+                            | (u32::from(color.b) << 8)
+                            | u32::from(color.a),
+                    );
+                    swatches = swatches.child(
+                        div()
+                            .size(px(10.))
+                            .bg(color)
+                            .border_1()
+                            .border_color(self.c("border.variant", "#333333")),
+                    );
+                }
+                let choose = if mode == "system" {
+                    Cmd::SystemTheme(name.clone())
+                } else {
+                    Cmd::Theme(name.clone())
+                };
+                let row = div()
+                    .id(("theme", i))
+                    .h(px(ui::ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .px(px(space::MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::MD))
+                    .cursor_pointer()
+                    .when(selected, |s| s.bg(self.selected_bg()))
+                    .when(!selected, |s| s.hover(move |s| s.bg(hover)))
+                    .child(swatches)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .child(theme.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .flex_shrink_0()
+                            .when(selected, |s| s.child(icon("check", self.accent()))),
+                    )
+                    .tooltip(self.tip(
+                        &if theme.author.is_empty() {
+                            theme.name.clone()
                         } else {
-                            Cmd::Theme(name.clone())
+                            format!("{} · {}", theme.name, theme.author)
                         },
+                        "",
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let system = this
+                            .preference_settings()
+                            .extra
+                            .get("theme_mode")
+                            .and_then(Value::as_str)
+                            == Some("system");
+                        this.execute(
+                            if system {
+                                Cmd::SystemTheme(name.clone())
+                            } else {
+                                Cmd::Theme(name.clone())
+                            },
+                            window,
+                            cx,
+                        )
+                    }));
+                theme_list = theme_list.child(
+                    self.focusable(
+                        row,
+                        &format!("theme-{position}"),
+                        2,
+                        position == selected_position,
+                        FocusTarget::option(choose, "theme".into(), position, theme_count)
+                            .reveal(&self.theme_list_scroll, child),
                         window,
                         cx,
-                    )
-                }));
-            theme_list = theme_list.child(
-                self.focusable(
-                    row,
-                    &format!("theme-{position}"),
-                    2,
-                    position == selected_position,
-                    FocusTarget::option(choose, "theme".into(), position, theme_count)
-                        .reveal(&self.theme_list_scroll, child),
-                    window,
-                    cx,
-                ),
-            );
-            child += 1;
-        }
+                    ),
+                );
+                child += 1;
+            }
+            theme_list
+        };
         let stats = self.media.stats();
         let section = self.preferences_section;
         let body = div()
             .id("preferences-body")
-            .flex_1()
-            .min_h(px(0.))
+            .track_scroll(&self.prefs_scroll)
+            .size_full()
             .overflow_y_scroll()
             .px(px(ui::DIALOG_INSET))
             .pt(px(space::SM))
             .pb(px(ui::DIALOG_INSET))
             .when(section == PreferencesSection::Import, |body| body.child(self.ingest_preferences(window, cx)))
             .when(section == PreferencesSection::Culling, |body| body
-            .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
-            .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash))
-            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors))
-            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels))
-            .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
-            .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps))
-            .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds))
-            .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
+            .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance()))
+            .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash()))
+            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors()))
+            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels()))
+            .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups()))
+            .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps()))
+            .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds()))
+            .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives())))
+            // The theme list leads, so it stays in view at large text sizes
+            // and in small windows; type and motion follow (R4-overlays-03).
             .when(section == PreferencesSection::Appearance, |body| body
-            .child(self.preference_row("Font", "Interface typeface", fonts))
-            .child(self.preference_row("Text size", &text_size_description, text_sizes))
-            .child(self.preference_row("Reduce motion", motion_description, motion))
-            .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
+            .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode()))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
-            .child(div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(source_description))
-            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(note)))
+            .child(div().pt(px(space::XS)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(source_description))
+            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(note)))
             .child(
                 div()
                     .pt(px(space::MD))
@@ -11766,21 +11987,25 @@ impl Workspace {
                         cx,
                     )),
             )
-            .child(theme_list)
-            .child(div().pt(px(space::SM)).text_size(ui::font(11.)).text_color(self.muted()).child(match mode {
+            .child(theme_list())
+            .child(div().pt(px(space::SM)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(match mode {
                 "system" => "Choose a light or dark theme to update its system appearance slot.",
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
-            })))
+            }))
+            .child(div().pt(px(space::SM)))
+            .child(self.preference_row("Font", "Interface typeface", fonts()))
+            .child(self.preference_row("Text size", &text_size_description, text_sizes()))
+            .child(self.preference_row("Reduce motion", motion_description, motion())))
             .when(section == PreferencesSection::Performance, |body| body
-            .child(self.preference_row("Preview memory", "Auto adapts to this computer; shared by decoded images and display copies", memory))
-            .child(self.preference_row("Disk cache", "Reuses thumbnails and previews across launches; originals stay read-only", disk))
+            .child(self.preference_row("Preview memory", "Auto adapts to this computer; shared by decoded images and display copies", memory()))
+            .child(self.preference_row("Disk cache", "Reuses thumbnails and previews across launches; originals stay read-only", disk()))
             .child(div().pt(px(space::SM)).text_color(self.muted()).child("The next and previous frames are read ahead for comparison, including while zoomed. Inspection prefers a paired JPEG or embedded camera preview."))
             .child(
                 div()
                     .pt(px(space::MD))
                     .text_color(self.muted())
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .child(format!(
                         "Memory {:.1} of {} MB · textures {:.1} MB · disk {:.1} MB · {} reads · {} cache hits · {} queued",
                         stats.memory_bytes as f64 / 1048576.,
@@ -11793,7 +12018,7 @@ impl Workspace {
                     )),
             ))
             .when(section == PreferencesSection::Help, |body| body
-                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide))
+                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide()))
                 .child(self.preference_row(
                     "Getting Started",
                     "Open the guide now; F1 opens it from anywhere",
@@ -11812,7 +12037,7 @@ impl Workspace {
                 div()
                     .pt(px(space::LG))
                     .pb(px(space::SM))
-                    .text_size(ui::font(13.))
+                    .text_size(ui::font(ui::text::TITLE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.text())
                     .child("Creator Micro"),
@@ -11820,7 +12045,7 @@ impl Workspace {
             .child(
                 div()
                     .text_color(self.muted())
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .child("Arrows navigate · F13–F15 flag · F16/F17 rating · F18–F20 views · F21 zoom · F22 histogram · F23/F24 bursts. Profiles: docs/CONTROLS.md"),
             ));
         let changed: HashSet<PreferencesSection> = self
@@ -11905,7 +12130,7 @@ impl Workspace {
             div().child("Applying changes…").into_any_element()
         } else if prompt {
             div()
-                .text_size(ui::font(12.))
+                .text_size(ui::font(ui::text::BODY))
                 .text_color(self.text())
                 .child(format!(
                     "Discard {changes} {}?",
@@ -12039,10 +12264,15 @@ impl Workspace {
                     .h_full()
                     .child(self.modal_header(settings_noun(), None, cx).child(close))
                     .child(sections)
-                    .child(body)
+                    .child(div().flex_1().min_h(px(0.)).child(self.scrollable(
+                        "prefs-scrollbar",
+                        &self.prefs_scroll,
+                        body.into_any_element(),
+                        cx,
+                    )))
                     .child(
                         self.modal_footer()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(div().flex_1().min_w(px(0.)).child(status))
                             .child(buttons),
@@ -12127,7 +12357,7 @@ impl Workspace {
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(
                 self.compact_toggle(
@@ -12267,19 +12497,15 @@ impl Workspace {
             )
             .children(self.save_state_view(cx))
             .child(
+                // The theme's name lives in the tooltip: in the bar it cost
+                // ~130 px and truncated long names (R4-design-10).
                 div()
                     .id("appearance")
-                    .h(px(ui::COMPACT_CONTROL_HEIGHT))
-                    .max_w(px(if self.workspace_size.0 < 1120. {
-                        32.
-                    } else {
-                        160.
-                    }))
+                    .size(px(ui::COMPACT_CONTROL_HEIGHT))
                     .flex_shrink_0()
-                    .px(px(space::SM))
                     .flex()
                     .items_center()
-                    .gap(px(space::SM))
+                    .justify_center()
                     .occlude()
                     .cursor_pointer()
                     .hover({
@@ -12287,18 +12513,10 @@ impl Workspace {
                         move |style| style.bg(hover)
                     })
                     .child(icon("color-mode", self.icon_muted()))
-                    .when(self.workspace_size.0 >= 1120., |s| {
-                        s.child(
-                            div()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_normal()
-                                .line_clamp(1)
-                                .child(self.theme.name.clone()),
-                        )
-                    })
-                    .tooltip(self.tip("Appearance · themes, Zed sync and interface font", ""))
+                    .tooltip(self.tip(
+                        &format!("{} · Appearance, themes and fonts", self.theme.name),
+                        "",
+                    ))
                     .on_click(
                         cx.listener(|this, _, window, cx| {
                             this.execute(Cmd::Appearance, window, cx)
@@ -12706,7 +12924,7 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .font_family(self.settings.interface_font.clone())
-            .text_size(ui::font(12.))
+            .text_size(ui::font(ui::text::BODY))
             .line_height(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
             .text_color(self.text())
             .bg(self.bg())
@@ -12995,9 +13213,10 @@ mod ui_tests {
     use super::{
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
-        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
-        index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
-        palette_step, retained_position, survey_layout, text_input, thumbnail_size, ui::space,
+        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, copy,
+        grip_owns_key, index_filtered_positions, is_quit_chord, item, label_index, match_tier,
+        palette_category_rank, palette_step, retained_position, survey_layout, text_input,
+        thumbnail_size, title_match, ui::space,
     };
 
     #[test]
@@ -13045,6 +13264,17 @@ mod ui_tests {
 
     fn assert_counts(counts: &CollectionCounts, photos: &[Photo]) {
         assert_eq!(counts.all, photos.iter().filter(|p| !p.trashed).count());
+        // The rating menu's per-level counts.
+        for stars in 0..=5 {
+            assert_eq!(
+                counts.rated_at_least(stars),
+                photos
+                    .iter()
+                    .filter(|p| !p.trashed && p.rating >= stars)
+                    .count()
+            );
+        }
+        assert_eq!(counts.rated_at_least(3), counts.rated);
         assert_eq!(
             counts.picks,
             photos
@@ -13255,13 +13485,103 @@ mod ui_tests {
                     )
                 });
             } else {
-                expected.sort_by(|a, b| b.0.cmp(&a.0));
+                expected
+                    .sort_by_key(|&(score, i)| (match_tier(query, &cache.items[i].title), -score));
             }
             assert_eq!(
                 cache.matches,
                 expected.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// A Preferences control registers its Tab stop when it is built, so
+    /// every one is built inside the section that draws it: Tab then follows
+    /// the visual order and never reaches a hidden section.
+    #[test]
+    fn preferences_controls_are_built_where_they_are_drawn() {
+        let source = include_str!("desktop.rs");
+        let view = &source[source.find("fn preferences_view(").expect("view")..];
+        let view = &view[..view.find("\n    }\n").expect("end of view")];
+        assert!(!view.contains(concat!("= self.", "pref_choices(")));
+        assert!(view.contains("let theme_list = || {"));
+    }
+
+    /// Beside photo results the palette keeps title matches only, at most
+    /// three loose ones; matched letters are the ones highlighted.
+    #[test]
+    fn palette_stays_precise_beside_photo_results() {
+        let commands = || {
+            vec![
+                item(
+                    "Label Red",
+                    "Review · the active label's key clears it",
+                    "6",
+                    "symbol-color",
+                    Cmd::Label(ColorLabel::Red),
+                ),
+                item(
+                    "Getting Started",
+                    "Help · workflow, labels, cache and keyboard shortcuts",
+                    "F1",
+                    "files",
+                    Cmd::GettingStarted,
+                ),
+                item(
+                    "Export Picks in This View…",
+                    "File",
+                    "⇧E",
+                    "export",
+                    Cmd::ExportPicks,
+                ),
+                item(
+                    "Toggle 100% Zoom",
+                    "View · one image pixel per display pixel",
+                    "Z",
+                    "zoom",
+                    Cmd::Zoom,
+                ),
+                item(
+                    copy::DELETE_PERMANENTLY,
+                    "File · confirm photo/file counts and original locations",
+                    "",
+                    "trash",
+                    Cmd::PermanentDelete,
+                ),
+            ]
+        };
+        let photo = || item("02-lakeside.jpg", "Photo · Demo", "", "image", Cmd::Close);
+        let titles = |cache: &PaletteCache| -> Vec<String> {
+            cache
+                .matches
+                .iter()
+                .map(|&i| cache.items[i].title.clone())
+                .collect()
+        };
+        for (query, expected) in [
+            ("lake", vec!["02-lakeside.jpg"]),
+            ("demo", vec!["02-lakeside.jpg"]),
+        ] {
+            let mut cache = PaletteCache {
+                items: commands(),
+                ..PaletteCache::default()
+            };
+            cache.match_query(query, &[]);
+            cache.merge_found(vec![photo()], query, false);
+            assert_eq!(titles(&cache), expected, "query {query:?}");
+        }
+        let mut cache = PaletteCache {
+            items: commands(),
+            ..PaletteCache::default()
+        };
+        cache.match_query("exp", &[]);
+        assert_eq!(titles(&cache)[0], "Export Picks in This View…");
+        let one = |range: std::ops::Range<usize>| std::iter::once(range).collect::<Vec<_>>();
+        assert_eq!(title_match("exp", "Export Picks in This View…"), one(0..3));
+        assert_eq!(title_match("ep", "Export Picks"), [0..1, 2..3]);
+        assert_eq!(title_match("pick bu", "Pick Burst Winner"), one(0..7));
+        assert!(title_match("zz", "Export").is_empty());
+        assert!(title_match("", "Export").is_empty());
     }
 
     #[test]

@@ -189,7 +189,7 @@ labels, time groups and caching. Reopen it with **F1** or **?**; Preferences →
 controls whether it appears at startup. In Catalog, double-click a photo to review
 the full folder at that image. **Enter/L** also opens the full folder for zero or
 one selected photo, at the outlined photo; select multiple
-photos first to review only that set. **Show full folder** leaves a subset, and
+photos first to review only that set. **Show Full Folder** leaves a subset, and
 **G** returns to Catalog. Right-click a photo (or press Shift+F10) for Open in Review,
 Survey, Compare, decisions, Show in Files and deletion actions. Preferences **Apply**
 commits and stays open; **Apply & Close** also closes the pane. Cancel

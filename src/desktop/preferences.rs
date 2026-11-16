@@ -119,6 +119,9 @@ impl Workspace {
                     (index + 1) % SECTIONS.len()
                 };
                 self.preferences_section = SECTIONS[next].0;
+                self.prefs_scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                self.focus_revealed.borrow_mut().take();
                 self.focus_visible = true;
                 let tab = self.dialog_handle(&format!("prefs-tab-{next}"), 1, cx);
                 window.focus(&tab);
