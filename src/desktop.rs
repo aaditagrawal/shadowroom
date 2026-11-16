@@ -8021,7 +8021,8 @@ impl Workspace {
                                             },
                                         );
                                 }
-                                if let Some(badges) = this.decision_badges(photo.flag, photo.label)
+                                if let Some(badges) =
+                                    this.decision_badges(photo.id, photo.flag, photo.label)
                                 {
                                     frame = frame.child(badges);
                                 }
@@ -8437,7 +8438,7 @@ impl Workspace {
                         }),
                 );
             }
-            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+            if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 photo_box = photo_box.child(badges);
             }
             // Frame number in a fixed plate (up to "16"), the pin beside it.
@@ -8600,10 +8601,12 @@ impl Workspace {
         })
     }
     /// Decisions at the photo's top-left on one continuous 18 px scrim plate:
-    /// the pick/reject glyph, then the label chip, 2 px apart.
-    fn decision_badges(&self, flag: Flag, label: ColorLabel) -> Option<Div> {
+    /// the pick/reject glyph, then the label chip, 2 px apart; a warning glyph
+    /// last while that photo's decision failed to save (gone once it saves).
+    fn decision_badges(&self, id: i64, flag: Flag, label: ColorLabel) -> Option<Div> {
         let label = self.label_badge(label);
-        if flag == Flag::None && label.is_none() {
+        let unsaved = self.save_state() == SaveState::Failed && self.unsaved.contains_key(&id);
+        if flag == Flag::None && label.is_none() && !unsaved {
             return None;
         }
         Some(
@@ -8636,7 +8639,23 @@ impl Workspace {
                             ),
                     )
                 })
-                .children(label),
+                .children(label)
+                .when(unsaved, |s| {
+                    s.child(
+                        div()
+                            .size(px(BADGE_CELL))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path("warning")
+                                    .size(px(12.))
+                                    .text_color(self.c("shadowroom.scrim.reject", "#e07a7a")),
+                            ),
+                    )
+                }),
         )
     }
     /// Compact "★5" rating chip, bottom-right of a thumbnail (filmstrip, Survey).
@@ -8875,7 +8894,7 @@ impl Workspace {
                     .justify_center()
                     .child(icon("camera", self.icon_muted()));
             }
-            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+            if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 frame = frame.child(badges);
             }
             frame = frame.children(self.pin_badge(p.id, space::XS));
