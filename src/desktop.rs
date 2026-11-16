@@ -358,13 +358,19 @@ impl PaletteCache {
                 )
             });
         } else {
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            // Titles that contain the query, then titles that match it
+            // loosely, then rows matched only through their description.
+            scored.sort_by_cached_key(|&(score, i)| {
+                (match_tier(query, &self.items[i].title), -score)
+            });
         }
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
     }
     /// Adds photo and folder results after the commands whose title contains
-    /// the query and before the looser fuzzy matches; photo mode shows only them.
+    /// the query; photo mode shows only them. Beside real results the palette
+    /// stays precise (R4-overlays-04): at most [`PALETTE_LOOSE`] commands whose
+    /// title matches loosely follow, and description-only matches are dropped.
     fn merge_found(&mut self, found: Vec<PaletteItem>, query: &str, photos_only: bool) {
         let start = self.items.len();
         let found_rows = start..start + found.len();
@@ -376,17 +382,83 @@ impl PaletteCache {
         if found_rows.is_empty() {
             return;
         }
-        let query = query.trim().to_lowercase();
-        let (exact, loose): (Vec<usize>, Vec<usize>) = self
-            .matches
-            .iter()
-            .partition(|&&i| self.items[i].title.to_lowercase().contains(&query));
-        self.matches = exact.into_iter().chain(found_rows).chain(loose).collect();
+        let tier = |i: usize| match_tier(query, &self.items[i].title);
+        let exact = self.matches.iter().copied().filter(|&i| tier(i) == 0);
+        let loose = self.matches.iter().copied().filter(|&i| tier(i) == 1);
+        self.matches = exact
+            .chain(found_rows)
+            .chain(loose.take(PALETTE_LOOSE))
+            .collect();
     }
 }
 
 /// Rows the palette shows at once; PageUp/PageDown move by this many.
 const PALETTE_PAGE: usize = 12;
+/// The palette's right-hand category column ("Appearance" fits), at 100% text.
+const PALETTE_CATEGORY_WIDTH: f32 = 80.;
+/// Loose command matches kept beside photo and folder results.
+const PALETTE_LOOSE: usize = 3;
+
+/// How a palette title answers the query: 0 contains it, 1 matches its
+/// letters in order, 2 does not (the row matched through its description).
+fn match_tier(query: &str, title: &str) -> u8 {
+    let query = query.trim();
+    if query.is_empty() || title.to_lowercase().contains(&query.to_lowercase()) {
+        0
+    } else if fuzzy_score(query, title).is_some() {
+        1
+    } else {
+        2
+    }
+}
+
+/// Byte ranges of `title` that answer `query`, for highlighting: the first
+/// case-insensitive occurrence, else the in-order letters fuzzy matching
+/// used (whitespace in the query is skipped). Empty when nothing matches.
+fn title_match(query: &str, title: &str) -> Vec<std::ops::Range<usize>> {
+    let wanted: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let chars: Vec<(usize, char)> = title.char_indices().collect();
+    let same = |c: char, q: char| c.to_lowercase().eq(std::iter::once(q));
+    let phrase: Vec<char> = query.trim().chars().flat_map(char::to_lowercase).collect();
+    // A contiguous occurrence of the query as typed (spaces included).
+    if !phrase.is_empty() {
+        for start in 0..chars.len() {
+            if start + phrase.len() > chars.len() {
+                break;
+            }
+            if (0..phrase.len()).all(|k| same(chars[start + k].1, phrase[k])) {
+                let end = chars
+                    .get(start + phrase.len())
+                    .map_or(title.len(), |&(byte, _)| byte);
+                return vec![chars[start].0..end];
+            }
+        }
+    }
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut next = 0;
+    for &(byte, c) in &chars {
+        if next < wanted.len() && same(c, wanted[next]) {
+            next += 1;
+            let end = byte + c.len_utf8();
+            match ranges.last_mut() {
+                Some(last) if last.end == byte => last.end = end,
+                _ => ranges.push(byte..end),
+            }
+        }
+    }
+    if next == wanted.len() {
+        ranges
+    } else {
+        Vec::new()
+    }
+}
 
 /// The palette selection after an arrow or page key: arrows wrap around
 /// the ends, pages stop at them.
@@ -4921,7 +4993,11 @@ impl Workspace {
                 } else {
                     format!("Rate {}", "★".repeat(rating as usize))
                 },
-                &format!("Review · {rating} stars"),
+                &if rating == 0 {
+                    "Review · remove stars".to_string()
+                } else {
+                    format!("Review · {}", plural(rating as usize, "star", "stars"))
+                },
                 &rating.to_string(),
                 "star",
                 Cmd::Rating(rating),
@@ -11040,6 +11116,11 @@ impl Workspace {
             let cmd = item.command.clone();
             let title = item.title.clone();
             let recent = self.palette_query.is_empty() && self.palette_recent.contains(&item.title);
+            let matched = HighlightStyle {
+                color: Some(self.text()),
+                font_weight: Some(FontWeight::MEDIUM),
+                ..HighlightStyle::default()
+            };
             // "Category · description": description inline, category in a right column.
             let (category, description) = match item.detail.split_once(" · ") {
                 Some((category, description)) => (category.to_string(), description.to_string()),
@@ -11093,9 +11174,23 @@ impl Workspace {
                             .gap(px(space::SM))
                             .whitespace_nowrap()
                             .overflow_hidden()
-                            .child(item.title.clone())
+                            // Matched letters in MEDIUM and full text colour say
+                            // why a row is listed (OV-19).
+                            .child(
+                                div().flex_shrink_0().child(
+                                    StyledText::new(item.title.clone()).with_highlights(
+                                        title_match(&self.palette_query, &item.title)
+                                            .into_iter()
+                                            .map(|range| (range, matched)),
+                                    ),
+                                ),
+                            )
+                            // The description gives way first and ends in an
+                            // ellipsis, never mid-glyph (R4-overlays-07).
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w(px(0.))
                                     .text_size(ui::font(11.))
                                     .text_color(self.muted())
                                     .overflow_hidden()
@@ -11103,9 +11198,17 @@ impl Workspace {
                                     .child(description),
                             ),
                     )
+                    // Keys, then the category in a fixed column, so categories
+                    // line up whether or not a row has a key (OV-20).
+                    .when(!item.shortcut.is_empty(), |s| {
+                        s.child(self.keycaps(&item.shortcut))
+                    })
                     .child(
                         div()
+                            .w(px(ui::scaled(PALETTE_CATEGORY_WIDTH)))
                             .flex_shrink_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(ui::font(11.))
                             // Blue marks only where you are; "Recent" is a
                             // plain tag (and full text on the active row).
@@ -11116,9 +11219,6 @@ impl Workspace {
                                 category
                             }),
                     )
-                    .when(!item.shortcut.is_empty(), |s| {
-                        s.child(self.keycaps(&item.shortcut))
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_palette_command(cmd.clone(), title.clone(), window, cx);
                     })),
@@ -13010,9 +13110,10 @@ mod ui_tests {
     use super::{
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
-        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
-        index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
-        palette_step, retained_position, survey_layout, text_input, thumbnail_size, ui::space,
+        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, copy,
+        grip_owns_key, index_filtered_positions, is_quit_chord, item, label_index, match_tier,
+        palette_category_rank, palette_step, retained_position, survey_layout, text_input,
+        thumbnail_size, title_match, ui::space,
     };
 
     #[test]
@@ -13270,13 +13371,90 @@ mod ui_tests {
                     )
                 });
             } else {
-                expected.sort_by(|a, b| b.0.cmp(&a.0));
+                expected
+                    .sort_by_key(|&(score, i)| (match_tier(query, &cache.items[i].title), -score));
             }
             assert_eq!(
                 cache.matches,
                 expected.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// Beside photo results the palette keeps title matches only, at most
+    /// three loose ones; matched letters are the ones highlighted.
+    #[test]
+    fn palette_stays_precise_beside_photo_results() {
+        let commands = || {
+            vec![
+                item(
+                    "Label Red",
+                    "Review · the active label's key clears it",
+                    "6",
+                    "symbol-color",
+                    Cmd::Label(ColorLabel::Red),
+                ),
+                item(
+                    "Getting Started",
+                    "Help · workflow, labels, cache and keyboard shortcuts",
+                    "F1",
+                    "files",
+                    Cmd::GettingStarted,
+                ),
+                item(
+                    "Export Picks in This View…",
+                    "File",
+                    "⇧E",
+                    "export",
+                    Cmd::ExportPicks,
+                ),
+                item(
+                    "Toggle 100% Zoom",
+                    "View · one image pixel per display pixel",
+                    "Z",
+                    "zoom",
+                    Cmd::Zoom,
+                ),
+                item(
+                    copy::DELETE_PERMANENTLY,
+                    "File · confirm photo/file counts and original locations",
+                    "",
+                    "trash",
+                    Cmd::PermanentDelete,
+                ),
+            ]
+        };
+        let photo = || item("02-lakeside.jpg", "Photo · Demo", "", "image", Cmd::Close);
+        let titles = |cache: &PaletteCache| -> Vec<String> {
+            cache
+                .matches
+                .iter()
+                .map(|&i| cache.items[i].title.clone())
+                .collect()
+        };
+        for (query, expected) in [
+            ("lake", vec!["02-lakeside.jpg"]),
+            ("demo", vec!["02-lakeside.jpg"]),
+        ] {
+            let mut cache = PaletteCache {
+                items: commands(),
+                ..PaletteCache::default()
+            };
+            cache.match_query(query, &[]);
+            cache.merge_found(vec![photo()], query, false);
+            assert_eq!(titles(&cache), expected, "query {query:?}");
+        }
+        let mut cache = PaletteCache {
+            items: commands(),
+            ..PaletteCache::default()
+        };
+        cache.match_query("exp", &[]);
+        assert_eq!(titles(&cache)[0], "Export Picks in This View…");
+        assert_eq!(title_match("exp", "Export Picks in This View…"), [0..3]);
+        assert_eq!(title_match("ep", "Export Picks"), [0..1, 2..3]);
+        assert_eq!(title_match("pick bu", "Pick Burst Winner"), [0..7]);
+        assert!(title_match("zz", "Export").is_empty());
+        assert!(title_match("", "Export").is_empty());
     }
 
     #[test]
