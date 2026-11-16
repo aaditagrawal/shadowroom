@@ -121,7 +121,7 @@ selected Catalog photo keeps that batch; right-clicking a different photo makes
 it the action target. The menu names the photo or selected count. Up/Down (which
 wrap), Home/End and Enter activate a row, the row keys (P, X, R, 0–5, 6–9, S, C,
 Delete, Shift+Delete) act directly, and Escape, Shift+F10 or the Menu key closes it.
-A photo whose decision failed to save shows a warning glyph on its thumbnail plate
+A photo whose decision failed to save shows the error glyph (a circled ×) on its thumbnail plate
 until the decision saves.
 
 The command palette lists photos whose filename contains the query (so

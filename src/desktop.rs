@@ -78,8 +78,8 @@ impl AssetSource for Assets {
             )),
             "zoom" => Some(include_bytes!("../assets/icons/zoom-in.svg")),
             "zoom-out" => Some(include_bytes!("../assets/icons/shadowroom/zoom-out.svg")),
-            "graph" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
             "histogram" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
+            "culling" => Some(include_bytes!("../assets/icons/shadowroom/culling.svg")),
             "undo" => Some(include_bytes!("../assets/icons/discard.svg")),
             "redo" => Some(include_bytes!("../assets/icons/redo.svg")),
             "next" => Some(include_bytes!("../assets/icons/arrow-right.svg")),
@@ -105,7 +105,6 @@ impl AssetSource for Assets {
             )),
             "library" => Some(include_bytes!("../assets/icons/library.svg")),
             "files" => Some(include_bytes!("../assets/icons/file-code.svg")),
-            "xmp" => Some(include_bytes!("../assets/icons/file-code.svg")),
             "export" => Some(include_bytes!("../assets/icons/export.svg")),
             "import" => Some(include_bytes!("../assets/icons/shadowroom/import.svg")),
             "grid" => Some(include_bytes!("../assets/icons/shadowroom/view-grid.svg")),
@@ -140,6 +139,7 @@ impl AssetSource for Assets {
             "refresh" => Some(include_bytes!("../assets/icons/refresh.svg")),
             "stop" => Some(include_bytes!("../assets/icons/stop-circle.svg")),
             "warning" => Some(include_bytes!("../assets/icons/warning.svg")),
+            "error" => Some(include_bytes!("../assets/icons/shadowroom/error.svg")),
             "symbol-color" => Some(include_bytes!("../assets/icons/symbol-color.svg")),
             "color-mode" => Some(include_bytes!("../assets/icons/color-mode.svg")),
             "panel-left" => Some(include_bytes!("../assets/icons/shadowroom/panel-left.svg")),
@@ -4714,7 +4714,7 @@ impl Workspace {
                 "Export XMP Sidecars…",
                 "File · selection or current view",
                 "",
-                "xmp",
+                "files",
                 Cmd::ExportXmp,
             ),
             item(reveal_label(), "File", "", "external", Cmd::Reveal),
@@ -4890,9 +4890,9 @@ impl Workspace {
             ),
             item(
                 "Show Clipping",
-                "View · blown highlights red, crushed shadows blue",
+                "View · blown highlights magenta, crushed shadows blue",
                 "J",
-                "histogram",
+                "clipping",
                 Cmd::Clipping,
             ),
             item(
@@ -4945,7 +4945,7 @@ impl Workspace {
                 "panel-right",
                 Cmd::Inspector,
             ),
-            item("Toggle Histogram", "View", "H", "graph", Cmd::Histogram),
+            item("Toggle Histogram", "View", "H", "histogram", Cmd::Histogram),
             item(
                 "Filter by Rating…",
                 "Filter",
@@ -4957,7 +4957,7 @@ impl Workspace {
                 "Show Culling Panel",
                 "View · histogram, labels and burst in the inspector",
                 "",
-                "histogram",
+                "culling",
                 Cmd::InspectorTab(false),
             ),
             item(
@@ -4971,7 +4971,7 @@ impl Workspace {
                 "Toggle Histogram Log Scale",
                 "View",
                 "",
-                "graph",
+                "histogram",
                 Cmd::HistogramLog,
             ),
             item(
@@ -6353,12 +6353,7 @@ impl Workspace {
     /// Boxed keys, one cap per key, as Zed's palette draws bindings. The one
     /// keycap component: menus, tooltips, dialog footers, bars and the guide.
     fn keycaps(&self, keys: &str) -> Div {
-        keycap_row(
-            keys,
-            self.group_border(),
-            self.canvas_bg(),
-            self.muted(),
-        )
+        keycap_row(keys, self.group_border(), self.canvas_bg(), self.muted())
     }
     /// Shared 28 px control, with an 8 px icon/label gap.
     fn button(
@@ -9160,7 +9155,7 @@ impl Workspace {
         })
     }
     /// Decisions at the photo's top-left on one continuous 18 px scrim plate:
-    /// the pick/reject glyph, then the label chip, 2 px apart; a warning glyph
+    /// the pick/reject glyph, then the label chip, 2 px apart; the error glyph
     /// last while that photo's decision failed to save (gone once it saves).
     fn decision_badges(&self, id: i64, flag: Flag, label: ColorLabel) -> Option<Div> {
         let label = self.label_badge(label);
@@ -9207,9 +9202,10 @@ impl Workspace {
                             .flex_shrink_0()
                             .items_center()
                             .justify_center()
+                            // Circle-x: a failure, not the warning triangle.
                             .child(
                                 svg()
-                                    .path("warning")
+                                    .path("error")
                                     .size(px(12.))
                                     .text_color(self.c("shadowroom.scrim.reject", "#e07a7a")),
                             ),
@@ -10564,11 +10560,12 @@ impl Workspace {
                     .border_b_1()
                     .border_color(self.border())
                     // "Culling", not a second "Review": that name and the
-                    // loupe glyph belong to the view.
+                    // loupe glyph belong to the view; the ledger glyph, not
+                    // the histogram toggle's mountain (R5-design-02).
                     .child(self.panel_tab(
                         "panel-review",
                         "Culling",
-                        "histogram",
+                        "culling",
                         Cmd::InspectorTab(false),
                         !self.inspector_info,
                         cx,
@@ -12810,7 +12807,7 @@ impl Workspace {
                 self.compact_toggle(
                     "toggle-histogram",
                     "",
-                    "graph",
+                    "histogram",
                     Cmd::Histogram,
                     self.histogram && self.inspector,
                     cx,

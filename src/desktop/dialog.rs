@@ -707,7 +707,7 @@ impl Workspace {
                                 .gap(px(space::XS))
                                 .text_size(ui::font(ui::text::LABEL))
                                 .text_color(error_color)
-                                .child(icon("warning", error_color).size(px(12.)))
+                                .child(icon("error", error_color).size(px(12.)))
                                 .child(
                                     div()
                                         .flex_1()

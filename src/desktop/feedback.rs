@@ -455,7 +455,7 @@ impl Workspace {
                     .cursor_pointer()
                     .occlude()
                     .hover(move |s| s.bg(hover))
-                    .child(icon("warning", error).size(px(12.)))
+                    .child(icon("error", error).size(px(12.)))
                     .child(label)
                     .tooltip(self.tip("Retry saving decisions and preferences", ""))
                     .on_click(
@@ -751,7 +751,7 @@ impl Workspace {
                     .h(px(ui::COMPACT_CONTROL_HEIGHT))
                     .flex()
                     .items_center()
-                    .child(icon("warning", error)),
+                    .child(icon("error", error)),
             )
             .child(body)
             .when(retry, |s| {
