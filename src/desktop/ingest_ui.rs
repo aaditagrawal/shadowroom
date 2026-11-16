@@ -881,12 +881,12 @@ impl ImportUi {
     /// A scan finished: a pending "Retry failed" picks its photos, and a
     /// result kept for this card finds its failed tiles in the new scan.
     fn attach_outcome(&mut self) {
-        if let Some((source, wanted)) = self.retry_sources.take() {
-            if source == self.source {
-                let ids = self.groups_for_sources(&wanted);
-                self.retry_select(ids);
-                return;
-            }
+        if let Some((source, wanted)) = self.retry_sources.take()
+            && source == self.source
+        {
+            let ids = self.groups_for_sources(&wanted);
+            self.retry_select(ids);
+            return;
         }
         let Some(outcome) = self.outcome.clone().filter(|o| o.source == self.source) else {
             return;
@@ -1651,12 +1651,34 @@ impl Workspace {
                 let limit = params["limit"].as_u64().unwrap_or(100).min(1000) as usize;
                 let items: Vec<_> = self.import_ui.items.iter().skip(start).take(limit).map(|g| json!({"id":g.id,"path":g.primary.path,"filename":g.photo.filename,"kind":g.kind,"size":g.bytes(),"capture_ms":g.capture_ms,"capture_kind":g.capture_kind,"selected":self.import_ui.selected.contains(&g.id),"seen":g.seen,"warning":g.warning,"companion":g.companion,"sidecars":g.sidecars})).collect();
                 let plan = self.import_ui.plan.as_ref().map(|s| json!({"ready":s.ready,"error":s.error,"photos":s.plan.photos,"videos":s.plan.videos,"files":s.plan.files,"bytes":s.plan.bytes,"example":s.plan.example,"space":s.space,"options":s.plan.options,"examples":s.plan.groups.iter().take(5).map(|g| &g.files).collect::<Vec<_>>()}));
+                let outcome = |o: &Outcome| json!({"source":o.source,"text":o.text,"failed_ids":o.failed_ids,"failed_sources":o.failed_sources,"errors":o.errors});
                 return Ok(
-                    json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"queue":self.import_ui.queue,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock)}),
+                    json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"queue":self.import_ui.queue,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock),
+                        "outcome":self.import_ui.outcome.as_ref().map(outcome),"elsewhere":self.import_ui.elsewhere.iter().map(outcome).collect::<Vec<_>>(),"failed_tiles":self.import_ui.failed.keys().collect::<Vec<_>>()}),
                 );
             }
             "ingest_cancel" => {
                 self.enqueue(IoCommand::IngestCancel);
+            }
+            // Retry failed for a card: its result in the view, kept for
+            // another card, or its latest failed History row.
+            "ingest_retry_failed" => {
+                let source = params["source"].as_str().map(PathBuf::from);
+                let ui = &self.import_ui;
+                let outcome = ui
+                    .outcome
+                    .iter()
+                    .chain(ui.elsewhere.iter().rev())
+                    .find(|o| source.as_ref().is_none_or(|s| *s == o.source))
+                    .cloned()
+                    .or_else(|| {
+                        ui.history["jobs"].as_array()?.iter().find_map(|job| {
+                            history_outcome(job)
+                                .filter(|o| source.as_ref().is_none_or(|s| *s == o.source))
+                        })
+                    })
+                    .ok_or("No failed import to retry")?;
+                self.retry_outcome(&outcome);
             }
             "ingest_dequeue" => {
                 self.enqueue(IoCommand::IngestDequeue(PathBuf::from(
@@ -3636,8 +3658,10 @@ impl Workspace {
                 .p(px(ui::PANEL_INSET))
                 .gap(px(space::MD))
                 .child(
+                    // Title and Close on one row, centred, as in the Import header.
                     div()
                         .flex()
+                        .items_center()
                         .justify_between()
                         .child("Import History")
                         .child(self.button(
@@ -4143,7 +4167,15 @@ impl Workspace {
         };
         let skipped = count("skipped");
         let manifest = counts["manifest"].as_str().map(PathBuf::from);
-        let retry = history_outcome(job).is_some();
+        // A later verified job from the same source already retried it.
+        let superseded = self.import_ui.history["jobs"]
+            .as_array()
+            .is_some_and(|jobs| {
+                jobs.iter().take(n).any(|newer| {
+                    newer["source"] == job["source"] && newer["verification"] == "completed"
+                })
+            });
+        let retry = !superseded && history_outcome(job).is_some();
         let toggle = format!("history_row:{id}");
         let hover = self.hover_bg();
         let mut row = div()
@@ -5070,7 +5102,8 @@ impl Workspace {
                 None => label.clone(),
             };
             if ui_state.active() && ui_state.queued(&ui_state.source) {
-                // Queued: a statement in full ink, not a dimmed button.
+                // Queued: a statement in full ink, not a dimmed button, with
+                // its own ✕ inside it (apart from Close Import).
                 actions = actions.child(
                     div()
                         .id("ingest-queued")
@@ -5079,31 +5112,64 @@ impl Workspace {
                         .items_center()
                         .gap(px(space::SM))
                         .h(px(ui::CONTROL_HEIGHT + 4.))
-                        .px(px(space::MD))
+                        .pl(px(space::MD))
+                        .pr(px(space::XS))
                         .border_1()
                         .border_color(self.border())
                         .whitespace_nowrap()
                         .child(icon("check", self.icon_muted()))
-                        .child(format!(
-                            "Queued · starts after {}",
-                            copy::source_name(&ui_state.progress)
-                        ))
+                        .child(
+                            div()
+                                .id("ingest-queued-text")
+                                .child(format!(
+                                    "Queued · starts after {}",
+                                    copy::source_name(&ui_state.progress)
+                                ))
+                                .tooltip(self.tip(
+                                    "Starts by itself when the running import ends or is cancelled",
+                                    "",
+                                )),
+                        )
+                        .child(
+                            self.compact_button(
+                                "ingest-dequeue",
+                                "",
+                                "close",
+                                Cmd::Ingest(format!("dequeue:{}", ui_state.source.display())),
+                                false,
+                                cx,
+                            )
+                            .tooltip(self.tip("Remove this card from the queue", "")),
+                        ),
+                );
+                // The running card is out and this one is next: start it now.
+                if ui_state.progress.source_missing
+                    && ui_state
+                        .queue
+                        .first()
+                        .is_some_and(|next| next.source == ui_state.source)
+                {
+                    let card = copy::source_name(&ui_state.progress);
+                    actions = actions.child(
+                        self.action_button(
+                            "ingest-skip-to-this",
+                            &format!(
+                                "Skip {card} · start {}",
+                                queued_name(&ui_state.queue[0])
+                            ),
+                            Cmd::Ingest("skip".into()),
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        )
                         .tooltip(self.tip(
-                            "Starts by itself when the running import ends or is cancelled",
+                            &format!(
+                                "Stop waiting for {card}; its verified photos stay imported and this card starts now"
+                            ),
                             "",
                         )),
-                );
-                actions = actions.child(
-                    self.compact_button(
-                        "ingest-dequeue",
-                        "",
-                        "close",
-                        Cmd::Ingest(format!("dequeue:{}", ui_state.source.display())),
-                        false,
-                        cx,
-                    )
-                    .tooltip(self.tip("Remove from the queue", "")),
-                );
+                    );
+                }
             } else {
                 actions = actions.child(
                     self.ingest_primary(&label, blocker.is_some(), cx)
