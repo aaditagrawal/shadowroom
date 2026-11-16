@@ -147,7 +147,7 @@ const GRID: u32 = 0x1c1c1c;
 /// Standalone defaults (dark panel); the inspector passes theme colours.
 const LABEL: u32 = 0x9a9a9a;
 const LABEL_STRONG: u32 = 0xe6e6e6;
-const LABEL_WARNING: u32 = 0xe8893a;
+const LABEL_WARNING: u32 = 0xce7629;
 /// "No histogram data" sits on the dark plot plate in every theme.
 const EMPTY_LABEL: u32 = 0x9a9a9a;
 const AXIS_ROW: f32 = 14.;
@@ -156,7 +156,18 @@ const LABEL_SIZE: f32 = 11.;
 
 /// Height of the tick and readout rows below the plot at `text_scale`.
 pub fn label_rows_height(text_scale: f32) -> f32 {
-    ((AXIS_ROW + NOTE_ROW) * text_scale).round()
+    ((AXIS_ROW + NOTE_ROW) * text_scale.max(1.)).round()
+}
+
+/// Tick and readout text size: 11 px at 100%, scaled with the text but never
+/// below the 11 px floor (90% Text size included).
+fn label_size(text_scale: f32) -> f32 {
+    (LABEL_SIZE * text_scale).max(LABEL_SIZE)
+}
+
+/// Width of a tick's text box: "255" fits at every Text size.
+fn tick_box(text_scale: f32) -> f32 {
+    (TICK_BOX * text_scale).max(TICK_BOX).ceil()
 }
 /// Share of the frame before an end counts as clipped at all.
 const CLIP_THRESHOLD: f64 = 0.001;
@@ -166,8 +177,12 @@ pub const CLIP_WARNING: f64 = 0.005;
 /// Colour clipping (one or two channels at 255) is common on saturated
 /// subjects and warns only past this share.
 pub const CHANNEL_WARNING: f64 = 0.02;
-/// Side of the readout's ink swatches.
-const SWATCH: f32 = 6.;
+/// Side of the readout's ink swatches, a 1 px outline in the label colour
+/// included, so the legend reads as a bounded square at 3:1 on any panel
+/// whatever its ink (R5-a11y-03).
+const SWATCH: f32 = 8.;
+/// Tick boxes at 100% text: room for "255" at 11 px, widened with the text.
+const TICK_BOX: f32 = 28.;
 
 // Band fills (straight alpha over #0f0f0f). Bands never overlap, so alpha only
 // mixes with the plot background.
@@ -206,7 +221,8 @@ pub fn histogram_with(
     let height = height.max(16.);
     let labels = options.labels && height >= 72.;
     let text_scale = options.text_scale.clamp(0.5, 3.);
-    let label_size = px(LABEL_SIZE * text_scale);
+    let label_size = px(label_size(text_scale));
+    let tick_box = tick_box(text_scale);
     let axis_row = (AXIS_ROW * text_scale).round();
     let note_row = label_rows_height(text_scale) - axis_row;
     let plot_height = if labels {
@@ -276,11 +292,11 @@ pub fn histogram_with(
             .text_color(options.label);
         for (value, text) in ticks {
             let x = value as f32 / 255. * width;
-            let tick = div().absolute().top(px(1.)).w(px(28.)).child(text);
+            let tick = div().absolute().top(px(1.)).w(px(tick_box)).child(text);
             axis = axis.child(match value {
                 0 => tick.left(px(0.)),
                 255 => tick.right(px(0.)).text_right(),
-                _ => tick.left(px(x - 14.)).text_center(),
+                _ => tick.left(px(x - tick_box / 2.)).text_center(),
             });
         }
         root = root.child(axis).child(
@@ -318,7 +334,14 @@ pub fn histogram_with(
                                 .when(part.warn, |s| s.text_color(options.label_warning))
                                 // The overlay's ink, as the end markers draw it.
                                 .when_some(part.ink, |s, ink| {
-                                    s.child(div().flex_none().size(px(SWATCH)).bg(ink))
+                                    s.child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(SWATCH))
+                                            .border_1()
+                                            .border_color(options.label)
+                                            .bg(ink),
+                                    )
                                 })
                                 .child(part.text)
                         })),
@@ -580,9 +603,15 @@ impl Prepared {
             });
         }
 
-        // Clip markers: boxy 7 px squares in the top corners, in the
-        // overlay's ink for that end (the readout's swatches match).
-        let marker = 7.;
+        // Clip markers: boxy 8 px squares in the top corners, in the
+        // overlay's ink for that end (the readout's swatches match), with a
+        // 1 px outline that holds 3:1 on the plate (R5-a11y-03).
+        let marker = 8.;
+        let ring = if self.light {
+            rgb(0x292929)
+        } else {
+            rgb(0xe6e6e6)
+        };
         let (low, high) = self.clipped_ends();
         for (lit, x, color) in [
             (low, left + 3., ink(SHADOW_INK)),
@@ -592,10 +621,9 @@ impl Prepared {
             if !lit {
                 continue;
             }
-            window.paint_quad(fill(
-                Bounds::new(point(px(x), px(top + 3.)), size(px(marker), px(marker))),
-                color,
-            ));
+            let square = Bounds::new(point(px(x), px(top + 3.)), size(px(marker), px(marker)));
+            window.paint_quad(fill(square, color));
+            window.paint_quad(gpui::outline(square, ring, gpui::BorderStyle::Solid));
         }
 
         window.paint_quad(gpui::outline(
@@ -676,6 +704,19 @@ impl Plot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tick_and_readout_text_keep_the_floor_and_fit_their_boxes() {
+        // 90% Text size never draws below 11 px (R5-a11y-05).
+        assert!(label_size(0.9) >= 11.);
+        assert_eq!(label_size(1.0), 11.);
+        // "255" in Geist Mono (0.6 em advance) fits its box at every size.
+        for scale in [0.9, 1.0, 1.1, 1.25, 1.5] {
+            let advance = 3. * 0.6 * label_size(scale);
+            assert!(tick_box(scale) >= advance, "{scale}: {advance}");
+            assert!(label_rows_height(scale) >= 2. * label_size(scale));
+        }
+    }
 
     fn hist(f: impl Fn(usize) -> (u64, u64, u64)) -> Histogram {
         let mut h = Histogram {

@@ -39,6 +39,9 @@ pub(super) struct NoticeAction {
 #[derive(Clone)]
 pub(super) struct Flash {
     pub text: String,
+    /// A short form for Focus mode's docked slot, where the status bar that
+    /// would hold the full text is hidden (the full text is its tooltip).
+    pub short: Option<String>,
     pub tone: Tone,
     pub action: Option<NoticeAction>,
     pub until: Instant,
@@ -63,6 +66,7 @@ impl Flash {
         };
         Self {
             text: text.into(),
+            short: None,
             tone,
             action,
             until: now + ttl,
@@ -216,6 +220,25 @@ impl Workspace {
         self.status.clone_from(&text);
         self.feedback.flash =
             Some(Flash::new(text, tone, None, Instant::now()).after(self.feedback.flash.as_ref()));
+    }
+    /// [`Self::announce`] with a short form for Focus mode's docked slot.
+    pub(super) fn announce_short(
+        &mut self,
+        text: impl Into<String>,
+        short: impl Into<String>,
+        tone: Tone,
+    ) {
+        self.announce(text, tone);
+        if let Some(flash) = self.feedback.flash.as_mut() {
+            flash.short = Some(short.into());
+        }
+    }
+    /// What a notice says where it is drawn: the short form in Focus mode.
+    pub(super) fn flash_text<'a>(&self, flash: &'a Flash) -> &'a str {
+        match &flash.short {
+            Some(short) if !self.chrome_visible() => short,
+            _ => &flash.text,
+        }
     }
     /// Withdraws the notice for `key` once the condition it describes ended;
     /// true when a visible notice went away.
@@ -383,8 +406,11 @@ impl Workspace {
         let glyph = match flash.tone {
             Tone::Info => None,
             Tone::Success => Some(("check", self.c("success", "#7fbf7f"))),
-            Tone::Warning => Some(("warning", self.c("warning", "#e0b341"))),
+            Tone::Warning => Some(("warning", self.warning())),
         };
+        // Docked in Focus mode the slot may still cut a long notice; the
+        // full text is one hover away.
+        let docked = !self.chrome_visible();
         Some(
             self.fade_in(
                 motion::occurrence("status-notice-in", flash.since),
@@ -406,8 +432,9 @@ impl Workspace {
                             .text_ellipsis()
                             .whitespace_normal()
                             .line_clamp(1)
-                            .child(flash.text.clone()),
+                            .child(self.flash_text(flash).to_owned()),
                     )
+                    .when(docked, |s| s.tooltip(self.tip(&flash.text, "")))
                     .children(flash.action.as_ref().map(|action| {
                         self.compact_button(
                             "status-notice-action",
@@ -455,7 +482,7 @@ impl Workspace {
                     .cursor_pointer()
                     .occlude()
                     .hover(move |s| s.bg(hover))
-                    .child(icon("warning", error).size(px(12.)))
+                    .child(icon("error", error).size(px(12.)))
                     .child(label)
                     .tooltip(self.tip("Retry saving decisions and preferences", ""))
                     .on_click(
@@ -574,7 +601,7 @@ impl Workspace {
                 "Widen the filter, or select more photos before comparing.",
                 self.button(
                     "compare-show-all",
-                    "Show all photos",
+                    "Show All Photos",
                     "library",
                     Cmd::ClearFilters,
                     false,
@@ -731,12 +758,7 @@ impl Workspace {
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
             .bg(self.c("elevated_surface.background", "#1b1b1b"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
             .child(
                 div()
                     .absolute()
@@ -751,7 +773,7 @@ impl Workspace {
                     .h(px(ui::COMPACT_CONTROL_HEIGHT))
                     .flex()
                     .items_center()
-                    .child(icon("warning", error)),
+                    .child(icon("error", error)),
             )
             .child(body)
             .when(retry, |s| {
@@ -1031,13 +1053,17 @@ impl Workspace {
                             .whitespace_normal()
                             .child(prompt.body()),
                     )
-                    .when(prompt.error.is_none(), |s| {
-                        s.child(
-                            div()
-                                .text_size(ui::font(ui::text::LABEL))
-                                .text_color(self.muted())
-                                .child(format!("Press {} again to quit anyway.", shortcut("⌘Q"))),
-                        )
+                    // The shared keycap hint row (R2-overlays-08); a refused
+                    // Quit Anyway leaves its key out.
+                    .child(if prompt.error.is_none() {
+                        self.key_hints(&[
+                            ("Tab", "Switch"),
+                            ("Enter", "Retry"),
+                            ("⌘Q", "Quit Anyway"),
+                            ("Esc", "Cancel"),
+                        ])
+                    } else {
+                        self.key_hints(&[("Tab", "Switch"), ("Enter", "Retry"), ("Esc", "Cancel")])
                     })
                     .children(prompt.error.as_ref().map(|error| {
                         div()

@@ -464,8 +464,8 @@ impl Workspace {
                 .px(px(ui::PANEL_INSET))
                 .bg(self.c("elevated_surface.background", "#1b1b1b"))
                 .border_b_1()
-                .border_color(self.c("warning", "#e0b341"))
-                .child(icon("warning", self.c("warning", "#e0b341")))
+                .border_color(self.warning())
+                .child(icon("warning", self.warning()))
                 .child(
                     div()
                         .flex_1()
@@ -497,10 +497,8 @@ impl Workspace {
                     cx,
                 ))
                 .child(
-                    div()
-                        .text_size(ui::font(ui::text::LABEL))
-                        .text_color(self.muted())
-                        .child(format!("{} applies · Esc cancels", shortcut("Enter"))),
+                    self.key_hints(&[("Enter", "Apply"), ("Esc", "Cancel")])
+                        .flex_shrink_0(),
                 )
                 .into_any_element(),
         )
@@ -935,7 +933,7 @@ impl Workspace {
             if self.min_rating > 0 {
                 actions = actions.child(self.action_button(
                     "empty-clear-rating",
-                    "Clear rating filter",
+                    "Clear Rating Filter",
                     Cmd::SetMinRating(0),
                     ButtonKind::Primary,
                     false,
@@ -944,7 +942,7 @@ impl Workspace {
             }
             actions = actions.child(self.action_button(
                 "empty-show-all",
-                "Show all photos",
+                "Show All Photos",
                 Cmd::ClearFilters,
                 ButtonKind::Secondary,
                 false,

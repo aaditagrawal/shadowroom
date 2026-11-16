@@ -503,7 +503,7 @@ impl Workspace {
             .unwrap_or_default();
         let thumbnails = (!ids.is_empty()).then(|| self.deletion_thumbnails(&ids, cx));
         let error = self.c("error", "#d46a6a");
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.warning();
         let surface = self.modal_surface("deletion-confirmation", dialog::DIALOG_MEDIUM);
         let surface = if let Some(c) = self.deletion.confirmation() {
             let focus_ring = |button: Stateful<Div>, focused: bool| {

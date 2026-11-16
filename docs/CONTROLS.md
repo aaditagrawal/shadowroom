@@ -26,7 +26,7 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Alt/Option + arrows | Pan a zoomed photo by a third of the view |
 | `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
 | Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
-| Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip; notices dock in the bottom bar, which otherwise shows a compact culling line (exposure and capture time). Press again for lights out in Review, Compare and Survey: the bottom bar and filmstrip fold into an 8 px cull ledger along the window's bottom edge, and each decision shows a brief typed stamp (**PICK**, **REJECT**, **★★★★**) at the bottom centre (held without fading under Reduce motion). A third press leaves Focus mode. In Compare, Tab changes the active pane and Shift+Tab is Focus mode |
+| Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip; notices dock in the bottom bar (in a short form, taking room from the bar's optional items and, if they must, the stars; hover for the full text), which otherwise shows a compact culling line (capture time, then exposure). Press again for lights out in Review, Compare and Survey: the bottom bar and filmstrip fold into an 8 px cull ledger on the canvas colour along the window's bottom edge, and each decision shows a typed stamp (**PICK**, **REJECT**, **★★★★**) with its undo key at the bottom centre for a second (longer, without fading, under Reduce motion). Undo and Redo stamp what they took back or put back (**UNDO · PICK**), J and F stamp the aid (**CLIPPING ON**, **PREPARING CLIPPING…**), and a batch decision keeps its Undo notice above the ledger. A third press leaves Focus mode. In Compare, Tab changes the active pane and Shift+Tab is Focus mode |
 | F11 | Full screen on or off |
 | Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
 | `F` | Toggle focus peaking in Review and Compare (red by default; color and sensitivity in **Preferences → Culling**) |
@@ -86,10 +86,12 @@ visual aid, not an automatic sharpness verdict, and never changes the source or
 histogram. The clipping overlay (`J`, or the clipping button by the inspector's
 histogram) marks the displayed preview with one rule: crushed shadows (every
 channel at 2 or below) solid blue, and highlights in magenta stripes, wide where
-every channel is blown and thin where only one or two channels reach 254. A
+every channel is blown and thin where only one or two channels reach 254, sized
+for the screen (4 and 2 display pixels at Fit as at 100%). A
 saturated colour with one channel at 0 (grass, a fuchsia dress) is not a shadow.
 The histogram footer names the same ends in words with the overlay's colours
-(**Shadows 0.8% · Highlights 1.0%**), measured on the preview the overlay paints,
+(**Shadows 0.8% · Highlights 1.0%**, each with an outlined swatch of its ink),
+measured on the preview the overlay paints,
 so the figures do not change while sharper previews load (**Measuring…** until
 then). They turn to the warning colour above 0.5% of the frame, or above 2% when
 only one or two channels clip. Pressing `J` or `F` says **Preparing clipping…**
@@ -121,7 +123,7 @@ selected Catalog photo keeps that batch; right-clicking a different photo makes
 it the action target. The menu names the photo or selected count. Up/Down (which
 wrap), Home/End and Enter activate a row, the row keys (P, X, R, 0–5, 6–9, S, C,
 Delete, Shift+Delete) act directly, and Escape, Shift+F10 or the Menu key closes it.
-A photo whose decision failed to save shows a warning glyph on its thumbnail plate
+A photo whose decision failed to save shows the error glyph (a circled ×) on its thumbnail plate
 until the decision saves.
 
 The command palette lists photos whose filename contains the query (so

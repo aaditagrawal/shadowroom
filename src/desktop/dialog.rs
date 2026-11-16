@@ -277,11 +277,14 @@ impl Workspace {
     }
 
     /// The one dialog surface: elevated background, variant border and shadow.
+    /// `width` at 100% text; the surface widens with the Text size (up to the
+    /// window minus the scrim's margin), so a 125% palette or Preferences
+    /// keeps room for what it was sized for (R5-overlays-07).
     pub(super) fn modal_surface(&self, id: impl Into<ElementId>, width: f32) -> Stateful<Div> {
         div()
             .id(id)
             .occlude()
-            .w(px(width))
+            .w(px((width * ui::text_scale().max(1.)).round()))
             .max_w_full()
             .max_h_full()
             .flex()
@@ -290,12 +293,7 @@ impl Workspace {
             .bg(self.c("elevated_surface.background", "#202020"))
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(8.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::dialog_shadow())
     }
 
     /// 45 px title bar: a MEDIUM title in the TITLE role (13 px at 100%),
@@ -352,8 +350,9 @@ impl Workspace {
     }
 
     /// A floating menu's surface: elevated fill, hairline border, the shared
-    /// 4/14 px shadow tooltips use, and 4 px padding. Every popover menu draws
-    /// on it, so none sits flat on the grid (R4-catalog-05).
+    /// floating shadow tooltips use, and 4 px padding. Every popover menu
+    /// draws on it, the Import dropdowns included, so none sits flat on the
+    /// grid (R4-catalog-05, R5-design-05).
     pub(super) fn menu_surface(&self) -> Div {
         div()
             .occlude()
@@ -363,12 +362,7 @@ impl Workspace {
             .bg(self.c("elevated_surface.background", "#202020"))
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
     }
 
     /// The keyboard hints at the left of a dialog footer: boxed keys and the
@@ -538,6 +532,7 @@ impl Workspace {
     fn reveal_once(&self, key: &str, scroll: &ScrollHandle) -> AnyElement {
         let scroll = scroll.clone();
         let revealed = self.focus_revealed.clone();
+        let rows = self.pref_rows.clone();
         let key = SharedString::from(key.to_owned());
         canvas(
             move |bounds, window, _| {
@@ -545,6 +540,19 @@ impl Workspace {
                     return;
                 }
                 *revealed.borrow_mut() = Some(key.clone());
+                // The whole Preferences row the control sits in (its label
+                // and description), when one holds it (R5-overlays-05).
+                let bounds = rows
+                    .borrow()
+                    .iter()
+                    .find(|row| {
+                        row.top() <= bounds.center().y
+                            && bounds.center().y <= row.bottom()
+                            && row.left() <= bounds.center().x
+                            && bounds.center().x <= row.right()
+                    })
+                    .copied()
+                    .unwrap_or(bounds);
                 let view = scroll.bounds();
                 let offset = scroll.offset();
                 let margin = px(space::SM);
@@ -707,7 +715,7 @@ impl Workspace {
                                 .gap(px(space::XS))
                                 .text_size(ui::font(ui::text::LABEL))
                                 .text_color(error_color)
-                                .child(icon("warning", error_color).size(px(12.)))
+                                .child(icon("error", error_color).size(px(12.)))
                                 .child(
                                     div()
                                         .flex_1()
@@ -737,11 +745,7 @@ impl Workspace {
             .p(px(space::XL))
             .child(
                 self.modal_surface("add-host", DIALOG_SMALL)
-                    .child(self.modal_header(
-                        "Add network host",
-                        Some(("host-close", Cmd::Close)),
-                        cx,
-                    ))
+                    .child(self.modal_header(copy::ADD_HOST, Some(("host-close", Cmd::Close)), cx))
                     .child(body)
                     .child(
                         self.modal_footer().justify_end().child(
@@ -761,9 +765,9 @@ impl Workspace {
                                     if connecting.is_some() {
                                         "Connecting…"
                                     } else if failed.is_some() {
-                                        "Try again"
+                                        "Try Again"
                                     } else {
-                                        "Add & connect"
+                                        "Add & Connect"
                                     },
                                     Cmd::SaveRemoteHost,
                                     ButtonKind::Primary,

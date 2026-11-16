@@ -26,6 +26,21 @@ pub(super) mod space {
 /// readable copy never goes below LABEL. Nothing is drawn below 11 px, even
 /// at 90%; every size passes through [`font`], so the Text size preference
 /// scales the whole scale.
+///
+/// Each role is one distinct (size, weight, colour) tuple, so roles that
+/// share the 11 px floor still differ by colour or weight:
+///
+/// | Role | Size | Weight | Colour |
+/// | --- | --- | --- | --- |
+/// | glyph (badge, keycap, tick) | MICRO 11 | regular or MEDIUM | on its plate or cap |
+/// | section header | LABEL 11 | MEDIUM | `text` |
+/// | field label, hint, caption | LABEL 11 | regular | `text.muted` |
+/// | body (rows, buttons, tabs) | BODY 12 | regular | `text` |
+/// | subhead (inspector filename) | TITLE 13 | MEDIUM | `text` |
+/// | dialog and empty-state title | DISPLAY 16 | MEDIUM | `text` |
+///
+/// MICRO and LABEL share 11 px because 11 px is the floor; MICRO stays a
+/// separate role so glyph text can move without touching copy.
 pub(super) mod text {
     /// Thumbnail badges, keycaps, histogram axis ticks.
     pub const MICRO: f32 = 11.;
@@ -81,6 +96,26 @@ fn scaled_font(size: f32, factor: f32) -> f32 {
 /// 24/28 px boxes: a 150% line (24 px) still fits inside them.
 pub(super) fn scaled(length: f32) -> f32 {
     (length * text_scale()).round()
+}
+
+/// The one elevation of floating surfaces (menus, tooltips, the error toast):
+/// flat chrome, one soft shadow, defined once so it cannot drift.
+pub(super) fn floating_shadow() -> Vec<gpui::BoxShadow> {
+    shadow(4., 14.)
+}
+
+/// Dialogs sit one step higher than menus.
+pub(super) fn dialog_shadow() -> Vec<gpui::BoxShadow> {
+    shadow(8., 24.)
+}
+
+fn shadow(offset: f32, blur: f32) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: gpui::hsla(0., 0., 0., 0.35),
+        offset: gpui::point(gpui::px(0.), gpui::px(offset)),
+        blur_radius: gpui::px(blur),
+        spread_radius: gpui::px(0.),
+    }]
 }
 
 pub(super) const CONTROL_HEIGHT: f32 = 28.;

@@ -78,8 +78,8 @@ impl AssetSource for Assets {
             )),
             "zoom" => Some(include_bytes!("../assets/icons/zoom-in.svg")),
             "zoom-out" => Some(include_bytes!("../assets/icons/shadowroom/zoom-out.svg")),
-            "graph" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
             "histogram" => Some(include_bytes!("../assets/icons/shadowroom/histogram.svg")),
+            "culling" => Some(include_bytes!("../assets/icons/shadowroom/culling.svg")),
             "undo" => Some(include_bytes!("../assets/icons/discard.svg")),
             "redo" => Some(include_bytes!("../assets/icons/redo.svg")),
             "next" => Some(include_bytes!("../assets/icons/arrow-right.svg")),
@@ -105,7 +105,6 @@ impl AssetSource for Assets {
             )),
             "library" => Some(include_bytes!("../assets/icons/library.svg")),
             "files" => Some(include_bytes!("../assets/icons/file-code.svg")),
-            "xmp" => Some(include_bytes!("../assets/icons/file-code.svg")),
             "export" => Some(include_bytes!("../assets/icons/export.svg")),
             "import" => Some(include_bytes!("../assets/icons/shadowroom/import.svg")),
             "grid" => Some(include_bytes!("../assets/icons/shadowroom/view-grid.svg")),
@@ -140,6 +139,7 @@ impl AssetSource for Assets {
             "refresh" => Some(include_bytes!("../assets/icons/refresh.svg")),
             "stop" => Some(include_bytes!("../assets/icons/stop-circle.svg")),
             "warning" => Some(include_bytes!("../assets/icons/warning.svg")),
+            "error" => Some(include_bytes!("../assets/icons/shadowroom/error.svg")),
             "symbol-color" => Some(include_bytes!("../assets/icons/symbol-color.svg")),
             "color-mode" => Some(include_bytes!("../assets/icons/color-mode.svg")),
             "panel-left" => Some(include_bytes!("../assets/icons/shadowroom/panel-left.svg")),
@@ -244,6 +244,9 @@ enum Cmd {
     InspectorTab(bool),
     RatingFilter,
     Histogram,
+    /// The status bar's half-filled circle: the current theme's light or
+    /// dark counterpart.
+    ToggleLightDark,
     Focus,
     /// F11: the window fills the screen (GPUI `toggle_fullscreen`).
     Fullscreen,
@@ -406,6 +409,9 @@ const HISTOGRAM_PLOT: f32 = 94.;
 const PALETTE_LOOSE: usize = 3;
 /// The rating filter menu at 100% text: label, count and digit key.
 const RATING_MENU_WIDTH: f32 = 240.;
+/// The built-in dark `warning` (theme.rs), the one fallback for every
+/// warning lookup (R5-review-08).
+const WARNING_FALLBACK: &str = "#ce7629";
 
 /// How a palette title answers the query: 0 contains it, 1 matches its
 /// letters in order, 2 does not (the row matched through its description).
@@ -485,10 +491,11 @@ fn palette_step(index: usize, total: usize, key: &str) -> usize {
 }
 
 /// Empty-query order of palette categories (the detail's first segment):
-/// review decisions, then navigation and filtering, then file and app commands.
+/// culling decisions, then navigation and filtering, then file and app
+/// commands. "Review" names only the one-photo view (R5-catalog-01).
 fn palette_category_rank(detail: &str) -> usize {
     const ORDER: [&str; 13] = [
-        "Review",
+        "Culling",
         "Edit",
         "View",
         "Compare",
@@ -1234,7 +1241,7 @@ pub struct Workspace {
     focus_peaking: bool,
     /// An aid switched on whose overlay copy is still being painted: its
     /// effect bit and the notice to show once it is on the photo.
-    pending_aid: Option<(u8, String)>,
+    pending_aid: Option<(u8, String, String)>,
     /// Effect bits last shown per photo (`loupe_aids::shown_effect`).
     shown_effects: Vec<(i64, u8)>,
     /// Clipping overlay (J): blown highlights red, crushed shadows blue.
@@ -1285,6 +1292,12 @@ pub struct Workspace {
     /// The focus target last scrolled into view, so a control is revealed
     /// once when the keyboard reaches it and never fights the wheel.
     focus_revealed: Rc<RefCell<Option<SharedString>>>,
+    /// This frame's Preferences rows, so a Tab reveal can bring the whole
+    /// row (label and description) into view, not just its control.
+    pref_rows: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    /// The topmost overlay last frame: a change retires tooltips shown
+    /// before it (see [`TOOLTIP_EPOCH`]).
+    last_top_overlay: Option<Overlay>,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     /// The pane F6 moved keyboard focus to (`panes.rs`).
@@ -1795,6 +1808,8 @@ impl Workspace {
             guide_scroll: ScrollHandle::new(),
             prefs_scroll: ScrollHandle::new(),
             focus_revealed: Rc::default(),
+            pref_rows: Rc::default(),
+            last_top_overlay: None,
             focus_visible: false,
             pane: panes::Pane::default(),
             pane_ring: false,
@@ -1967,6 +1982,11 @@ impl Workspace {
     }
     fn muted(&self) -> Hsla {
         self.c("text.muted", "#8c929e")
+    }
+    /// Warning colour; an imported theme without one gets the built-in
+    /// orange, never rating amber.
+    fn warning(&self) -> Hsla {
+        self.c("warning", WARNING_FALLBACK)
     }
     fn border(&self) -> Hsla {
         self.c("border", "#30343c")
@@ -2911,6 +2931,12 @@ impl Workspace {
         }
     }
     // Preserve catalog order for history and API responses, without scanning the catalog.
+    /// The decision `id` carries now.
+    fn current_decision(&self, id: i64) -> Option<Decision> {
+        self.photo_index
+            .get(&id)
+            .map(|&index| Decision::from(&self.photos[index]))
+    }
     fn decisions_for(&self, ids: &HashSet<i64>) -> Vec<Decision> {
         let mut indices: Vec<_> = ids
             .iter()
@@ -3365,6 +3391,10 @@ impl Workspace {
                 Cmd::Undo,
                 "⌘Z",
             );
+            // Keyed, so lights-out shows it with its Undo (R5-a11y-07).
+            if let Some(flash) = self.feedback.flash.as_mut() {
+                flash.key = Some("batch-decision");
+            }
         } else if old.is_some() && self.selected_id() != old {
             // The decided frame is no longer on screen (auto-advance, or the
             // decision filtered it out): confirm what it now carries.
@@ -3962,8 +3992,14 @@ impl Workspace {
             }
             Cmd::Appearance => {
                 self.open_preferences();
-                self.preferences_section = PreferencesSection::Appearance;
                 self.palette = false;
+                // The same reset as a tab switch: Appearance opens at the top
+                // with its theme list, wherever another tab was scrolled.
+                self.execute(
+                    Cmd::PreferencesSection(PreferencesSection::Appearance),
+                    window,
+                    cx,
+                );
             }
             Cmd::PreferencesSection(section) => {
                 if self.preferences_section != section {
@@ -4093,6 +4129,11 @@ impl Workspace {
                 if let Some(d) = self.history.undo() {
                     let id = d.first().map(|d| d.id);
                     let subject = self.decisions_subject(&d);
+                    if let Some(restored) = d.first()
+                        && let Some(now) = self.current_decision(restored.id)
+                    {
+                        self.stamp_history(true, &now, restored);
+                    }
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
                         self.announce_action(
@@ -4111,6 +4152,11 @@ impl Workspace {
                 if let Some(d) = self.history.redo() {
                     let id = d.first().map(|d| d.id);
                     let subject = self.decisions_subject(&d);
+                    if let Some(redone) = d.first()
+                        && let Some(now) = self.current_decision(redone.id)
+                    {
+                        self.stamp_history(false, redone, &now);
+                    }
                     if self.apply_decisions(d) {
                         self.rebuild_after_decisions(id);
                         self.announce_action(
@@ -4407,6 +4453,15 @@ impl Workspace {
                 self.settings.extra.insert("theme_mode".into(), json!(mode));
                 self.save_settings();
             }
+            Cmd::ToggleLightDark => {
+                if let Some(name) = self.light_dark_counterpart() {
+                    self.execute(Cmd::Theme(name.clone()), window, cx);
+                    self.announce(
+                        format!("{name} · {} for more themes", shortcut("⌘,")),
+                        Tone::Info,
+                    );
+                }
+            }
             Cmd::SystemTheme(name) => {
                 if let Some(theme) = self.themes.iter().find(|theme| theme.name == name) {
                     let slot = if theme.appearance == "light" {
@@ -4697,7 +4752,7 @@ impl Workspace {
                 Cmd::Import,
             ),
             item(
-                "Export Picks in This View…",
+                copy::EXPORT_PICKS,
                 "File · picks in the current view",
                 "⇧E",
                 "export",
@@ -4711,10 +4766,10 @@ impl Workspace {
                 Cmd::ExportAllPicks,
             ),
             item(
-                "Export XMP Sidecars…",
+                copy::EXPORT_XMP,
                 "File · selection or current view",
                 "",
-                "xmp",
+                "files",
                 Cmd::ExportXmp,
             ),
             item(reveal_label(), "File", "", "external", Cmd::Reveal),
@@ -4729,25 +4784,25 @@ impl Workspace {
             ),
             item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
             item("Redo", "Edit", "⌘⇧Z", "redo", Cmd::Redo),
-            item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
-            item("Reject", "Review", "X", "reject", Cmd::Flag(Flag::Reject)),
+            item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
+            item("Reject", "Culling", "X", "reject", Cmd::Flag(Flag::Reject)),
             item(
                 "Clear Flag",
-                "Review",
+                "Culling",
                 "U",
                 "unflagged",
                 Cmd::Flag(Flag::None),
             ),
             item(
                 copy::RESET_DECISION,
-                "Review · clear stars and pick/reject without advancing; keep color label",
+                "Culling · clear stars and pick/reject without advancing; keep color label",
                 "R",
                 "reset",
                 Cmd::ResetDecision,
             ),
             item(
                 copy::MOVE_TO_TRASH,
-                "Review · confirm configured Trash destination",
+                "Culling · confirm configured Trash destination",
                 "Delete",
                 "trash",
                 Cmd::Trash(true),
@@ -4761,7 +4816,7 @@ impl Workspace {
             ),
             item(
                 "Restore from Trash",
-                "Review · keep ratings and flags",
+                "Culling · keep ratings and flags",
                 "",
                 "restore",
                 Cmd::Trash(false),
@@ -4803,42 +4858,49 @@ impl Workspace {
             ),
             item(
                 "Next Unreviewed",
-                "Review",
+                "Culling",
                 "Shift →",
                 "next",
                 Cmd::Unreviewed(1),
             ),
             item(
                 "Previous Unreviewed",
-                "Review",
+                "Culling",
                 "Shift ←",
                 "previous",
                 Cmd::Unreviewed(-1),
             ),
             item(
                 "Toggle Auto-Advance",
-                "Review",
+                "Culling",
                 "Shift A",
                 "auto-advance",
                 Cmd::AutoAdvance,
             ),
-            item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+            // The view tabs' own names (R5-catalog-01).
             item(
-                "Review View",
+                "Catalog",
+                "View · every photo as thumbnails",
+                "G",
+                "grid",
+                Cmd::View(ViewMode::Grid),
+            ),
+            item(
+                "Review",
                 "View · one photo at a time",
                 "L",
                 "loupe",
                 Cmd::View(ViewMode::Loupe),
             ),
             item(
-                "Compare View",
-                "View",
+                "Compare",
+                "View · reference and candidate side by side",
                 "C",
                 "compare",
                 Cmd::View(ViewMode::Compare),
             ),
             item(
-                "Survey View",
+                "Survey",
                 "View · selection, burst or neighbours side by side",
                 "S",
                 "group",
@@ -4890,9 +4952,9 @@ impl Workspace {
             ),
             item(
                 "Show Clipping",
-                "View · blown highlights red, crushed shadows blue",
+                "View · blown highlights magenta, crushed shadows blue",
                 "J",
-                "histogram",
+                "clipping",
                 Cmd::Clipping,
             ),
             item(
@@ -4904,7 +4966,7 @@ impl Workspace {
             ),
             item(
                 copy::SHOW_FULL_FOLDER,
-                "Review · leave selected subset",
+                "View · leave the selected subset",
                 "",
                 "folder",
                 Cmd::ClearReviewSubset,
@@ -4945,7 +5007,7 @@ impl Workspace {
                 "panel-right",
                 Cmd::Inspector,
             ),
-            item("Toggle Histogram", "View", "H", "graph", Cmd::Histogram),
+            item("Toggle Histogram", "View", "H", "histogram", Cmd::Histogram),
             item(
                 "Filter by Rating…",
                 "Filter",
@@ -4957,7 +5019,7 @@ impl Workspace {
                 "Show Culling Panel",
                 "View · histogram, labels and burst in the inspector",
                 "",
-                "histogram",
+                "culling",
                 Cmd::InspectorTab(false),
             ),
             item(
@@ -4971,7 +5033,7 @@ impl Workspace {
                 "Toggle Histogram Log Scale",
                 "View",
                 "",
-                "graph",
+                "histogram",
                 Cmd::HistogramLog,
             ),
             item(
@@ -5069,7 +5131,14 @@ impl Workspace {
                 Cmd::Appearance,
             ),
             item(
-                "Import Zed Theme…",
+                "Switch Light / Dark Theme",
+                "Appearance · the current theme's other variant",
+                "",
+                "color-mode",
+                Cmd::ToggleLightDark,
+            ),
+            item(
+                copy::IMPORT_ZED_THEME_ELLIPSIS,
                 "Appearance",
                 "",
                 "folder-opened",
@@ -5123,9 +5192,9 @@ impl Workspace {
                     format!("Rate {}", "★".repeat(rating as usize))
                 },
                 &if rating == 0 {
-                    "Review · remove stars".to_string()
+                    "Culling · remove stars".to_string()
                 } else {
-                    format!("Review · {}", plural(rating as usize, "star", "stars"))
+                    format!("Culling · {}", plural(rating as usize, "star", "stars"))
                 },
                 &rating.to_string(),
                 "star",
@@ -5160,7 +5229,7 @@ impl Workspace {
                 } else {
                     format!("Label {label:?}")
                 },
-                "Review · the active label's key clears it",
+                "Culling · the active label's key clears it",
                 label_key(label),
                 "symbol-color",
                 Cmd::Label(label),
@@ -5185,7 +5254,7 @@ impl Workspace {
             ));
         }
         items.push(item(
-            "Add host…",
+            copy::ADD_HOST_ELLIPSIS,
             "Network · SSH alias and remote command",
             "",
             "add",
@@ -5840,12 +5909,12 @@ fn label_roles(label: ColorLabel) -> Option<(&'static str, &'static str, &'stati
         ColorLabel::Blue => Some((
             "shadowroom.label.blue",
             "shadowroom.scrim.label.blue",
-            "#a3a6f0",
+            "#b8c3ff",
         )),
         ColorLabel::Purple => Some((
             "shadowroom.label.purple",
             "shadowroom.scrim.label.purple",
-            "#c497d0",
+            "#c79fc5",
         )),
     }
 }
@@ -5874,14 +5943,6 @@ fn contained(well_w: f32, well_h: f32, width: u32, height: u32) -> (f32, f32) {
         (width as f32 * scale).round().clamp(1., well_w.max(1.)),
         (height as f32 * scale).round().clamp(1., well_h.max(1.)),
     )
-}
-
-/// What a chrome label swatch shows: its key, or Purple's initial (no key).
-fn label_glyph(label: ColorLabel) -> &'static str {
-    match label_key(label) {
-        "" => label_initial(label),
-        key => key,
-    }
 }
 
 fn label_key(label: ColorLabel) -> &'static str {
@@ -5920,6 +5981,49 @@ fn survey_layout(n: usize, aspect: f32, width: f32, height: f32) -> (usize, f32,
     }
     best
 }
+/// The caps of a shortcut as drawn: "Ctrl+Shift+E" -> Ctrl, Shift, E;
+/// "⌘⇧E" -> ⌘, ⇧, E; "⇧Delete" -> ⇧, Delete; "Shift →" -> Shift, →.
+fn keycap_parts(keys: &str) -> Vec<String> {
+    let text = shortcut(keys);
+    let mut caps = Vec::new();
+    for word in text.split([' ', '+']).filter(|k| !k.is_empty()) {
+        // macOS modifier glyphs are caps of their own, the rest one key.
+        let mut rest = word;
+        while let Some(glyph) = rest.chars().next().filter(|c| "⌘⇧⌥⌃".contains(*c)) {
+            caps.push(glyph.to_string());
+            rest = &rest[glyph.len_utf8()..];
+        }
+        if !rest.is_empty() {
+            caps.push(rest.to_owned());
+        }
+    }
+    caps
+}
+
+/// Boxed keycaps on a hairline, shared by the workspace and tooltips.
+fn keycap_row(keys: &str, border: Hsla, bg: Hsla, fg: Hsla) -> Div {
+    let mut row = div().flex().flex_shrink_0().gap(px(space::TINY));
+    for cap in keycap_parts(keys) {
+        row = row.child(
+            div()
+                .min_w(px(ui::scaled(18.)))
+                .h(px(ui::scaled(18.)))
+                .px(px(space::XS))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(border)
+                .bg(bg)
+                .text_size(ui::font(ui::text::MICRO))
+                .line_height(ui::font(ui::text::MICRO))
+                .text_color(fg)
+                .child(cap),
+        );
+    }
+    row
+}
+
 fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
@@ -5948,6 +6052,31 @@ fn reveal_label() -> &'static str {
     }
 }
 
+/// The notice for regions a small window hides to give the photo room: one
+/// sentence however many yield, always with the keys that bring the panels
+/// back.
+fn yield_hint(library: bool, inspector: bool, filmstrip: bool) -> Option<String> {
+    let sidebar = shortcut("⌘B");
+    Some(match (library, inspector, filmstrip) {
+        (true, true, true) => format!(
+            "Library, inspector and filmstrip hidden to give the photo room · {sidebar} and I show the panels"
+        ),
+        (true, false, true) => format!(
+            "Library and filmstrip hidden to give the photo room · {sidebar} shows the library"
+        ),
+        (true, true, false) => format!(
+            "Library and inspector hidden to give the photos room · {sidebar} and I show them"
+        ),
+        (true, false, false) => {
+            format!("Library hidden to give the photo room · {sidebar} shows it")
+        }
+        (false, _, true) => {
+            "Filmstrip hidden to give the photo room · the ledger still jumps to any frame".into()
+        }
+        (false, _, false) => return None,
+    })
+}
+
 /// macOS (13+) calls the window Settings; GNOME and KDE keep Preferences.
 fn settings_noun() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -5970,6 +6099,12 @@ struct Tip {
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        self.element()
+    }
+}
+
+impl Tip {
+    fn element(&self) -> Div {
         div()
             .font_family(self.font.clone())
             .text_size(ui::font(ui::text::LABEL))
@@ -5978,12 +6113,7 @@ impl Render for Tip {
             .border_1()
             .border_color(self.border)
             // The shared floating-surface elevation (toast, menus).
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
             .px(px(space::SM))
             .py(px(space::XS))
             .flex()
@@ -5991,8 +6121,34 @@ impl Render for Tip {
             .gap(px(space::MD))
             .child(self.label.clone())
             .when(!self.keys.is_empty(), |d| {
-                d.child(div().text_color(self.muted).child(self.keys.clone()))
+                // The shared keycap on the tooltip's own hairline.
+                d.child(keycap_row(
+                    &self.keys,
+                    self.border,
+                    transparent_black(),
+                    self.muted,
+                ))
             })
+    }
+}
+
+/// Bumped when the topmost overlay changes; a tooltip shown under an older
+/// value draws nothing, so none stays painted over a dialog opened after it.
+static TOOLTIP_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A [`Tip`] that retires itself when the overlay stack changes.
+#[derive(Clone)]
+struct EpochTip {
+    tip: Tip,
+    epoch: u64,
+}
+
+impl Render for EpochTip {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        if self.epoch != TOOLTIP_EPOCH.load(std::sync::atomic::Ordering::Relaxed) {
+            return div();
+        }
+        self.tip.element()
     }
 }
 
@@ -6289,58 +6445,39 @@ impl Workspace {
         }
     }
     fn tip(&self, label: &str, keys: &str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-        let tip = Tip {
+        let tip = self.tip_view(label, keys);
+        move |_, cx| {
+            let tip = EpochTip {
+                tip: tip.clone(),
+                epoch: TOOLTIP_EPOCH.load(std::sync::atomic::Ordering::Relaxed),
+            };
+            cx.new(|_| tip).into()
+        }
+    }
+    fn tip_view(&self, label: &str, keys: &str) -> Tip {
+        Tip {
             label: label.to_owned().into(),
-            keys: shortcut(keys).into(),
+            keys: keys.to_owned().into(),
             font: self.settings.interface_font.clone().into(),
             fg: self.text(),
             muted: self.muted(),
             bg: self.c("elevated_surface.background", "#1b1b1b"),
             border: self.c("border.variant", "#333333"),
-        };
-        move |_, cx| cx.new(|_| tip.clone()).into()
+        }
     }
+    /// Plain muted key text, for in-control hints only (the decision bar's
+    /// "P", "X", "1-5" inside the buttons they press). Anywhere else a
+    /// shortcut is drawn with [`Self::keycaps`]; see docs/THEMES.md.
     fn keycap(&self, keys: &str) -> Div {
         div()
             .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
-    /// Boxed keys, one cap per key, as Zed's palette draws bindings.
+    /// Boxed keys, one cap per key, as Zed's palette draws bindings. The one
+    /// keycap component: menus, tooltips, dialog footers, bars and the guide.
     fn keycaps(&self, keys: &str) -> Div {
-        let text = shortcut(keys);
-        let caps: Vec<String> = if cfg!(target_os = "macos") {
-            // ⌘⇧E → ⌘ ⇧ E; "Shift →" → Shift →
-            if text.contains(' ') {
-                text.split(' ').map(str::to_owned).collect()
-            } else {
-                text.chars().map(String::from).collect()
-            }
-        } else {
-            text.split(['+', ' '])
-                .filter(|k| !k.is_empty())
-                .map(str::to_owned)
-                .collect()
-        };
-        let mut row = div().flex().flex_shrink_0().gap(px(space::TINY));
-        for cap in caps {
-            row = row.child(
-                div()
-                    .min_w(px(ui::scaled(18.)))
-                    .h(px(ui::scaled(18.)))
-                    .px(px(space::XS))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .border_1()
-                    .border_color(self.group_border())
-                    .bg(self.canvas_bg())
-                    .text_size(ui::font(ui::text::MICRO))
-                    .text_color(self.muted())
-                    .child(cap),
-            );
-        }
-        row
+        keycap_row(keys, self.group_border(), self.canvas_bg(), self.muted())
     }
     /// Shared 28 px control, with an 8 px icon/label gap.
     fn button(
@@ -6404,8 +6541,11 @@ impl Workspace {
     }
     /// Two-state control (panels, histogram, zoom, peaking, grouping, …).
     /// On is a quiet filled state with a full-strength icon, as Zed draws dock
-    /// toggles; the accent stays reserved for "where you are" (view tab,
-    /// collection, current photo) and keyboard focus. Same box as `button`.
+    /// toggles, plus the chosen segment's 2 px text-coloured bar, so every
+    /// toggle that is on carries the same two marks and on/off differ by
+    /// shape, not only by a fill (R4-design-09). The accent stays reserved
+    /// for "where you are" (view tab, collection, current photo) and keyboard
+    /// focus. Same box as `button`.
     fn toggle_button(
         &self,
         id: impl Into<ElementId>,
@@ -6413,6 +6553,32 @@ impl Workspace {
         glyph: &'static str,
         cmd: Cmd,
         on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.toggle_control(id, label, glyph, cmd, on, true, cx)
+    }
+    /// A menu's current choice: the toggle's fill and full-strength icon
+    /// without the bar (the row's check marks it, as in every menu).
+    fn menu_choice(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.toggle_control(id, label, glyph, cmd, on, false, cx)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn toggle_control(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        bar: bool,
         cx: &gpui::Context<Self>,
     ) -> Stateful<Div> {
         let hover = self.hover_bg();
@@ -6431,7 +6597,19 @@ impl Workspace {
             .occlude()
             .border_1()
             .border_color(transparent_black())
+            .relative()
             .when(on, |s| s.bg(self.selected_bg()).text_color(self.text()))
+            .when(on && bar, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(space::XS))
+                        .right(px(space::XS))
+                        .h(px(2.))
+                        .bg(self.text()),
+                )
+            })
             .when(!on, |s| s.hover(move |s| s.bg(hover)))
             .when(!glyph.is_empty(), |s| {
                 s.child(icon(
@@ -6579,11 +6757,14 @@ impl Workspace {
     }
     /// The one section-header style (R2-design-04): LABEL size, MEDIUM,
     /// muted, sentence case. Callers add only spacing and rules.
+    /// The section role: LABEL size, MEDIUM, in `text`, so a header stands
+    /// apart from the muted field labels and hints beneath it by colour, not
+    /// only by a weight step that does not show at 11 px (R5-design-04).
     fn section_header(&self, label: impl Into<SharedString>) -> Div {
         div()
             .text_size(ui::font(ui::text::LABEL))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
+            .text_color(self.text())
             .child(label.into())
     }
     fn section(&self, label: &str) -> Div {
@@ -7198,7 +7379,7 @@ impl Workspace {
         for (host_index, (id, host)) in self.remote_hosts.iter().enumerate() {
             let color = match host.state() {
                 HostState::Connected => self.c("success", "#7fbf7f"),
-                HostState::Connecting | HostState::Indexing => self.c("warning", "#e0b341"),
+                HostState::Connecting | HostState::Indexing => self.warning(),
                 HostState::Error => self.c("error", "#d46a6a"),
                 HostState::Offline => self.muted(),
             };
@@ -7477,7 +7658,7 @@ impl Workspace {
                     copy::duration(self.settings.burst_gap_ms)
                 ),
             ),
-            _ => (String::new(), "Group bursts".to_owned()),
+            _ => (String::new(), "Group Bursts".to_owned()),
         };
         div()
             .h(px(TOOLBAR_HEIGHT))
@@ -7641,7 +7822,7 @@ impl Workspace {
         for r in 0..=5u8 {
             let active = self.min_rating == r;
             options = options.child(
-                self.toggle_button(
+                self.menu_choice(
                     ("filter-option", r as usize),
                     &copy::rating_threshold(r),
                     if active { "check" } else { "star" },
@@ -7901,6 +8082,24 @@ impl Workspace {
             }
             return fallback;
         };
+        // Clipping stripes are sized for how this copy is shown: fitted to
+        // the photo area (a pane of it in Compare), or a zoomed full preview
+        // at the zoom factor of the original (R5-review-06).
+        let stripe = {
+            let (area_w, area_h) = self.center_size;
+            let area_w = if self.mode == ViewMode::Compare {
+                area_w / 2.
+            } else {
+                area_w
+            };
+            let fit = (area_w / width.max(1) as f32).min(area_h / height.max(1) as f32);
+            let shown = if kind == PreviewKind::Full && self.zoom {
+                self.zoom_factor * preview.source_width.max(width) as f32 / width.max(1) as f32
+            } else {
+                fit.min(1.)
+            };
+            shadowroom::peaking::stripe_period(shown)
+        };
         self.texture_inflight.insert(key);
         let task = cx.background_executor().spawn(async move {
             let mut bgra = if shrink.is_some() {
@@ -7914,7 +8113,15 @@ impl Workspace {
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
-            Self::paint_effects(effect, style, &preview.rgba, &mut bgra, width, height);
+            Self::paint_effects(
+                effect,
+                style,
+                &preview.rgba,
+                &mut bgra,
+                width,
+                height,
+                stripe,
+            );
             let buffer = image::RgbaImage::from_raw(width, height, bgra)
                 .expect("validated preview dimensions");
             (
@@ -8406,12 +8613,12 @@ impl Workspace {
                         .gap(px(space::SM))
                         .text_size(ui::font(ui::text::LABEL))
                         .text_color(if requested_error.is_some() {
-                            self.c("warning", "#e0b341")
+                            self.warning()
                         } else {
                             self.muted()
                         })
                         .when(requested_error.is_some(), |s| {
-                            s.child(icon("warning", self.c("warning", "#e0b341")).size(px(12.)))
+                            s.child(icon("warning", self.warning()).size(px(12.)))
                         })
                         .child(
                             div()
@@ -8847,7 +9054,7 @@ impl Workspace {
                 .when(!grouped, |s| {
                     s.child(self.action_button(
                         "survey-enable-bursts",
-                        "Group bursts",
+                        "Group Bursts",
                         Cmd::Group("burst".into()),
                         ButtonKind::Secondary,
                         false,
@@ -9142,7 +9349,7 @@ impl Workspace {
         })
     }
     /// Decisions at the photo's top-left on one continuous 18 px scrim plate:
-    /// the pick/reject glyph, then the label chip, 2 px apart; a warning glyph
+    /// the pick/reject glyph, then the label chip, 2 px apart; the error glyph
     /// last while that photo's decision failed to save (gone once it saves).
     fn decision_badges(&self, id: i64, flag: Flag, label: ColorLabel) -> Option<Div> {
         let label = self.label_badge(label);
@@ -9189,9 +9396,10 @@ impl Workspace {
                             .flex_shrink_0()
                             .items_center()
                             .justify_center()
+                            // Circle-x: a failure, not the warning triangle.
                             .child(
                                 svg()
-                                    .path("warning")
+                                    .path("error")
                                     .size(px(12.))
                                     .text_color(self.c("shadowroom.scrim.reject", "#e07a7a")),
                             ),
@@ -9216,11 +9424,32 @@ impl Workspace {
                 .child(thumb_rating(rating))
         })
     }
-    /// Inspector label swatch: the chrome label colour carrying its key
-    /// (6-9), a text-coloured ring with an inset gap when chosen. Purple has
-    /// no key, so it carries its initial instead: no swatch relies on hue
-    /// alone (R4-a11y-06). The other initials stay on photo badges, where they
-    /// are the colour-blind shape code; here they would read as keycaps.
+    /// What a chrome label swatch carries (inspector and image menu alike):
+    /// its key digit (6-9), or for Purple, which has no key, a small dot. A
+    /// shape, never a letter, so no swatch relies on hue alone (R4-a11y-06)
+    /// and none reads as the key of another command ("P" is Pick). Initials
+    /// stay on photo badges, where no key hint sits beside them.
+    fn label_mark(&self, label: ColorLabel) -> AnyElement {
+        match label_key(label) {
+            "" => div()
+                .size(px(4.))
+                .rounded_full()
+                .bg(self.c("shadowroom.label.text", "#0f0f0f"))
+                .into_any_element(),
+            key => key.into_any_element(),
+        }
+    }
+    /// Tooltip naming a label and its key ("Purple · no key").
+    fn label_tip(label: ColorLabel) -> String {
+        match label {
+            ColorLabel::None => "No label".to_owned(),
+            ColorLabel::Purple => "Purple · no key".to_owned(),
+            label => format!("{label:?}"),
+        }
+    }
+    /// Inspector label swatch: the chrome label colour carrying its mark
+    /// ([`Self::label_mark`]), a text-coloured ring with an inset gap when
+    /// chosen, the one "current value" mark of every value picker.
     fn label_swatch(
         &self,
         id: impl Into<ElementId>,
@@ -9251,7 +9480,7 @@ impl Workspace {
                     .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                    .when_some(color, |s, c| s.bg(c).child(label_glyph(label)))
+                    .when_some(color, |s, c| s.bg(c).child(self.label_mark(label)))
                     // The empty choice is an input with no fill of its own.
                     .when(color.is_none(), |s| {
                         s.border_1().border_color(self.control_border())
@@ -9668,7 +9897,22 @@ impl Workspace {
             // "Reset" text.
             space::SM + 5. * char_w,
         ];
-        let kept = ui::fit_prefix(width, base, &optional);
+        // In Focus mode a docked notice outranks the optional items, and if
+        // it still does not fit, the stars yield to it for its lifetime
+        // (they stay on their keys); the culling line reserves room for its
+        // capture time (R5-review-01).
+        let (slot_need, notice_docked) = if self.chrome_visible() {
+            (0., false)
+        } else {
+            self.focus_slot_need(small_char, char_w)
+        };
+        let stars_yield = notice_docked && base + slot_need > width;
+        let base = if stars_yield {
+            base - stars_width - gap
+        } else {
+            base
+        };
+        let kept = ui::fit_prefix(width, base + slot_need, &optional);
         let (flag_keys, flag_labels, pin_survey, zoom_steps, progress, reset_label) =
             (kept > 0, kept > 1, kept > 2, kept > 3, kept > 4, kept > 5);
         let hover = self.hover_bg();
@@ -9774,8 +10018,8 @@ impl Workspace {
                 self.reject_color(),
             ))
             .child(self.control_divider())
-            .child(stars)
-            .when(flag_keys, |bar| {
+            .when(!stars_yield, |bar| bar.child(stars))
+            .when(flag_keys && !stars_yield, |bar| {
                 bar.child(self.keycap("1-5").flex_shrink_0())
             })
             .when(mixed_rating, |bar| {
@@ -9848,20 +10092,6 @@ impl Workspace {
                     self.settings.auto_advance,
                     cx,
                 )
-                // On is marked by shape as well as tint: the segment's 2 px
-                // text-colour bar (a state, not a location).
-                .relative()
-                .when(self.settings.auto_advance, |s| {
-                    s.child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left(px(space::XS))
-                            .right(px(space::XS))
-                            .h(px(2.))
-                            .bg(self.text()),
-                    )
-                })
                 .tooltip(self.tip(
                     if self.settings.auto_advance {
                         "Auto-advance on · a decision moves to the next photo"
@@ -10332,7 +10562,7 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
-                            label_warning: self.c("warning", "#e0b341").into(),
+                            label_warning: self.warning().into(),
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
@@ -10367,11 +10597,7 @@ impl Workspace {
                         ("label", n),
                         label,
                         p.label == label,
-                        if label == ColorLabel::None {
-                            "No label".to_owned()
-                        } else {
-                            format!("{label:?}")
-                        },
+                        Self::label_tip(label),
                         cx,
                     ));
                 }
@@ -10529,11 +10755,12 @@ impl Workspace {
                     .border_b_1()
                     .border_color(self.border())
                     // "Culling", not a second "Review": that name and the
-                    // loupe glyph belong to the view.
+                    // loupe glyph belong to the view; the ledger glyph, not
+                    // the histogram toggle's mountain (R5-design-02).
                     .child(self.panel_tab(
                         "panel-review",
                         "Culling",
-                        "histogram",
+                        "culling",
                         Cmd::InspectorTab(false),
                         !self.inspector_info,
                         cx,
@@ -11521,23 +11748,25 @@ impl Workspace {
         }
         if total == 0 {
             let query = self.palette_query.trim();
-            let (title, hint) = match (self.palette_photos, query.is_empty()) {
-                (true, true) => (
-                    "Type part of a filename".to_owned(),
-                    format!(
-                        "“4512” finds IMG_4512.CR3 · {} also searches commands and folders",
-                        shortcut("⌘K")
+            // Keys go in the shared keycap row, never in the prose.
+            let (title, hint, keys): (String, &str, &[(&str, &str)]) =
+                match (self.palette_photos, query.is_empty()) {
+                    (true, true) => (
+                        "Type part of a filename".to_owned(),
+                        "“4512” finds IMG_4512.CR3",
+                        &[("⌘K", "Commands and folders too"), ("Esc", "Close")],
                     ),
-                ),
-                (true, false) => (
-                    format!("No photos match “{query}”"),
-                    "Filenames only, across the whole library · Esc closes".to_owned(),
-                ),
-                (false, _) => (
-                    format!("No commands, photos or folders match “{query}”"),
-                    "Try export, zoom or a filename · Esc closes".to_owned(),
-                ),
-            };
+                    (true, false) => (
+                        format!("No photos match “{query}”"),
+                        "Filenames only, across the whole library",
+                        &[("Esc", "Close")],
+                    ),
+                    (false, _) => (
+                        format!("No commands, photos or folders match “{query}”"),
+                        "Try export, zoom or a filename",
+                        &[("Esc", "Close")],
+                    ),
+                };
             results = results.child(
                 div()
                     .px(px(ui::PANEL_INSET))
@@ -11551,7 +11780,8 @@ impl Workspace {
                             .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(hint),
-                    ),
+                    )
+                    .child(div().pt(px(space::XS)).child(self.key_hints(keys))),
             );
         }
         // `items_start` lets the panel hug its results instead of stretching to max_h.
@@ -11602,7 +11832,19 @@ impl Workspace {
             .into_any_element()
     }
     fn preference_row(&self, label: &str, description: &str, controls: AnyElement) -> AnyElement {
+        let rows = self.pref_rows.clone();
         div()
+            .relative()
+            // First child, so its bounds are recorded before the controls'
+            // Tab reveal reads them in the same prepaint.
+            .child(
+                canvas(
+                    move |bounds, _, _| rows.borrow_mut().push(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .py(px(space::SM))
             .border_b_1()
             .border_color(self.border())
@@ -11735,6 +11977,7 @@ impl Workspace {
     /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
         self.focus_scope(FocusScope::Preferences);
+        self.pref_rows.borrow_mut().clear();
         let s = self.preference_settings();
         // Controls are built only when their section draws them, in the
         // order it draws them: a control registers its Tab stop as it is
@@ -12201,7 +12444,7 @@ impl Workspace {
                     .justify_between()
                     .child(format!("Available themes · {}", self.preference_themes().len()))
                     .child(self.pref_button(
-                        self.button("import-theme", "Import Zed theme…", "folder-opened", Cmd::ImportTheme, false, cx),
+                        self.button("import-theme", copy::IMPORT_ZED_THEME_ELLIPSIS, "folder-opened", Cmd::ImportTheme, false, cx),
                         "import-theme",
                         2,
                         Cmd::ImportTheme,
@@ -12240,7 +12483,7 @@ impl Workspace {
                     )),
             ))
             .when(section == PreferencesSection::Help, |body| body
-                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide()))
+                .child(self.preference_row(copy::SHOW_AT_STARTUP, "Open Getting Started at launch: workflow, shortcuts, time groups, labels and caching", guide()))
                 .child(self.preference_row(
                     "Getting Started",
                     "Open the guide now; F1 opens it from anywhere",
@@ -12289,7 +12532,7 @@ impl Workspace {
             .border_b_1()
             .border_color(self.border());
         let accent = self.accent();
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.warning();
         let section_count = preferences::SECTIONS.len();
         for (index, (tab, label)) in preferences::SECTIONS.into_iter().enumerate() {
             let active = section == tab;
@@ -12583,22 +12826,15 @@ impl Workspace {
             .items_center()
             .gap(px(space::SM))
             .p(px(ui::STATUS_INSET))
+            // Text leads the bar now that no toggle does: the panel inset.
+            .pl(px(space::SM))
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
             .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
-            .child(
-                self.compact_toggle(
-                    "toggle-sidebar",
-                    "",
-                    "panel-left",
-                    Cmd::Sidebar,
-                    self.docks.library > 0.,
-                    cx,
-                )
-                .tooltip(self.tip("Toggle sidebar", "⌘B")),
-            )
+            // The sidebar and inspector toggles live once each, in the title
+            // bar and the view toolbar (CAT-28).
             .when(self.import_ui.active(), |s| {
                 // Byte-weighted, so one large video never stalls the bar.
                 s.child(
@@ -12726,8 +12962,10 @@ impl Workspace {
             )
             .children(self.save_state_view(cx))
             .child(
-                // The theme's name lives in the tooltip: in the bar it cost
-                // ~130 px and truncated long names (R4-design-10).
+                // The half-filled circle does what it looks like: switch to
+                // the theme's light or dark variant (R5-catalog-05); the gear
+                // is the one control that opens Preferences. The theme's name
+                // lives in the tooltip (R4-design-10).
                 div()
                     .id("appearance")
                     .size(px(ui::COMPACT_CONTROL_HEIGHT))
@@ -12743,14 +12981,15 @@ impl Workspace {
                     })
                     .child(icon("color-mode", self.icon_muted()))
                     .tooltip(self.tip(
-                        &format!("{} · Appearance, themes and fonts", self.theme.name),
+                        &match self.light_dark_counterpart() {
+                            Some(other) => format!("{} · switch to {other}", self.theme.name),
+                            None => self.theme.name.clone(),
+                        },
                         "",
                     ))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.execute(Cmd::Appearance, window, cx)
-                        }),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.execute(Cmd::ToggleLightDark, window, cx)
+                    })),
             )
             // Memory is only worth attention when previews approach their budget.
             .when(
@@ -12760,7 +12999,7 @@ impl Workspace {
                         div()
                             .id("cache-usage")
                             .px(px(space::XS))
-                            .text_color(self.c("warning", "#e0b341"))
+                            .text_color(self.warning())
                             .child(format!(
                                 "{:.0} MB",
                                 (stats.memory_bytes + self.texture_bytes) as f64 / 1048576.
@@ -12775,23 +13014,12 @@ impl Workspace {
                 self.compact_toggle(
                     "toggle-histogram",
                     "",
-                    "graph",
+                    "histogram",
                     Cmd::Histogram,
                     self.histogram && self.inspector,
                     cx,
                 )
                 .tooltip(self.tip("Toggle histogram", "H")),
-            )
-            .child(
-                self.compact_toggle(
-                    "header-inspector",
-                    "",
-                    "panel-right",
-                    Cmd::Inspector,
-                    self.docks.inspector > 0.,
-                    cx,
-                )
-                .tooltip(self.tip("Toggle inspector", "I")),
             )
             .child(
                 self.compact_toggle(
@@ -12802,9 +13030,39 @@ impl Workspace {
                     self.preferences,
                     cx,
                 )
-                .tooltip(self.tip(settings_noun(), "⌘,")),
+                .tooltip(self.tip(
+                    &format!("{} · themes, fonts, culling and import", settings_noun()),
+                    "⌘,",
+                )),
             )
             .into_any_element()
+    }
+    /// The current theme's other variant: "… Dark" ↔ "… Light" when both are
+    /// installed, else the System light/dark choice, else Shadowroom's own.
+    fn light_dark_counterpart(&self) -> Option<String> {
+        let name = &self.theme.name;
+        let swapped = if let Some(base) = name.strip_suffix(" Dark") {
+            Some(format!("{base} Light"))
+        } else {
+            name.strip_suffix(" Light")
+                .map(|base| format!("{base} Dark"))
+        };
+        let light = self.theme.appearance == "light";
+        let slot = self
+            .settings
+            .extra
+            .get(if light { "theme_dark" } else { "theme_light" })
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let default = if light {
+            "Shadowroom Dark"
+        } else {
+            "Shadowroom Light"
+        };
+        [swapped, slot, Some(default.to_owned())]
+            .into_iter()
+            .flatten()
+            .find(|candidate| candidate != name && self.themes.iter().any(|t| &t.name == candidate))
     }
 }
 
@@ -12866,6 +13124,14 @@ impl Workspace {
             self.drain_automation(window, cx);
         }
         self.reconcile_rating_filter();
+        // A modal opening or closing retires the tooltip shown before it: GPUI
+        // only re-tests hover on the next mouse move, so it would otherwise
+        // stay painted over the palette or Preferences (R5-overlays-06).
+        let top = self.top_overlay();
+        if top != self.last_top_overlay {
+            self.last_top_overlay = top;
+            TOOLTIP_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.apply_theme_mode(window);
         self.apply_ui_scale();
         self.dialog_focus.borrow_mut().begin_frame();
@@ -12916,22 +13182,22 @@ impl Workspace {
             self.dock_override = [false; 2];
         }
         let library_yields = self.sidebar && !self.focus_mode && !library_fits;
+        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
+        // height: the ledger keeps its own band, as in the Catalog, and still
+        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
+        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
         if library_yields {
             let inspector_yields = self.inspector && !inspector_fits && !self.photos.is_empty();
-            self.hint_once(
-                "catalog-yields",
-                &if inspector_yields {
-                    format!(
-                        "Library and inspector hidden to give the photos room · {} and I show them",
-                        shortcut("⌘B")
-                    )
-                } else {
-                    format!(
-                        "Library hidden to give the photo room · {} shows it",
-                        shortcut("⌘B")
-                    )
-                },
-            );
+            // When the filmstrip yields in the same frame, one notice names
+            // all three: two hints would overwrite each other and the panel
+            // keys would never be seen (R5-review-02).
+            let strip = strip_yields && !self.lights_out();
+            if let Some(text) = yield_hint(true, inspector_yields, strip) {
+                self.hint_once("catalog-yields", &text);
+            }
+            if strip {
+                self.shown_hints.insert("filmstrip-yields");
+            }
         } else {
             // The panel is back (Catalog, a wider window): the hint is stale.
             self.withdraw_notice("catalog-yields");
@@ -12979,15 +13245,10 @@ impl Workspace {
         } else {
             DECISION_HEIGHT
         };
-        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
-        // height: the ledger keeps its own band, as in the Catalog, and still
-        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
-        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
         if strip_yields && !lights_out {
-            self.hint_once(
-                "filmstrip-yields",
-                "Filmstrip hidden to give the photo room · the ledger still jumps to any frame",
-            );
+            if let Some(text) = yield_hint(false, false, true) {
+                self.hint_once("filmstrip-yields", &text);
+            }
         } else {
             self.withdraw_notice("filmstrip-yields");
         }
@@ -13472,10 +13733,39 @@ mod ui_tests {
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
         SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, copy,
-        grip_owns_key, index_filtered_positions, is_quit_chord, item, label_index, match_tier,
-        palette_category_rank, palette_step, retained_position, survey_layout, text_input,
-        thumbnail_size, title_match, ui::space,
+        grip_owns_key, index_filtered_positions, is_quit_chord, item, keycap_parts, label_index,
+        match_tier, palette_category_rank, palette_step, retained_position, shortcut,
+        survey_layout, text_input, thumbnail_size, title_match, ui::space, yield_hint,
     };
+
+    #[test]
+    fn one_notice_names_every_region_a_small_window_hides() {
+        // 800 x 520 in Review: library, inspector and filmstrip all yield.
+        let all = yield_hint(true, true, true).unwrap();
+        assert!(all.contains(&shortcut("⌘B")) && all.contains(" and I "));
+        assert!(all.contains("filmstrip"));
+        let library = yield_hint(true, false, true).unwrap();
+        assert!(library.contains(&shortcut("⌘B")) && library.contains("filmstrip"));
+        assert!(yield_hint(false, false, true).unwrap().contains("ledger"));
+        assert_eq!(yield_hint(false, true, false), None);
+    }
+
+    #[test]
+    fn keycaps_split_modifiers_from_the_key() {
+        let caps = |keys: &str| keycap_parts(keys).join(" ");
+        if cfg!(target_os = "macos") {
+            assert_eq!(caps("⌘⇧E"), "⌘ ⇧ E");
+            assert_eq!(caps("⇧Delete"), "⇧ Delete");
+            assert_eq!(caps("⌘Z"), "⌘ Z");
+        } else {
+            assert_eq!(caps("⌘⇧E"), "Ctrl Shift E");
+            assert_eq!(caps("⇧Delete"), "Shift Delete");
+            assert_eq!(caps("⌘Z"), "Ctrl Z");
+        }
+        assert_eq!(caps("Shift Tab"), "Shift Tab");
+        assert_eq!(caps("0–5"), "0–5");
+        assert_eq!(caps("Enter"), "Enter");
+    }
 
     #[test]
     fn thumbnail_fallbacks_scale_to_the_thumbnail_edge() {
@@ -13709,8 +13999,8 @@ mod ui_tests {
     fn palette_matches_preserve_stable_order_recents_and_query_cache() {
         let mut cache = PaletteCache {
             items: vec![
-                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
-                item("Reject", "Review", "X", "reject", Cmd::Flag(Flag::Reject)),
+                item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item("Reject", "Culling", "X", "reject", Cmd::Flag(Flag::Reject)),
                 item("Pin", "Compare", "B", "pin", Cmd::Pin),
             ],
             ..PaletteCache::default()
@@ -13773,7 +14063,7 @@ mod ui_tests {
             vec![
                 item(
                     "Label Red",
-                    "Review · the active label's key clears it",
+                    "Culling · the active label's key clears it",
                     "6",
                     "symbol-color",
                     Cmd::Label(ColorLabel::Red),
@@ -13847,9 +14137,9 @@ mod ui_tests {
         let mut cache = PaletteCache {
             items: vec![
                 item("Show Import Panel", "File", "", "drive", Cmd::Import),
-                item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+                item("Catalog", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
                 item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
-                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
                 item(
                     "Quit",
                     "App · finishes pending writes first",
@@ -13872,7 +14162,7 @@ mod ui_tests {
             [
                 "Pick",
                 "Undo",
-                "Grid View",
+                "Catalog",
                 "Pin",
                 "Show Import Panel",
                 "Quit"

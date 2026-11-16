@@ -13,19 +13,36 @@
 use super::*;
 use shadowroom::peaking::{PeakingColor, PeakingSensitivity, PeakingStyle};
 
-/// The decision stamp stays at full strength this long, then fades.
-const STAMP_HOLD: Duration = Duration::from_millis(320);
+/// The decision stamp stays at full strength this long, then fades: a full
+/// second, long enough to read it and its undo key (R5-a11y-07).
+const STAMP_HOLD: Duration = Duration::from_millis(1000);
 const STAMP_FADE: Duration = Duration::from_millis(180);
-/// With reduced motion the stamp holds a little longer and leaves at once.
-const STAMP_HOLD_STILL: Duration = Duration::from_millis(700);
+/// With reduced motion the stamp holds longer still and leaves at once.
+const STAMP_HOLD_STILL: Duration = Duration::from_millis(1500);
 /// The stamp's plate opacity (the scrim colour, nearly opaque).
 const STAMP_PLATE_ALPHA: f32 = 0.94;
 
-/// The typed confirmation of a decision made in lights-out.
+/// The typed confirmation of a decision, history step or aid in lights-out.
 pub(super) struct Stamp {
     pub text: String,
     pub color: Hsla,
     pub at: Instant,
+    /// The key that takes it back ("⌘Z" Undo), drawn as a keycap after it.
+    pub hint: Option<(&'static str, &'static str)>,
+    /// Whether the end-of-hold wake-up is scheduled.
+    pub woken: bool,
+}
+
+/// A stamp for a history step: the verb, then what changed between `shown`
+/// and `other` in `shown`'s terms ("UNDO · PICK", "REDO · ★★★").
+pub(super) fn history_stamp(verb: &str, shown: &Decision, other: &Decision) -> String {
+    let flag = (shown.flag != other.flag).then_some(shown.flag);
+    let rating = (shown.rating != other.rating).then_some(shown.rating);
+    let label = (shown.label != other.label).then_some(shown.label);
+    match stamp_text(rating, flag, label) {
+        Some(what) => format!("{verb} · {what}"),
+        None => verb.to_owned(),
+    }
 }
 
 /// The stamp's words for a decision: the flag, else the rating, else the
@@ -108,6 +125,9 @@ impl Workspace {
 
     /// Paints the overlays `effect` asks for into a BGRA display copy of
     /// `rgba`. Runs on the background executor.
+    /// `stripe` is the clipping stripe period for the scale the copy is
+    /// shown at ([`shadowroom::peaking::stripe_period`]).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn paint_effects(
         effect: u8,
         style: PeakingStyle,
@@ -115,13 +135,14 @@ impl Workspace {
         bgra: &mut [u8],
         width: u32,
         height: u32,
+        stripe: u32,
     ) {
         if effect & PEAKING_BIT != 0 {
             shadowroom::peaking::highlight_with(rgba, bgra, width, height, style);
         }
         // Clipping paints last: an exposure warning outranks an edge.
         if effect & CLIPPING_BIT != 0 {
-            shadowroom::peaking::clipping(rgba, bgra, width);
+            shadowroom::peaking::clipping(rgba, bgra, width, stripe);
         }
     }
 
@@ -136,17 +157,21 @@ impl Workspace {
             CLIPPING_BIT,
             self.clipping,
             "clipping",
-            "Clipping shown · magenta stripes mark blown highlights, blue crushed shadows · J toggles"
-                .into(),
+            (
+                "Clipping shown · magenta stripes mark blown highlights, blue crushed shadows · J toggles"
+                    .into(),
+                "Clipping on · magenta highlights, blue shadows · J".into(),
+            ),
             "Clipping hidden",
         );
     }
 
     pub(super) fn toggle_peaking(&mut self) {
         self.focus_peaking = !self.focus_peaking;
-        let shown = format!(
-            "Focus peaking on · {} marks sharp edges · F toggles",
-            self.peaking_style().color.name().to_lowercase()
+        let color = self.peaking_style().color.name().to_lowercase();
+        let shown = (
+            format!("Focus peaking on · {color} marks sharp edges · F toggles"),
+            format!("Peaking on · {color} edges · F"),
         );
         self.announce_aid(
             PEAKING_BIT,
@@ -160,12 +185,20 @@ impl Workspace {
     /// Says an aid is on only once its overlay is on the photo (R4-review-04):
     /// until the background pass has painted the copy, the notice reads
     /// "Preparing …" and [`Self::settle_aid`] swaps in the real text.
-    fn announce_aid(&mut self, bit: u8, on: bool, name: &str, shown: String, hidden: &str) {
+    fn announce_aid(
+        &mut self,
+        bit: u8,
+        on: bool,
+        name: &str,
+        shown: (String, String),
+        hidden: &str,
+    ) {
         if !on {
-            if self.pending_aid.as_ref().is_some_and(|(b, _)| *b == bit) {
+            if self.pending_aid.as_ref().is_some_and(|(b, ..)| *b == bit) {
                 self.pending_aid = None;
             }
             self.announce(hidden, Tone::Info);
+            self.stamp_aid(format!("{} OFF", name.to_uppercase()));
             return;
         }
         let photo_view = !self.import_ui.open
@@ -177,10 +210,12 @@ impl Workspace {
                 .is_some_and(|p| self.effect_ready(p, self.wanted_kind()));
         if ready {
             self.pending_aid = None;
-            self.announce(shown, Tone::Info);
+            self.announce_short(shown.0, shown.1, Tone::Info);
+            self.stamp_aid(format!("{} ON", name.to_uppercase()));
         } else {
             self.announce(format!("Preparing {name}…"), Tone::Info);
-            self.pending_aid = Some((bit, shown));
+            self.stamp_aid(format!("PREPARING {}…", name.to_uppercase()));
+            self.pending_aid = Some((bit, shown.0, shown.1));
         }
     }
 
@@ -207,13 +242,19 @@ impl Workspace {
     /// Called by the loupe each frame: once the pending aid's overlay is on
     /// the photo, the notice says so.
     pub(super) fn settle_aid(&mut self, p: &Photo, kind: PreviewKind) {
-        let Some((bit, _)) = &self.pending_aid else {
+        let Some((bit, ..)) = &self.pending_aid else {
             return;
         };
         if (self.display_effect(kind) & bit == 0 || self.effect_ready(p, kind))
-            && let Some((_, shown)) = self.pending_aid.take()
+            && let Some((bit, shown, short)) = self.pending_aid.take()
         {
-            self.announce(shown, Tone::Info);
+            self.announce_short(shown, short, Tone::Info);
+            let name = if bit == CLIPPING_BIT {
+                "CLIPPING"
+            } else {
+                "FOCUS PEAKING"
+            };
+            self.stamp_aid(format!("{name} ON"));
         }
     }
 
@@ -277,10 +318,11 @@ impl Workspace {
             self.lights_out = false;
             self.hint_once(
                 "focus-mode",
+                // Short: it docks in the decision bar, the only chrome left.
                 if self.lights_out_applies() {
-                    "Focus mode · Shift+Tab again for lights out · Esc to exit"
+                    "Focus mode · Shift+Tab: lights out · Esc exits"
                 } else {
-                    "Focus mode · Esc or Shift+Tab to exit"
+                    "Focus mode · Esc or Shift+Tab exits"
                 },
             );
         } else if !self.lights_out() && self.lights_out_applies() {
@@ -355,31 +397,71 @@ impl Workspace {
         let Some(text) = stamp_text(rating, flag, label) else {
             return;
         };
-        let color = match (flag, rating, label) {
+        let color = self.stamp_color(rating, flag, label);
+        self.show_stamp(text.into(), color, Some(("⌘Z", "Undo")));
+        cx.notify();
+    }
+
+    /// The stamp ink for a decision: the flag's, the rating's or the label's
+    /// photo-overlay colour, else the overlay text.
+    fn stamp_color(
+        &self,
+        rating: Option<u8>,
+        flag: Option<Flag>,
+        label: Option<ColorLabel>,
+    ) -> Hsla {
+        match (flag, rating, label) {
             (Some(Flag::Pick | Flag::Reject), ..) => self.scrim_flag(flag.unwrap_or_default()),
             (None, Some(r), _) if r > 0 => self.scrim_rating(),
             (None, None, Some(l)) => self
                 .photo_label_color(l)
                 .unwrap_or_else(|| self.scrim_text()),
             _ => self.scrim_text(),
+        }
+    }
+
+    /// Lights-out stamp for Undo / Redo (R5-review-03): "UNDO · PICK" in the
+    /// colour of the decision it took back or put back.
+    pub(super) fn stamp_history(&mut self, undo: bool, shown: &Decision, other: &Decision) {
+        if !self.lights_out() {
+            return;
+        }
+        let flag = (shown.flag != other.flag).then_some(shown.flag);
+        let rating = (shown.rating != other.rating).then_some(shown.rating);
+        let label = (shown.label != other.label).then_some(shown.label);
+        let color = self.stamp_color(rating, flag, label);
+        let (verb, hint) = if undo {
+            ("UNDO", ("⌘⇧Z", "Redo"))
+        } else {
+            ("REDO", ("⌘Z", "Undo"))
         };
+        self.show_stamp(history_stamp(verb, shown, other), color, Some(hint));
+    }
+
+    /// Lights-out stamp for an aid toggled by key ("CLIPPING ON", "PEAKING
+    /// OFF", "PREPARING CLIPPING…"), which would otherwise change nothing
+    /// visible until its overlay is painted.
+    fn stamp_aid(&mut self, text: String) {
+        if self.lights_out() {
+            let color = self.scrim_text();
+            self.show_stamp(text, color, None);
+        }
+    }
+
+    /// Shows `text` as the stamp; a new stamp replaces the old one at once.
+    fn show_stamp(
+        &mut self,
+        text: String,
+        color: Hsla,
+        hint: Option<(&'static str, &'static str)>,
+    ) {
         self.stamp = Some(Stamp {
-            text: text.into(),
+            text,
             color,
             at: Instant::now(),
+            hint,
+            woken: false,
         });
-        // Wake for the fade (or, with reduced motion, the exit); the fade's
-        // own frames are requested while it runs.
-        let hold = if self.reduce_motion() {
-            STAMP_HOLD_STILL
-        } else {
-            STAMP_HOLD
-        };
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(hold).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
     }
 
     /// The stamp chip while it lasts: full strength, then a short fade
@@ -409,6 +491,23 @@ impl Workspace {
             a: STAMP_PLATE_ALPHA,
             ..self.scrim()
         };
+        let muted = self.c("shadowroom.scrim.muted", "#b8b8b8");
+        let hint = stamp.hint.map(|(keys, verb)| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::XS))
+                .text_size(ui::font(ui::text::LABEL))
+                .font_weight(FontWeight::NORMAL)
+                .text_color(muted)
+                .child(keycap_row(
+                    keys,
+                    muted.opacity(0.6),
+                    transparent_black(),
+                    muted,
+                ))
+                .child(verb)
+        });
         Some(
             div()
                 .id("decision-stamp")
@@ -416,6 +515,7 @@ impl Workspace {
                 .px(px(space::MD))
                 .flex()
                 .items_center()
+                .gap(px(space::MD))
                 .bg(plate)
                 .opacity(opacity)
                 .text_size(ui::font(ui::text::TITLE))
@@ -423,6 +523,7 @@ impl Workspace {
                 .text_color(stamp.color)
                 .whitespace_nowrap()
                 .child(stamp.text.clone())
+                .children(hint)
                 .into_any_element(),
         )
     }
@@ -468,26 +569,84 @@ impl Workspace {
         if notice.is_some() || save.is_some() {
             return Some(row().children(notice).children(save).into_any_element());
         }
-        let p = self.review_photo()?;
-        let mut line = exposure_line(p).join("  ");
-        if let Some(time) = p.capture_short() {
-            if !line.is_empty() {
-                line.push_str(" · ");
-            }
-            line.push_str(&time);
-        }
-        (!line.is_empty()).then(|| {
+        let (line, _) = self.culling_line()?;
+        Some(
             row()
                 .text_color(self.muted())
-                .child(ellipsis(line))
-                .into_any_element()
-        })
+                .child(ellipsis(line.clone()))
+                .tooltip(self.tip(&line, ""))
+                .into_any_element(),
+        )
+    }
+
+    /// The compact culling line: capture time first, the one fact that tells
+    /// burst frames apart, then exposure; with the time's length in chars.
+    fn culling_line(&self) -> Option<(String, usize)> {
+        let p = self.review_photo()?;
+        let time = p.capture_short().unwrap_or_default();
+        let exposure = exposure_line(p).join("  ");
+        let line = match (time.is_empty(), exposure.is_empty()) {
+            (true, true) => return None,
+            (false, true) => time.clone(),
+            (true, false) => exposure,
+            (false, false) => format!("{time} · {exposure}"),
+        };
+        Some((line, time.chars().count()))
+    }
+
+    /// Room Focus mode's docked slot asks of the decision bar, and whether it
+    /// holds a notice (which may push the stars out) rather than the culling
+    /// line (which reserves only its capture time). `small` and `body` are
+    /// the 11 and 12 px advances.
+    pub(super) fn focus_slot_need(&self, small: f32, body: f32) -> (f32, bool) {
+        let pad = 2. * space::SM;
+        let cap = ui::scaled(420.);
+        if let Some(closing) = self.closing_text() {
+            return (
+                (closing.chars().count() as f32 * small + pad).min(cap),
+                true,
+            );
+        }
+        let failed = self.recovery_broken
+            || self.settings_failure.is_some()
+            || self.save_state() == SaveState::Failed;
+        let save = if failed { 12. * small + 20. } else { 0. };
+        if let Some(flash) = self.feedback.flash.as_ref() {
+            let glyph = if flash.tone == Tone::Info { 0. } else { 22. };
+            let action = flash.action.as_ref().map_or(0., |action| {
+                action.label.chars().count() as f32 * body + pad + space::SM
+            });
+            let text = self.flash_text(flash).chars().count() as f32 * small;
+            return ((text + glyph + action + pad + save).min(cap), true);
+        }
+        if failed {
+            return (save + pad, true);
+        }
+        match self.culling_line() {
+            Some((_, time)) if time > 0 => (time as f32 * small + pad, false),
+            _ => (0., false),
+        }
     }
 
     /// Lights-out's bottom-centre column above the ledger: the decision
     /// stamp, and a plate for what must not wait (a closing status, a failed
     /// save, a warning or a hint); routine confirmations are the stamp's job.
     pub(super) fn lights_out_overlay(&mut self, cx: &Context<Self>) -> Option<AnyElement> {
+        // Wake at the end of a new stamp's hold for the fade (or, with reduced
+        // motion, the exit); the fade's own frames are requested while it runs.
+        if let Some(stamp) = self.stamp.as_mut().filter(|stamp| !stamp.woken) {
+            stamp.woken = true;
+            let hold = if self.reduce_motion() {
+                STAMP_HOLD_STILL
+            } else {
+                STAMP_HOLD
+            };
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(hold).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
         let stamp = self.stamp_view();
         let closing = self.closing_text();
         let notice = if closing.is_some() {
@@ -496,6 +655,8 @@ impl Workspace {
             self.feedback
                 .flash
                 .as_ref()
+                // Warnings and keyed notices (hints, a batch decision with its
+                // Undo, R5-a11y-07); routine confirmations are the stamp's job.
                 .filter(|flash| flash.tone == Tone::Warning || flash.key.is_some())
                 .and_then(|_| self.status_notice(cx))
         };
@@ -552,8 +713,9 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::stamp_text;
+    use super::{history_stamp, stamp_text};
     use shadowroom::model::{ColorLabel, Flag};
+    use shadowroom::workspace::Decision;
 
     #[test]
     fn stamps_name_the_decision_in_capitals() {
@@ -563,5 +725,26 @@ mod tests {
         assert_eq!(stamp_text(Some(0), Some(Flag::None), None), Some("RESET"));
         assert_eq!(stamp_text(None, None, Some(ColorLabel::Blue)), Some("BLUE"));
         assert_eq!(stamp_text(None, None, None), None);
+    }
+
+    #[test]
+    fn history_stamps_name_what_was_taken_back() {
+        let base = Decision {
+            id: 1,
+            rating: 0,
+            flag: Flag::None,
+            label: ColorLabel::None,
+            trashed: false,
+        };
+        let picked = Decision {
+            flag: Flag::Pick,
+            ..base
+        };
+        // Undo of P: the stamp names the pick it took back.
+        assert_eq!(history_stamp("UNDO", &picked, &base), "UNDO · PICK");
+        assert_eq!(history_stamp("REDO", &picked, &base), "REDO · PICK");
+        let rated = Decision { rating: 3, ..base };
+        assert_eq!(history_stamp("UNDO", &rated, &base), "UNDO · ★★★");
+        assert_eq!(history_stamp("UNDO", &base, &base), "UNDO");
     }
 }

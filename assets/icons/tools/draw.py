@@ -162,6 +162,19 @@ def _():
     # triangles of a histogram, not the warning triangle (errors only)
     return [frame(2, 2, 14, 14, 1), poly([(6, 3), (13, 3), (13, 10)])]
 
+@icon("culling", "Culling panel")
+def _():
+    # the cull ledger: a rail with decided frames above and below it, the
+    # inspector tab's own shape (the histogram mountain toggles the histogram)
+    return [rrect(1, 8, 15, 9), rrect(3, 3, 5, 7), rrect(7, 5, 9, 7), rrect(11, 10, 13, 14)]
+
+@icon("error", "Failure")
+def _():
+    # circle-x: something failed (unsaved decision, failed save or copy); the
+    # warning triangle stays for warnings and danger actions
+    return [circle(8, 8, 7), circle(8, 8, 6, cw=False),
+            stroke([(5.5, 5.5), (10.5, 10.5)]), stroke([(10.5, 5.5), (5.5, 10.5)])]
+
 @icon("focus-mode", "Focus mode")
 def _():
     # one photograph on an emptied screen: the outer frame stays, the chrome

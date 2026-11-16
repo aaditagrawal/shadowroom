@@ -21,6 +21,53 @@ fn alt() -> &'static str {
 /// One line of keyboard scrolling in the guide.
 const GUIDE_LINE: f32 = 40.;
 
+/// The guide's quick keys, grouped: (group, [(keys, verb)]). Keys use the
+/// shortcut notation (⌘, ⇧, ⌥) that `keycaps` spells per platform.
+fn quick_keys() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "Cull",
+            vec![
+                ("P", "Pick"),
+                ("X", "Reject"),
+                ("U", "Clear flag"),
+                ("0–5", "Stars"),
+                ("6–9", "Label"),
+                ("R", "Reset"),
+                ("⌘Z", "Undo"),
+            ],
+        ),
+        (
+            "Navigate",
+            vec![
+                ("← →", "Previous / Next"),
+                ("G", "Catalog"),
+                ("L", "Review"),
+                ("C", "Compare"),
+                ("S", "Survey"),
+                ("⇧Tab", "Focus mode"),
+            ],
+        ),
+        (
+            "Inspect",
+            vec![
+                ("Z", "Fit / 100%"),
+                ("- =", "Zoom"),
+                ("⌥Arrows", "Pan"),
+                ("F", "Peaking"),
+                ("J", "Clipping"),
+                ("H", "Histogram"),
+                ("B", "Pin reference"),
+                ("⇧B", "Swap"),
+            ],
+        ),
+        (
+            "App",
+            vec![("⌘K", "Commands"), ("F1", "Help"), ("⌘Q", "Quit")],
+        ),
+    ]
+}
+
 /// Guide sections: title and body, with platform-correct key names.
 fn guide_sections() -> Vec<(&'static str, String)> {
     let (primary, alt, settings) = (primary(), alt(), settings_noun());
@@ -66,7 +113,10 @@ fn guide_sections() -> Vec<(&'static str, String)> {
         ),
         (
             "Color labels",
-            "Labels are your own categories, not a universal meaning or rating standard. For example, red can mean retouch and green can mean delivery-ready. Keys 6–9 assign red, yellow, green and blue; pressing the key of the label a photo already has clears it without moving on. The inspector also offers purple and clear. Export XMP explicitly when you want to carry decisions into another editor.".into(),
+            format!(
+                "Labels are your own categories, not a universal meaning or rating standard. For example, red can mean retouch and green can mean delivery-ready. Keys 6–9 assign red, yellow, green and blue; pressing the key of the label a photo already has clears it without moving on. The inspector also offers purple and clear. Use {xmp} when you want to carry decisions into another editor.",
+                xmp = copy::EXPORT_XMP
+            ),
         ),
         (
             "Image actions",
@@ -88,7 +138,9 @@ fn guide_sections() -> Vec<(&'static str, String)> {
         (
             "Your files and settings",
             format!(
-                "Ratings, flags and labels are staged in the local catalog. Export Picks copies picked assets; XMP export writes only to an explicit destination. {settings} stay unchanged until you apply them: Apply saves and stays open; Apply & Close saves and closes. Cancel discards unapplied changes; Esc asks before discarding."
+                "Ratings, flags and labels are staged in the local catalog. {export} copies picked assets; {xmp} writes only to an explicit destination. {settings} stay unchanged until you apply them: Apply saves and stays open; Apply & Close saves and closes. Cancel discards unapplied changes; Esc asks before discarding.",
+                export = copy::EXPORT_PICKS,
+                xmp = copy::EXPORT_XMP,
             ),
         ),
     ]
@@ -140,6 +192,41 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(space::LG));
+        // Quick keys lead the scrolling body: one keycap + verb pair per
+        // binding, never split across lines, so the guide keeps its height
+        // for the text at 125% and in small windows (R5-overlays-02).
+        let mut keys = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(space::SM))
+            .pb(px(space::LG))
+            .border_b_1()
+            .border_color(self.border())
+            .child(self.section_header("Quick keys"));
+        for (group, hints) in quick_keys() {
+            let mut hints = hints;
+            if group == "App" {
+                hints.insert(1, ("⌘,", settings_noun()));
+            }
+            keys = keys.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(space::MD))
+                    .child(
+                        div()
+                            .w(px(ui::scaled(64.)))
+                            .flex_shrink_0()
+                            .pt(px(space::TINY))
+                            .text_size(ui::font(ui::text::LABEL))
+                            .text_color(self.muted())
+                            .child(group),
+                    )
+                    .child(self.key_hints(&hints).flex_1().text_color(self.text())),
+            );
+        }
+        content = content.child(keys);
         for (title, text) in guide_sections() {
             content = content.child(
                 div()
@@ -169,44 +256,12 @@ impl Workspace {
                         Some(("close-guide", Cmd::Close)),
                         cx,
                     ))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(ui::DIALOG_INSET))
-                            .py(px(space::LG))
-                            .flex()
-                            .flex_col()
-                            .gap(px(space::XS))
-                            .border_b_1()
-                            .border_color(self.border())
-                            .child(div().font_weight(FontWeight::MEDIUM).child("Quick keys"))
-                            .child("←/→ Navigate · P Pick · X Reject · U Clear flag · 0–5 Stars · R Reset")
-                            .child(format!(
-                                "G Catalog · L Review · C Compare · S Survey · B Pin reference · {} Swap",
-                                shortcut("⇧B")
-                            ))
-                            .child(format!(
-                                "Z/Space or click Fit/100% · -/= Zoom · {}+arrows Pan · F Peaking · J Clipping · H Histogram",
-                                alt()
-                            ))
-                            .child(
-                                div()
-                                    .text_color(self.muted())
-                                    .child(format!(
-                                        "{} Undo · {} Commands · {} {} · F1 Help",
-                                        shortcut("⌘Z"),
-                                        shortcut("⌘K"),
-                                        shortcut("⌘,"),
-                                        settings_noun()
-                                    )),
-                            ),
-                    )
                     .child(content)
                     .child(
                         self.modal_footer()
                             .child(self.button(
                                 "guide-startup",
-                                "Show at startup",
+                                copy::SHOW_AT_STARTUP,
                                 if self.settings.show_getting_started {
                                     "selected"
                                 } else {
@@ -234,10 +289,12 @@ impl Workspace {
                                             "Cull where the files are; nothing is copied",
                                             "⌘O",
                                         ))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.execute(Cmd::Close, window, cx);
-                                            this.execute(Cmd::OpenFolder, window, cx);
-                                        })),
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.execute(Cmd::Close, window, cx);
+                                                this.execute(Cmd::OpenFolder, window, cx);
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         self.dialog_button(
@@ -246,23 +303,27 @@ impl Workspace {
                                             ButtonKind::Primary,
                                             false,
                                         )
-                                        .tooltip(self.tip("Copy and verify into your library", "Enter"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.execute(Cmd::Close, window, cx);
-                                            this.execute(Cmd::Import, window, cx);
-                                        })),
+                                        .tooltip(
+                                            self.tip("Copy and verify into your library", "Enter"),
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.execute(Cmd::Close, window, cx);
+                                                this.execute(Cmd::Import, window, cx);
+                                            }),
+                                        ),
                                     )
                                     .into_any_element()
                             } else {
                                 self.action_button(
                                     "guide-done",
-                                    "Start culling",
+                                    "Start Culling",
                                     Cmd::Close,
                                     ButtonKind::Primary,
                                     false,
                                     cx,
                                 )
-                                .tooltip(self.tip("Start culling", "Enter"))
+                                .tooltip(self.tip("Start Culling", "Enter"))
                                 .into_any_element()
                             }),
                     ),
@@ -352,15 +413,86 @@ mod tests {
                 "the guide names {quoted:?}, which no menu or command has"
             );
         }
+        // A command's name is never cut short: wherever the guide uses the
+        // first two or more words of a multi-word command ("Export Picks",
+        // "Export XMP"), the full name follows, or that prefix is itself a
+        // command (R5-overlays-03).
+        let capitalised = |word: &str| word.chars().next().is_some_and(char::is_uppercase);
+        for label in &labels {
+            let words: Vec<&str> = label.split_whitespace().collect();
+            for count in 2..words.len() {
+                let prefix = words[..count].join(" ");
+                if !words[..count].iter().all(|w| capitalised(w)) || known(&prefix) {
+                    continue;
+                }
+                for (at, _) in text.match_indices(&prefix) {
+                    let rest = &text[at..];
+                    let full = labels
+                        .iter()
+                        .any(|l| l.starts_with(&prefix) && rest.starts_with(l.as_str()));
+                    assert!(full, "the guide shortens a command to {prefix:?}");
+                }
+            }
+        }
         // Any "Title Case…" command in the guide is a real one: the last one
-        // to four words before each ellipsis must form a known label.
+        // to six words before each ellipsis must form a known label.
         for (n, _) in text.match_indices('…') {
-            let words: Vec<&str> = text[..n].split_whitespace().rev().take(4).collect();
+            let words: Vec<&str> = text[..n].split_whitespace().rev().take(6).collect();
             let found = (1..=words.len()).any(|count| {
                 let phrase: Vec<&str> = words[..count].iter().rev().copied().collect();
                 known(&format!("{}…", phrase.join(" ")))
             });
             assert!(found, "unknown command before an ellipsis: {:?}", words);
         }
+    }
+
+    /// Push buttons use Title Case, as menus and the palette do: no word
+    /// after the first is lowercase except short articles, conjunctions and
+    /// prepositions (R5-overlays-03).
+    #[test]
+    fn buttons_use_title_case() {
+        const MINOR: [&str; 12] = [
+            "a", "an", "and", "as", "at", "for", "in", "of", "on", "or", "the", "to",
+        ];
+        let sources = [
+            include_str!("../desktop.rs"),
+            include_str!("dialog.rs"),
+            include_str!("culling.rs"),
+            include_str!("feedback.rs"),
+            include_str!("help.rs"),
+            include_str!("deletion_ui.rs"),
+            include_str!("review_actions.rs"),
+            include_str!("preferences.rs"),
+        ];
+        let mut checked = 0;
+        for source in sources {
+            for call in ["dialog_button(", "action_button("] {
+                for (at, _) in source.match_indices(call) {
+                    if source[..at].ends_with("fn ") {
+                        continue;
+                    }
+                    // The label is the first string literal after the id.
+                    let args = &source[at + call.len()..];
+                    let args = &args[..args.find(')').unwrap_or(args.len()).min(400)];
+                    let mut literals = args.split('"').skip(1).step_by(2);
+                    let first = literals.next();
+                    let label = if args.trim_start().starts_with('"') {
+                        literals.next()
+                    } else {
+                        first
+                    };
+                    let Some(label) = label else { continue };
+                    checked += 1;
+                    for word in label.split_whitespace().skip(1) {
+                        let lower = word.chars().next().is_some_and(char::is_lowercase);
+                        assert!(
+                            !lower || MINOR.contains(&word),
+                            "button {label:?} is not Title Case"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked > 10, "found only {checked} button labels");
     }
 }
