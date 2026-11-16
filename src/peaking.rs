@@ -112,7 +112,9 @@ pub fn highlight(rgba: &[u8], bgra: &mut [u8], width: u32, height: u32) {
 /// readout counts. Transparent pixels are left alone.
 pub fn clipping(rgba: &[u8], bgra: &mut [u8]) {
     assert_eq!(bgra.len(), rgba.len());
-    for (source, display) in rgba.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
+    let (sources, _) = rgba.as_chunks::<4>();
+    let (displays, _) = bgra.as_chunks_mut::<4>();
+    for (source, display) in sources.iter().zip(displays.iter_mut()) {
         if source[3] < 128 {
             continue;
         }

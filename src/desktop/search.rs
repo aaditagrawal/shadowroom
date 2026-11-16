@@ -81,14 +81,14 @@ impl Workspace {
                 )
             })
             .collect();
-        if total > limit {
-            if let Some(last) = items.last_mut() {
-                // The count of what the cap hides, on the last row.
-                last.detail = format!(
-                    "Photo · {} · keep typing",
-                    plural(total - limit, "more match", "more matches")
-                );
-            }
+        // The count of what the cap hides, on the last row.
+        if total > limit
+            && let Some(last) = items.last_mut()
+        {
+            last.detail = format!(
+                "Photo · {} · keep typing",
+                plural(total - limit, "more match", "more matches")
+            );
         }
         if !self.palette_photos {
             let mut folders: Vec<(bool, &String)> = self

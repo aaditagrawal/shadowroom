@@ -25,14 +25,13 @@ impl Workspace {
             // Peaking and clipping copies take a full-resolution pass each, so
             // without this the overlay pops in after every step (REV-29).
             // Prepare the next frame's copy only, without painting it.
-            if self.display_effect(PreviewKind::Full) != 0 {
-                if let Some(&index) = self
+            if self.display_effect(PreviewKind::Full) != 0
+                && let Some(&index) = self
                     .selected
                     .checked_add_signed(self.navigation_direction)
                     .and_then(|position| self.filtered.get(position))
-                {
-                    let _ = self.texture(index, PreviewKind::Full, cx);
-                }
+            {
+                let _ = self.texture(index, PreviewKind::Full, cx);
             }
             return None;
         }
