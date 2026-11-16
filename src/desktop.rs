@@ -245,6 +245,8 @@ enum Cmd {
     RatingFilter,
     Histogram,
     Focus,
+    /// F11: the window fills the screen (GPUI `toggle_fullscreen`).
+    Fullscreen,
     Sidebar,
     ResizeDock(DockSide),
     ResetLayout,
@@ -1161,6 +1163,10 @@ pub struct Workspace {
     /// Logical centre-pane size from the last frame, for fitted overlays.
     center_size: (f32, f32),
     focus_mode: bool,
+    /// Focus mode's second level (`loupe_aids::lights_out`).
+    lights_out: bool,
+    /// The typed confirmation of the last lights-out decision.
+    stamp: Option<loupe_aids::Stamp>,
     sidebar: bool,
     title_drag: bool,
     palette: bool,
@@ -1663,6 +1669,8 @@ impl Workspace {
             last_grid_cols: 0,
             center_size: (800., 600.),
             focus_mode: false,
+            lights_out: false,
+            stamp: None,
             sidebar,
             title_drag: false,
             palette: false,
@@ -3179,6 +3187,9 @@ impl Workspace {
             return;
         }
         self.history.push(before, after.clone());
+        if self.lights_out() {
+            self.stamp_decision(rating, flag, label, cx);
+        }
         let old = self.selected_id();
         // Keeps the selected photo when it is still visible (even if earlier
         // batch members left the view and shifted it), else holds the position
@@ -3830,9 +3841,8 @@ impl Workspace {
                     // …then zoom returns to Fit, then Focus mode ends.
                     self.zoom = false;
                     self.read_ahead();
-                } else if self.focus_mode {
-                    self.focus_mode = false;
-                } else {
+                } else if !self.step_back_focus() {
+                    // …then lights-out steps back to Focus mode, which ends.
                     self.cancel_ingest_resize();
                     self.import_ui.active_field = None;
                     self.error = None;
@@ -3996,12 +4006,8 @@ impl Workspace {
             }
             Cmd::Histogram => self.histogram = !self.histogram,
             Cmd::PreviewDetails => self.preview_details = !self.preview_details,
-            Cmd::Focus => {
-                self.focus_mode = !self.focus_mode;
-                if self.focus_mode {
-                    self.hint_once("focus-mode", "Focus mode · Esc or Shift+Tab to exit");
-                }
-            }
+            Cmd::Focus => self.cycle_focus(),
+            Cmd::Fullscreen => window.toggle_fullscreen(),
             Cmd::Sidebar => {
                 let hidden = self.docks.library == 0.;
                 self.sidebar = self.focus_mode || !self.sidebar || hidden;
@@ -4766,7 +4772,7 @@ impl Workspace {
             ),
             item(
                 "Toggle Focus Mode",
-                "View · hide side panels",
+                "View · hide every bar; again for lights out",
                 "Shift Tab",
                 "focus-mode",
                 Cmd::Focus,
@@ -5144,6 +5150,12 @@ impl Workspace {
         if self.deletion_key(event, window, cx) {
             return;
         }
+        // Escape keeps Shadowroom open while a quit waits on writes, exports
+        // or an import, in every view and Focus mode level.
+        if event.keystroke.key == "escape" && self.cancel_quit() {
+            cx.notify();
+            return;
+        }
         self.reconcile_rating_filter();
         let key = event.keystroke.key.as_str();
         if key == "escape" && self.cancel_ingest_resize() {
@@ -5483,6 +5495,7 @@ impl Workspace {
                 "h" | "f22" => Some(Cmd::Histogram),
                 "i" => Some(Cmd::Inspector),
                 "tab" => Some(Cmd::Focus),
+                "f11" => Some(Cmd::Fullscreen),
                 "[" | "f23" => Some(Cmd::PreviousGroup),
                 "]" | "f24" => Some(Cmd::NextGroup),
                 "b" => Some(Cmd::Pin),
@@ -8061,7 +8074,8 @@ impl Workspace {
         });
         // What the previous frame now carries, briefly, after auto-advance:
         // inside the picture's bottom-left corner, like the chip at its top.
-        let pane = pane.when(!reference, |pane| {
+        // Lights-out confirms with its stamp instead.
+        let pane = pane.when(!reference && !self.lights_out(), |pane| {
             pane.children(self.decision_note_chip().map(|chip| {
                 div()
                     .absolute()
@@ -9490,7 +9504,16 @@ impl Workspace {
                     "R",
                 )),
             )
-            .child(div().flex_1().min_w(px(0.)))
+            // Focus mode docks its notices (or the culling line) here.
+            .child(
+                match (!self.chrome_visible())
+                    .then(|| self.focus_slot(cx))
+                    .flatten()
+                {
+                    Some(slot) => slot,
+                    None => div().flex_1().min_w(px(0.)).into_any_element(),
+                },
+            )
             .child(
                 div()
                     .id("review-progress")
@@ -10351,6 +10374,7 @@ impl Workspace {
         state["clipping"] = json!(self.clipping);
         state["peaking_style"] = json!({"color": self.peaking_style().color.key(), "sensitivity": self.peaking_style().sensitivity.key()});
         state["focus_mode"] = json!(self.focus_mode);
+        state["lights_out"] = json!(self.lights_out());
         state["grid_size"] = json!(["s", "m", "l"][self.grid_size.min(2)]);
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
         state["label_filter"] = json!(self.label_filter.map(ColorLabel::as_str));
@@ -12569,13 +12593,20 @@ impl Workspace {
             }
         }
         self.compact = self.docks.center < 600.;
-        let decision_height = if self.filtered.is_empty() || self.import_ui.open {
+        // Lights-out folds the decision bar and filmstrip into an 8 px ledger.
+        let lights_out = self.lights_out();
+        if !lights_out {
+            self.withdraw_notice("lights-out");
+        }
+        let decision_height = if self.filtered.is_empty() || self.import_ui.open || lights_out {
             0.
         } else {
             DECISION_HEIGHT
         };
         let strip_height = if self.filtered.is_empty() || self.import_ui.open {
             0.
+        } else if lights_out {
+            ledger::LIGHTS_OUT_BAND
         } else if self.mode == ViewMode::Grid {
             // The Catalog has no filmstrip; the ledger gets its own band.
             if self.ledger_visible() {
@@ -12587,7 +12618,7 @@ impl Workspace {
             FILMSTRIP_HEIGHT
         };
         // Focus mode hides every bar but the decision bar and filmstrip
-        // (REV-25); notices move onto the canvas (`focus_notices`).
+        // (REV-25); notices dock in the decision bar (`focus_slot`).
         let chrome = self.chrome_visible();
         if !self.focus_mode {
             // Its exit hint is stale once Focus mode ends, however it ended.
@@ -12673,7 +12704,10 @@ impl Workspace {
                     .overflow_hidden()
                     .child(self.trace.timed("center", center)),
             );
-        if !self.filtered.is_empty() {
+        if lights_out {
+            let band = self.lights_out_band(cx);
+            main = main.child(self.trace.timed("ledger", band));
+        } else if !self.filtered.is_empty() {
             main = main.child(self.trace.timed("rating_bar", self.rating_bar(cx)));
             if self.mode != ViewMode::Grid {
                 let strip = self.filmstrip(cx);
@@ -12702,6 +12736,13 @@ impl Workspace {
             body = body.child(self.dock_resize_grip(DockSide::Inspector, window, cx));
         }
         body = body.children(self.pane_ring_view());
+        // Lights-out's stamp and urgent notices; with no decision bar to dock
+        // in (an empty view), Focus mode uses the same plate.
+        let focus_overlay = if lights_out || (!chrome && self.filtered.is_empty()) {
+            self.lights_out_overlay(cx)
+        } else {
+            None
+        };
         let mut root = div()
             .id("shadowroom")
             .track_focus(&self.focus)
@@ -12764,7 +12805,7 @@ impl Workspace {
             .when(chrome, |root| {
                 root.child(self.trace.timed("status_bar", self.status_bar(window, cx)))
             })
-            .children((!chrome).then(|| self.focus_notices(cx)).flatten());
+            .children(focus_overlay);
         // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
         // tagged with its overlay (None: the system-modal quit prompt) so the
         // one scrim goes directly beneath the topmost modal.
@@ -13709,6 +13750,10 @@ mod ui_tests {
             "\"b\" => Some(Cmd::SwapPanes)",
             "\"c\" => Some(Cmd::CompareSync)",
             "\"tab\" => Some(Cmd::Focus)",
+            // F11 full screen, and Escape keeping the app open while a quit
+            // waits (every Focus mode level, lights-out included).
+            "\"f11\" => Some(Cmd::Fullscreen)",
+            "if event.keystroke.key == \"escape\" && self.cancel_quit()",
             // Inspection aids: the clipping overlay and Alt+digit zoom presets.
             "\"j\" => Some(Cmd::Clipping)",
             // Photo search (Ctrl/Cmd+F) opens the palette, after quit.
