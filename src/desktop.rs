@@ -8,6 +8,7 @@ mod frame_trace;
 mod help;
 mod ingest_ui;
 mod layout;
+mod ledger;
 mod motion;
 mod preferences;
 mod prefetch;
@@ -1199,6 +1200,10 @@ pub struct Workspace {
     /// Bumped whenever a photo's decision changes; keys derived caches.
     decision_epoch: u64,
     selection_summary_cache: RefCell<Option<((usize, usize, u64), SelectionSummary)>>,
+    /// Cull ledger cells keyed by (decision epoch, frames, cells).
+    ledger_cache: RefCell<Option<((u64, usize, usize), Rc<ledger::Ledger>)>>,
+    /// Painted ledger track (left edge, geometry) for pointer hit-testing.
+    ledger_track: Rc<Cell<(f32, ledger::Track)>>,
     /// The guide opened by itself at launch; closing it stops that.
     startup_guide: bool,
     /// One-time notices already shown this session.
@@ -1656,6 +1661,8 @@ impl Workspace {
             rated_counts: None,
             decision_epoch: 0,
             selection_summary_cache: RefCell::new(None),
+            ledger_cache: RefCell::new(None),
+            ledger_track: Rc::new(Cell::new((0., ledger::Track::default()))),
             startup_guide: getting_started,
             shown_hints: HashSet::new(),
             window_title: String::new(),
@@ -2910,6 +2917,7 @@ impl Workspace {
         }
         // Last decision for an ID wins, as in the former map + full-library pass.
         let decisions_by_id: HashMap<_, _> = decisions.iter().map(|d| (d.id, *d)).collect();
+        let mut ledger_changes = Vec::new();
         for d in decisions_by_id.values() {
             let Some(&i) = self.photo_index.get(&d.id) else {
                 continue;
@@ -2917,6 +2925,7 @@ impl Workspace {
             let before = Decision::from(&self.photos[i]);
             let accepted_before = self.accepts_photo(&self.photos[i]);
             let reviewed_before = !Filter::Unrated.accepts(&self.photos[i]);
+            let mark_before = ledger::Mark::of(&self.photos[i]);
             self.counts.adjust(before, false);
             let in_scope = self
                 .scope
@@ -2952,6 +2961,10 @@ impl Workspace {
             self.decision_membership_changed |=
                 accepted_before != self.accepts_photo(&self.photos[i]);
             if self.filtered_positions[i] != usize::MAX {
+                let mark_after = ledger::Mark::of(&self.photos[i]);
+                if mark_after != mark_before {
+                    ledger_changes.push((self.filtered_positions[i], mark_before, mark_after));
+                }
                 let reviewed_after = !Filter::Unrated.accepts(&self.photos[i]);
                 if reviewed_before != reviewed_after {
                     if let Some((_, summary)) = &mut self.survey_cache {
@@ -2968,6 +2981,17 @@ impl Workspace {
                     }
                 }
             }
+        }
+        // The cull ledger follows in place, without another pass over the view
+        // (a membership change rebuilds the view, and the ledger with it).
+        if let Some(((epoch, ..), ledger)) = self.ledger_cache.get_mut().as_mut()
+            && *epoch == self.decision_epoch
+        {
+            let ledger = Rc::make_mut(ledger);
+            for (position, before, after) in ledger_changes {
+                ledger.update(position, before, after);
+            }
+            *epoch = self.decision_epoch.wrapping_add(1);
         }
         self.decision_epoch = self.decision_epoch.wrapping_add(1);
         self.save_revisions.stage(decisions.iter().map(|d| d.id));
@@ -8572,6 +8596,7 @@ impl Workspace {
             if next == end { end += 1 } else { start -= 1 }
         }
         let mut strip = div()
+            .relative()
             .h(px(FILMSTRIP_HEIGHT))
             .flex_shrink_0()
             .flex()
@@ -8579,10 +8604,44 @@ impl Workspace {
             .justify_center()
             .gap(px(ui::FILM_GAP))
             .px(px(ui::PANEL_INSET))
+            // The cull ledger rides in the top padding; frames stay centred
+            // below it (the same top padding whether or not it is shown).
+            .pt(px(ledger::TRACK_TOP + ledger::TRACK))
+            .pb(px(ui::HAIRLINE))
             .bg(self.panel())
             .border_t_1()
             .border_color(self.border())
             .overflow_hidden();
+        if self.ledger_visible() {
+            // When every frame fits, each ledger cell sits exactly over its
+            // frame; otherwise the track is a minimap of the whole view.
+            let all = start == 0 && end == self.filtered.len();
+            let (left, track) = if all {
+                let width = used - ui::FILM_GAP;
+                (
+                    ui::PANEL_INSET + ((available - width) / 2.).max(0.),
+                    ledger::Track {
+                        width,
+                        gap: ui::FILM_GAP,
+                    },
+                )
+            } else {
+                (
+                    ui::PANEL_INSET,
+                    ledger::Track {
+                        width: self.ledger_width(),
+                        gap: 1.,
+                    },
+                )
+            };
+            strip = strip.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(left))
+                    .child(self.ledger(track, cx)),
+            );
+        }
         // Consecutive frames of one burst share a tinted run so group
         // boundaries are visible without opening the inspector.
         let mut run: Option<(usize, Div)> = None;
@@ -8833,8 +8892,8 @@ impl Workspace {
             if grid { control } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
-            // Progress bar and "N reviewed".
-            64. + space::SM + reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
+            // "N reviewed" (the cull ledger under the bar draws the progress).
+            reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
             // "Reset" text.
             space::SM + 5. * CHAR,
         ];
@@ -8982,16 +9041,7 @@ impl Workspace {
                     .text_size(px(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(div().text_color(self.text()).child(position))
-                    .when(progress && self.multi.len() < 2, |s| {
-                        s.child(
-                            div()
-                                .w(px(64.))
-                                .h(px(3.))
-                                .bg(self.selected_bg())
-                                .child(div().h_full().w(px(64. * share)).bg(self.muted())),
-                        )
-                        .child(reviewed_text)
-                    })
+                    .when(progress && self.multi.len() < 2, |s| s.child(reviewed_text))
                     .tooltip(self.tip(
                         &format!(
                             "{} of {} reviewed ({:.0}%)",
@@ -11892,12 +11942,18 @@ impl Workspace {
         } else {
             DECISION_HEIGHT
         };
-        let strip_height =
-            if self.filtered.is_empty() || self.mode == ViewMode::Grid || self.import_ui.open {
-                0.
+        let strip_height = if self.filtered.is_empty() || self.import_ui.open {
+            0.
+        } else if self.mode == ViewMode::Grid {
+            // The Catalog has no filmstrip; the ledger gets its own band.
+            if self.ledger_visible() {
+                ledger::ROW_HEIGHT
             } else {
-                FILMSTRIP_HEIGHT
-            };
+                0.
+            }
+        } else {
+            FILMSTRIP_HEIGHT
+        };
         self.center_size = (
             self.docks.center,
             self.workspace_size.1
@@ -11981,6 +12037,9 @@ impl Workspace {
             if self.mode != ViewMode::Grid {
                 let strip = self.filmstrip(cx);
                 main = main.child(self.trace.timed("filmstrip", strip));
+            } else if self.ledger_visible() {
+                let band = self.ledger_band(cx);
+                main = main.child(self.trace.timed("ledger", band));
             }
         }
         let mut body = div().relative().flex().flex_1().min_h(px(0.)).min_w(px(0.));
@@ -12886,6 +12945,7 @@ mod ui_tests {
             ("help.rs", include_str!("desktop/help.rs")),
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
             ("layout.rs", include_str!("desktop/layout.rs")),
+            ("ledger.rs", include_str!("desktop/ledger.rs")),
             ("preferences.rs", include_str!("desktop/preferences.rs")),
             (
                 "review_actions.rs",
