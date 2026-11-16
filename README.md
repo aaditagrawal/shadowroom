@@ -56,8 +56,9 @@ the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
 required. The macOS build is signed ad hoc and is not notarized. Each asset
 includes a SHA-256 checksum.
 
-Linux folder/theme pickers and OS Trash run inside the app without requiring
-GIO for those actions. See [Linux portability](docs/PORTABILITY.md) for the
+Folder and theme choosers use the desktop's file-chooser portal on Linux, with a
+built-in picker when no portal is available; OS Trash runs inside the app without
+requiring GIO. See [Linux portability](docs/PORTABILITY.md) for the
 experimental Rust media backends and static CPU/X11 browsing prototype.
 
 Fedora 44 x86_64 packages also use the
@@ -185,8 +186,8 @@ controls whether it appears at startup. In Catalog, double-click a photo to revi
 the full folder at that image. **Enter/L** also opens the full folder for zero or
 one selected photo, at the outlined photo; select multiple
 photos first to review only that set. **Show full folder** leaves a subset, and
-**G** returns to Catalog. Right-click a photo for Show in folder, Show in review,
-Survey, Compare, decisions, and deletion actions. Preferences **Apply**
+**G** returns to Catalog. Right-click a photo (or press Shift+F10) for Open in Review,
+Survey, Compare, decisions, Show in Files and deletion actions. Preferences **Apply**
 commits and stays open; **Apply & Close** also closes the pane. Cancel
 discards only changes made since the last Apply; Escape asks before discarding.
 

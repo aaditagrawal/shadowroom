@@ -11,14 +11,21 @@ The catalog, ingest, decisions, grouping, exports and remote protocol are Rust.
 JPEG/PNG/WebP/BMP, dedicated TIFF and JPEG XL decoding are also Rust. SQLite is
 compiled into the executable; rewriting it would not remove a runtime package.
 
-Linux folder, ingest-destination, export and theme pickers run inside the app,
+Folder, ingest-destination, export and theme choices open the desktop's own
+file chooser first (the XDG portal on Linux, NSOpenPanel on macOS). The portal
+dialog's title is GPUI's "Open Folder"/"Open File"; its accept button names the
+action. When the session has no file-chooser portal (or no session bus), when an
+automation client drives the app, or when `SHADOWROOM_FILE_CHOOSER=builtin` is set,
+Shadowroom uses its built-in picker instead (`=native` forces the portal). A native
+choice that breaks an in-app rule (an export folder inside the photo folders, a
+file that is not a theme) reopens in the built-in picker at that location with the
+reason. The built-in picker runs inside the app,
 with background directory reads and bounded listings, a places column (Home,
 Pictures, Desktop, Downloads and mounted drives) and folder icons on the entries.
 The entry list has focus when the picker opens, so Down highlights the first
 folder; Ctrl+L edits the path, Tab switches between path and list, Enter opens an
 entry, Ctrl+Enter confirms, and Escape cancels. The confirm button names the
-folder it will use. macOS keeps
-native pickers. The picker never creates destination folders or changes photos.
+folder it will use. The picker never creates destination folders or changes photos.
 
 Linux OS Trash writes FreeDesktop Trash storage directly without loading GIO.
 It reserves restore metadata before an atomic no-replace rename, keeps per-volume
