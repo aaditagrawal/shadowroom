@@ -391,10 +391,13 @@ impl Workspace {
             let error = self.c("error", "#d46a6a");
             let hover = self.hover_bg();
             let unsaved = self.unsaved.len();
-            let label = if unsaved > 0 {
-                format!("{unsaved} unsaved · Retry")
-            } else {
-                "Not saved · Retry".into()
+            // While the quit prompt is up it owns Retry: the bar only states.
+            let prompting = self.feedback.quit_prompt.is_some();
+            let label = match (unsaved, prompting) {
+                (0, true) => "Not saved".to_owned(),
+                (n, true) => format!("{n} unsaved"),
+                (0, false) => "Not saved · Retry".to_owned(),
+                (n, false) => format!("{n} unsaved · Retry"),
             };
             return Some(
                 div()
@@ -579,6 +582,15 @@ impl Workspace {
     /// dims it or hides its buttons.
     pub(super) fn error_toast(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let notice = self.error.as_ref()?;
+        // The quit prompt already explains a save failure and owns Retry.
+        if self.feedback.quit_prompt.is_some()
+            && matches!(
+                notice.kind,
+                NoticeKind::UnsavedDecisions | NoticeKind::UnsavedPreferences
+            )
+        {
+            return None;
+        }
         let toast = copy::toast_copy(notice.kind, &notice.text, self.unsaved.len());
         let failed = self.recovery_broken
             || self.settings_failure.is_some()
@@ -797,8 +809,29 @@ impl Workspace {
         self.status = "Retrying saves before closing…".into();
         cx.notify();
     }
-    /// Keys while the prompt is up: Return retries, Escape cancels, and
-    /// nothing reaches the views beneath it.
+    /// Runs a quit-prompt button by its focus key.
+    fn quit_prompt_activate(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            "quit-cancel" => {
+                self.feedback.quit_prompt = None;
+                cx.notify();
+            }
+            "quit-anyway" => {
+                if self
+                    .feedback
+                    .quit_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.error.is_none())
+                {
+                    self.quit_anyway(cx);
+                }
+            }
+            _ => self.quit_prompt_retry(window, cx),
+        }
+    }
+    /// Keys while the prompt is up: Tab / Shift+Tab move between its buttons,
+    /// Return or Space activates the focused one (Retry by default), Escape
+    /// cancels, and nothing reaches the views beneath it.
     pub(super) fn quit_prompt_key(
         &mut self,
         event: &KeyDownEvent,
@@ -808,25 +841,63 @@ impl Workspace {
         if self.feedback.quit_prompt.is_none() {
             return false;
         }
+        let focused = self
+            .dialog_focus
+            .borrow()
+            .focused(window)
+            .map(|(key, _)| key);
+        let modifiers = event.keystroke.modifiers;
         match event.keystroke.key.as_str() {
             "escape" => {
                 self.feedback.quit_prompt = None;
                 cx.notify();
             }
-            "enter" => self.quit_prompt_retry(window, cx),
+            "tab" if !modifiers.alt && !modifiers.control && !modifiers.platform => {
+                self.cycle_dialog_focus(FocusScope::QuitPrompt, modifiers.shift, window);
+                cx.notify();
+            }
+            "left" | "right" => {
+                self.cycle_dialog_focus(
+                    FocusScope::QuitPrompt,
+                    event.keystroke.key == "left",
+                    window,
+                );
+                cx.notify();
+            }
+            "enter" | "space" => {
+                let key = focused.map_or_else(|| "quit-retry".to_owned(), |key| key.to_string());
+                self.quit_prompt_activate(&key, window, cx);
+            }
             _ => {}
         }
         true
     }
-    pub(super) fn quit_prompt_view(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub(super) fn quit_prompt_view(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let prompt = self.feedback.quit_prompt.as_ref()?;
-        let cancel = self
-            .dialog_button("quit-cancel", "Cancel", ButtonKind::Secondary, false)
-            .tooltip(self.tip("Cancel", "Esc"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.feedback.quit_prompt = None;
-                cx.notify();
-            }));
+        self.focus_scope(FocusScope::QuitPrompt);
+        // Keyboard focus: visual order (equal tab index), ring after Tab.
+        let focusable = |element: Stateful<Div>, key: &str| {
+            let target = FocusTarget {
+                cmd: None,
+                group: None,
+                button: true,
+                reveal: None,
+            };
+            self.focusable(element, key, 1, true, target, window, cx)
+        };
+        let cancel = focusable(
+            self.dialog_button("quit-cancel", "Cancel", ButtonKind::Secondary, false)
+                .tooltip(self.tip("Cancel", "Esc"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.feedback.quit_prompt = None;
+                    cx.notify();
+                })),
+            "quit-cancel",
+        );
         let quit = self
             .dialog_button(
                 "quit-anyway",
@@ -838,10 +909,18 @@ impl Workspace {
             .when(prompt.error.is_none(), |s| {
                 s.on_click(cx.listener(|this, _, _, cx| this.quit_anyway(cx)))
             });
-        let retry = self
-            .dialog_button("quit-retry", "Retry", ButtonKind::Primary, false)
-            .tooltip(self.tip("Retry", "Enter"))
-            .on_click(cx.listener(|this, _, window, cx| this.quit_prompt_retry(window, cx)));
+        // A refused Quit Anyway is not a tab stop.
+        let quit = if prompt.error.is_none() {
+            focusable(quit, "quit-anyway")
+        } else {
+            quit
+        };
+        let retry = focusable(
+            self.dialog_button("quit-retry", "Retry", ButtonKind::Primary, false)
+                .tooltip(self.tip("Retry", "Enter"))
+                .on_click(cx.listener(|this, _, window, cx| this.quit_prompt_retry(window, cx))),
+            "quit-retry",
+        );
         // Platform order: macOS puts the destructive choice apart on the left;
         // GNOME keeps Cancel on the left and the default on the right.
         let buttons = if cfg!(target_os = "macos") {
@@ -880,6 +959,14 @@ impl Workspace {
                             .whitespace_normal()
                             .child(prompt.body()),
                     )
+                    .when(prompt.error.is_none(), |s| {
+                        s.child(
+                            div()
+                                .text_size(px(ui::text::LABEL))
+                                .text_color(self.muted())
+                                .child(format!("Press {} again to quit anyway.", shortcut("⌘Q"))),
+                        )
+                    })
                     .children(prompt.error.as_ref().map(|error| {
                         div()
                             .text_color(self.c("error", "#d46a6a"))
@@ -888,6 +975,8 @@ impl Workspace {
                     })),
             )
             .child(self.modal_footer().child(buttons));
+        // Untinted: the one scrim is painted beneath the topmost modal, and the
+        // quit prompt is part of that stack (render, `modal_tint`).
         Some(
             div()
                 .absolute()
@@ -897,7 +986,6 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .p(px(space::LG))
-                .bg(self.c("shadowroom.scrim.modal", "#00000099"))
                 .child(frame)
                 .into_any_element(),
         )

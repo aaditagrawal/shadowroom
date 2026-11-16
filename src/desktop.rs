@@ -17,7 +17,7 @@ mod text_input;
 use anyhow::{Context as _, Result};
 use copy::plural;
 use crossbeam_channel::{Receiver, Sender};
-use dialog::{ButtonKind, FocusTarget};
+use dialog::{ButtonKind, FocusScope, FocusTarget};
 use feedback::Tone;
 use gpui::{prelude::*, *};
 use layout as ui;
@@ -10675,6 +10675,7 @@ impl Workspace {
     }
     /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
+        self.focus_scope(FocusScope::Preferences);
         let s = self.preference_settings();
         let fonts = self.pref_choices(
             "font",
@@ -11970,38 +11971,62 @@ impl Workspace {
             .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
             .child(body)
             .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
-        // Overlays fade in over 120 ms (`motion`); closing is instant.
+        // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
+        // tagged with its overlay (None: the system-modal quit prompt) so the
+        // one scrim goes directly beneath the topmost modal.
+        let mut layers: Vec<(Option<Overlay>, AnyElement)> = Vec::new();
         if self.add_host.is_some() {
-            root = root.child(self.overlay_in("add-host-in", self.add_host_view(cx)));
+            let view = self.overlay_in("add-host-in", self.add_host_view(cx));
+            layers.push((Some(Overlay::AddHost), view));
         }
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
-            root = root.child(self.overlay_in("rating-filter-in", self.rating_filter_menu(cx)));
+            let view = self.overlay_in("rating-filter-in", self.rating_filter_menu(cx));
+            layers.push((Some(Overlay::RatingFilter), view));
         }
         if self.preferences {
-            root = root.child(self.overlay_in("preferences-in", self.preferences_view(window, cx)));
+            let view = self.overlay_in("preferences-in", self.preferences_view(window, cx));
+            layers.push((Some(Overlay::Preferences), view));
         }
         if self.palette {
-            root = root.child(self.overlay_in("palette-in", self.palette_view(cx)));
+            let view = self.overlay_in("palette-in", self.palette_view(cx));
+            layers.push((Some(Overlay::Palette), view));
         }
         if self.getting_started {
-            root = root.child(self.overlay_in("getting-started-in", self.getting_started_view(cx)));
+            let view = self.overlay_in("getting-started-in", self.getting_started_view(cx));
+            layers.push((Some(Overlay::GettingStarted), view));
         }
         if self.image_context.is_some() {
-            root = root.child(self.overlay_in("image-context-in", self.image_context_view(cx)));
+            let menu = self.image_context_view(cx);
+            let view = self.overlay_in("image-context-in", menu);
+            layers.push((Some(Overlay::ImageContext), view));
         }
         if self.deletion.open() {
             let deletion = self.deletion_view(cx);
-            root = root.child(self.overlay_in("deletion-in", deletion));
+            let view = self.overlay_in("deletion-in", deletion);
+            layers.push((Some(Overlay::Deletion), view));
         }
         if self.folder_picker.is_some() {
-            root = root.child(self.overlay_in("picker-in", self.picker_view(cx)));
+            let view = self.overlay_in("picker-in", self.picker_view(cx));
+            layers.push((Some(Overlay::FolderPicker), view));
         }
-        // System feedback paints above every overlay so no scrim dims it.
-        let quit_prompt = self
-            .quit_prompt_view(cx)
-            .map(|prompt| self.overlay_in("quit-prompt-in", prompt));
+        // The quit prompt is system-modal: above every overlay, in the same
+        // dialog stack, so lower modals lose their tint like any other.
+        if let Some(prompt) = self.quit_prompt_view(window, cx) {
+            layers.push((None, self.overlay_in("quit-prompt-in", prompt)));
+        }
+        let tinted = if self.feedback.quit_prompt.is_some() {
+            Some(None)
+        } else {
+            self.top_modal().map(Some)
+        };
+        for (overlay, view) in layers {
+            if tinted == Some(overlay) {
+                root = root.child(self.modal_tint());
+            }
+            root = root.child(view);
+        }
+        // The error toast paints above every overlay so no scrim dims it.
         root = root
-            .children(quit_prompt)
             .children(self.error_toast(cx))
             .children(self.trace.probe());
         // A focused dialog control that is no longer drawn (its dialog closed
@@ -12009,6 +12034,8 @@ impl Workspace {
         if self.dialog_focus.borrow().focus_is_stale(window) {
             window.focus(&self.focus);
         }
+        // The quit prompt or Preferences on top owns keyboard focus (R2-a11y-01).
+        self.claim_dialog_focus(window, cx);
         self.trim_display_cache();
         if self.feedback.animating.take() {
             window.request_animation_frame();
