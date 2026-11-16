@@ -1106,6 +1106,11 @@ impl Workspace {
         }
         self.scope = None;
         self.mode = ViewMode::Grid;
+        // The next Open Folder starts here.
+        self.settings
+            .extra
+            .insert("last_open_dir".into(), json!(path.to_string_lossy()));
+        self.save_settings();
         self.pending_ingest_scope = Some(path);
         self.ingest_scope_arrived();
         self.announce(

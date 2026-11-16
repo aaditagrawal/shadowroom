@@ -3357,6 +3357,29 @@ impl Workspace {
             .unwrap_or_else(|| self.settings.ingest_library_root.clone())
     }
 
+    /// Where Open Folder (cull in place) starts: the folder opened last, else
+    /// a mounted card, else Pictures. Never the import library, which is
+    /// rarely the folder to cull in place.
+    fn open_folder_start(&self) -> PathBuf {
+        self.settings
+            .extra
+            .get("last_open_dir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .or_else(|| {
+                self.drives
+                    .iter()
+                    .find(|drive| drive.removable)
+                    .map(|drive| drive.path.clone())
+            })
+            .or_else(|| {
+                directories::UserDirs::new()
+                    .and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf))
+            })
+            .unwrap_or_default()
+    }
+
     fn choose_destination(
         &mut self,
         export: Option<bool>,
@@ -3366,6 +3389,8 @@ impl Workspace {
         if cfg!(target_os = "linux") {
             let initial = if export.is_some() {
                 self.export_start()
+            } else if self.folder_intent == ingest_ui::FolderIntent::Cull {
+                self.open_folder_start()
             } else {
                 self.settings.ingest_library_root.clone()
             };
