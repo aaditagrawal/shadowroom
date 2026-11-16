@@ -1,7 +1,40 @@
 //! Preference edits stay private until Apply, including imported theme families.
-use super::{Cmd, Settings, Theme, Workspace, persist_theme_source, read_theme_family};
-use gpui::{Context, PathPromptOptions};
+use super::{
+    Cmd, FocusScope, PreferencesSection, Settings, Theme, Workspace, persist_theme_source,
+    read_theme_family,
+};
+use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 use serde_json::{Value, json};
+
+/// Preferences tabs in display (and Ctrl+Tab) order.
+pub(super) const SECTIONS: [(PreferencesSection, &str); 6] = [
+    (PreferencesSection::Appearance, "Appearance"),
+    (PreferencesSection::Culling, "Culling"),
+    (PreferencesSection::Import, "Import"),
+    (PreferencesSection::Performance, "Performance"),
+    (PreferencesSection::Controller, "Controller"),
+    (PreferencesSection::Help, "Help"),
+];
+
+/// The tab that shows a top-level settings key, for unsaved-change dots.
+pub(super) fn section_for(key: &str) -> PreferencesSection {
+    match key {
+        "auto_advance"
+        | "trash_mode"
+        | "grouping_mode"
+        | "burst_gap_ms"
+        | "visual_threshold"
+        | "auto_discover_drives"
+        | "peaking_color"
+        | "peaking_sensitivity" => PreferencesSection::Culling,
+        "memory_budget_mb" | "cache_budget_mb" => PreferencesSection::Performance,
+        "show_getting_started" => PreferencesSection::Help,
+        key if key.starts_with("ingest_") || key == "eject_after_ingest" => {
+            PreferencesSection::Import
+        }
+        _ => PreferencesSection::Appearance,
+    }
+}
 
 pub(super) struct Draft {
     pub id: u64,
@@ -11,6 +44,9 @@ pub(super) struct Draft {
     pub imports: Vec<String>,
     pub applying: bool,
     close_after_apply: bool,
+    /// Esc, the close button or an outside click asked to leave with unsaved
+    /// changes; the footer shows "Discard N changes?" until answered.
+    pub discard_prompt: bool,
 }
 
 impl Workspace {
@@ -29,6 +65,8 @@ impl Workspace {
     pub(super) fn open_preferences(&mut self) {
         if self.preferences_draft.is_none() {
             self.preferences_draft = Some(Draft::new(&self.settings, &self.themes));
+            // The Reduce motion row reports the platform setting; re-read it.
+            super::motion::refresh_system_preference();
         }
         self.preferences = true;
     }
@@ -36,6 +74,93 @@ impl Workspace {
     pub(super) fn close_preferences(&mut self) {
         self.preferences = false;
         self.preferences_draft = None;
+    }
+
+    /// Esc, the close button, Ctrl+, and an outside click. A clean draft
+    /// closes; unsaved changes ask first (Keep Editing is the default), and a
+    /// second dismissal answers Keep Editing. Only Cancel discards at once.
+    pub(super) fn dismiss_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &mut self.preferences_draft {
+            Some(draft) if draft.applying => {}
+            Some(draft) if draft.discard_prompt => draft.discard_prompt = false,
+            Some(draft) if draft.changed() => {
+                draft.discard_prompt = true;
+                let keep = self.dialog_handle("prefs-keep-editing", 3, cx);
+                window.focus(&keep);
+            }
+            _ => self.close_preferences(),
+        }
+    }
+
+    /// Keyboard operation of Preferences. Tab/Shift+Tab move focus through the
+    /// tabs, controls and footer; arrows choose within a group; Space activates
+    /// the focused control; Return activates a focused button or else is the
+    /// default (Apply & Close, or Keep Editing while the discard prompt shows);
+    /// Ctrl+Tab / Ctrl+PageDown switch tabs and Ctrl/Cmd+S applies.
+    pub(super) fn preferences_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let m = event.keystroke.modifiers;
+        let primary = m.control || m.platform;
+        match key {
+            "tab" | "pagedown" | "pageup" if primary && !m.alt => {
+                let back = key == "pageup" || (key == "tab" && m.shift);
+                let index = SECTIONS
+                    .iter()
+                    .position(|(section, _)| *section == self.preferences_section)
+                    .unwrap_or(0);
+                let next = if back {
+                    (index + SECTIONS.len() - 1) % SECTIONS.len()
+                } else {
+                    (index + 1) % SECTIONS.len()
+                };
+                self.preferences_section = SECTIONS[next].0;
+                self.prefs_scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                self.focus_revealed.borrow_mut().take();
+                self.focus_visible = true;
+                let tab = self.dialog_handle(&format!("prefs-tab-{next}"), 1, cx);
+                window.focus(&tab);
+            }
+            // Focus wraps inside the dialog; it never walks onto the window
+            // beneath the scrim (the dock grips are tab stops too).
+            "tab" if !m.alt => {
+                self.cycle_dialog_focus(FocusScope::Preferences, m.shift, window);
+            }
+            "s" if primary && !m.shift && !m.alt => self.execute(Cmd::ApplyPreferences, window, cx),
+            "left" | "up" | "right" | "down" if !primary && !m.alt => {
+                self.focus_visible = true;
+                let delta = if matches!(key, "left" | "up") { -1 } else { 1 };
+                self.move_in_group(delta, window, cx);
+            }
+            "space" if !primary && !m.alt => {
+                self.activate_focused(window, cx);
+            }
+            "enter" if !m.alt => {
+                let handled = self.focused_button(window) && self.activate_focused(window, cx);
+                if !handled {
+                    let prompt = self
+                        .preferences_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.discard_prompt);
+                    self.execute(
+                        if prompt {
+                            Cmd::KeepEditingPreferences
+                        } else {
+                            Cmd::ApplyClosePreferences
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn finish_preferences(&mut self, patch: &Value) {
@@ -137,7 +262,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose Zed theme JSON".into()),
+            prompt: Some(super::copy::IMPORT_ZED_THEME.into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = prompt.await {
@@ -168,6 +293,22 @@ impl Workspace {
     }
 }
 
+/// Choosing the default for a setting that was never stored leaves it
+/// unstored, so the draft stays clean; anything else is written.
+fn set_default_aware(
+    extra: &mut std::collections::BTreeMap<String, Value>,
+    baseline: &std::collections::BTreeMap<String, Value>,
+    key: &str,
+    value: &str,
+    is_default: bool,
+) {
+    if is_default && !baseline.contains_key(key) {
+        extra.remove(key);
+    } else {
+        extra.insert(key.into(), json!(value));
+    }
+}
+
 impl Draft {
     pub fn new(settings: &Settings, themes: &[Theme]) -> Self {
         Self {
@@ -178,6 +319,7 @@ impl Draft {
             imports: Vec::new(),
             applying: false,
             close_after_apply: false,
+            discard_prompt: false,
         }
     }
 
@@ -194,6 +336,24 @@ impl Draft {
 
     pub fn changed(&self) -> bool {
         self.settings != self.baseline || !self.imports.is_empty()
+    }
+
+    /// Top-level settings keys this draft would commit.
+    pub fn changed_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = match self.patch() {
+            Value::Object(map) => map.into_iter().map(|(key, _)| key).collect(),
+            _ => Vec::new(),
+        };
+        if keys.is_empty() && !self.imports.is_empty() {
+            // An imported theme family is a change even if it matches the theme.
+            keys.push("theme".into());
+        }
+        keys
+    }
+
+    /// Unsaved changes shown in the footer and the discard prompt.
+    pub fn changed_count(&self) -> usize {
+        self.changed_keys().len()
     }
 
     pub fn import(&mut self, source: String, themes: Vec<Theme>) {
@@ -216,7 +376,30 @@ impl Draft {
         let s = &mut self.settings;
         match cmd {
             Cmd::SetAutoAdvance(enabled) => s.auto_advance = *enabled,
+            Cmd::ReduceMotion(enabled) => {
+                s.extra.insert("reduce_motion".into(), json!(enabled));
+            }
+            Cmd::TextSize(percent) => {
+                s.extra.insert(
+                    "text_size".into(),
+                    super::appearance::text_size_value(*percent),
+                );
+            }
             Cmd::SetAutoDrives(enabled) => s.auto_discover_drives = *enabled,
+            Cmd::PeakingColor(color) => set_default_aware(
+                &mut s.extra,
+                &self.baseline.extra,
+                "peaking_color",
+                color.key(),
+                *color == Default::default(),
+            ),
+            Cmd::PeakingSensitivity(level) => set_default_aware(
+                &mut s.extra,
+                &self.baseline.extra,
+                "peaking_sensitivity",
+                level.key(),
+                *level == Default::default(),
+            ),
             Cmd::Font(font) => s.interface_font = font.clone(),
             Cmd::Group(mode) => s.grouping_mode = mode.clone(),
             Cmd::Gap(gap) => s.burst_gap_ms = *gap,
@@ -255,6 +438,15 @@ impl Draft {
                 }
                 "day" => s.ingest_day_start_hour = (s.ingest_day_start_hour + 1) % 24,
                 "auto_eject" => s.eject_after_ingest = !s.eject_after_ingest,
+                "auto_eject:on" | "auto_eject:off" => {
+                    s.eject_after_ingest = action == "auto_eject:on";
+                }
+                "notify:on" | "notify:off" => s.ingest_notify = action == "notify:on",
+                mode if mode.starts_with("insert:") => s.ingest_on_insert = mode[7..].into(),
+                hour if hour.starts_with("day:") => match hour[4..].parse::<u8>() {
+                    Ok(hour) => s.ingest_day_start_hour = hour % 24,
+                    Err(_) => return false,
+                },
                 "remember" => {
                     if let Some(volume) = volume {
                         let rule = if s.ingest_volumes.get(volume).is_some_and(|r| r == "deny") {
@@ -284,6 +476,7 @@ mod tests {
         let mut draft = Draft::new(&active, &[Theme::dark(), Theme::light()]);
         for cmd in [
             Cmd::SetAutoAdvance(false),
+            Cmd::ReduceMotion(true),
             Cmd::SetAutoDrives(false),
             Cmd::Font("DM Sans".into()),
             Cmd::Theme("Shadowroom Light".into()),
@@ -329,6 +522,67 @@ mod tests {
         draft.edit(&Cmd::Memory(active.memory_budget_mb), None);
         assert!(!draft.changed());
         assert_eq!(draft.patch(), json!({}));
+    }
+
+    #[test]
+    fn changed_keys_count_edits_and_map_to_their_tabs() {
+        let active = Settings::default();
+        let mut draft = Draft::new(&active, &[Theme::dark(), Theme::light()]);
+        assert_eq!(draft.changed_count(), 0);
+        draft.edit(&Cmd::Font("DM Sans".into()), None);
+        assert_eq!(draft.changed_count(), 1);
+        draft.edit(&Cmd::Group("off".into()), None);
+        draft.edit(&Cmd::Memory(128), None);
+        assert_eq!(draft.changed_count(), 3);
+        let sections: Vec<_> = draft
+            .changed_keys()
+            .iter()
+            .map(|key| section_for(key))
+            .collect();
+        assert!(sections.contains(&PreferencesSection::Appearance));
+        assert!(sections.contains(&PreferencesSection::Culling));
+        assert!(sections.contains(&PreferencesSection::Performance));
+        assert_eq!(
+            section_for("ingest_day_start_hour"),
+            PreferencesSection::Import
+        );
+        assert_eq!(
+            section_for("eject_after_ingest"),
+            PreferencesSection::Import
+        );
+        assert_eq!(section_for("theme_mode"), PreferencesSection::Appearance);
+        draft.edit(&Cmd::Font(active.interface_font.clone()), None);
+        assert_eq!(draft.changed_count(), 2, "reverting an edit clears it");
+    }
+
+    #[test]
+    fn peaking_style_is_a_culling_preference_that_stays_clean_at_default() {
+        use shadowroom::peaking::{PeakingColor, PeakingSensitivity};
+        let active = Settings::default();
+        let mut draft = Draft::new(&active, &[]);
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Red), None);
+        draft.edit(&Cmd::PeakingSensitivity(PeakingSensitivity::Medium), None);
+        assert!(!draft.changed(), "the defaults are already in effect");
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Yellow), None);
+        draft.edit(&Cmd::PeakingSensitivity(PeakingSensitivity::High), None);
+        assert_eq!(
+            draft.patch(),
+            json!({"peaking_color":"yellow","peaking_sensitivity":"high"})
+        );
+        for key in draft.changed_keys() {
+            assert_eq!(section_for(&key), PreferencesSection::Culling);
+        }
+        let mut applied = active.clone();
+        applied
+            .extra
+            .insert("peaking_color".into(), json!("yellow"));
+        let style = super::super::loupe_aids::peaking_style_of(&applied);
+        assert_eq!(style.color, PeakingColor::Yellow);
+        assert_eq!(style.sensitivity, PeakingSensitivity::Medium);
+        // Back to Red from a stored Yellow is a real change.
+        let mut draft = Draft::new(&applied, &[]);
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Red), None);
+        assert_eq!(draft.patch(), json!({"peaking_color":"red"}));
     }
 
     #[test]

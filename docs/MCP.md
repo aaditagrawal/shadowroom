@@ -39,7 +39,7 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `trash` | `trashed`, `ids?` | Always restorable app-only Trash, independent of UI Trash preference; false restores. Never moves/deletes files; inspect decision persistence. |
 | `duplicates` | `action`, `ids?` | `scan`, `cancel`, or `status`; omitted scan IDs mean all nontrashed catalog photos. IDs are valid only for scan. |
 | `undo` / `redo` | `{}` | Restore the app's decision history |
-| `view` | `mode`, `panel?` | `grid`, `loupe`, `compare`, or `survey`; optional photo panel `review` or `info` |
+| `view` | `mode`, `panel?` | `grid`, `loupe`, `compare`, or `survey`; optional inspector panel `review` (the Culling tab) or `info` |
 | `zoom` | `mode`, optional `percent` | `fit`, `full` (100%), `toggle`, `in`, `out`, or `custom` with `percent` (12.5–800); prefers paired/embedded JPEGs |
 | `pin` | `id?` | Pin the specified/current image as comparison reference |
 | `filter` | `filter?`, `duplicates_only?`, `min_rating?`, `folder?`, `clear_folder?` | Filter is `all`, `picks`, `unrated`, `rejects`, or `trash`; stars 0–5. Exact duplicate review is optional. |
@@ -49,13 +49,13 @@ IDs refer to catalog photo IDs. Arrays accept at most 1,000 IDs per explicit cal
 | `import` | `path` | Enqueue read-only folder/whole-drive indexing |
 | `cancel_import` | `{}` | Cancel active/queued imports, preserving indexed records |
 | `export_xmp` | `destination`, `ids?` | Enqueue selected-photo sidecar export |
-| `export_picks` | `destination` | Enqueue copying picked originals and companions |
+| `export_picks` | `destination`, optional `ids` | Enqueue copying picked originals and companions: every catalog pick, or the picks among `ids` |
 | `theme_import` | `path` | Import compatible Zed theme JSON |
 | `cache_stats` | `{}` | Read queue, cache, decode, and preview-source file-read counters |
 | `command` | `name` | Run one allowlisted workspace action below |
 | `quit` | `{}` | Request graceful quit with pending-decision handling |
 
-`command.name` is one of `next`, `previous`, `next_group`, `previous_group`, `next_unreviewed`, `previous_unreviewed`, `resolve_burst`, `toggle_histogram`, `toggle_inspector`, `toggle_sidebar`, `toggle_auto_advance`, `toggle_focus`, `select_all`, `refresh`, `retry_saves`, `retry_preview`, `toggle_histogram_log`, `toggle_compare_sync`, `show_duplicates`, `scan_duplicates_in_view`, `toggle_palette`, `toggle_preferences`, `open_folder_picker`, `open_theme_picker`, `show_appearance`, `show_rating_filter`, `reset_layout`, `resize_catalog`, `resize_inspector`, `close_overlay`, `getting_started`, `toggle_focus_peaking`, `show_full_folder`, or `reset_decision`. `show_appearance` opens Preferences directly to Appearance. `getting_started` opens the help guide, and `show_full_folder` leaves a selected Review subset. `reset_decision` clears stars and pick/reject together on the selected Catalog photos or the active Review/Compare photo, preserving labels and never auto-advancing; Undo restores the reset as one decision. Commands never accept shell text, executable names, or arbitrary code.
+`command.name` is one of `next`, `previous`, `next_group`, `previous_group`, `next_unreviewed`, `previous_unreviewed`, `resolve_burst`, `toggle_histogram`, `toggle_inspector`, `toggle_sidebar`, `toggle_auto_advance`, `toggle_focus`, `select_all`, `refresh`, `retry_saves`, `retry_preview`, `toggle_histogram_log`, `toggle_compare_sync`, `show_duplicates`, `scan_duplicates_in_view`, `toggle_palette`, `toggle_preferences`, `open_folder_picker`, `open_theme_picker`, `show_appearance`, `show_rating_filter`, `reset_layout`, `resize_catalog`, `resize_inspector`, `close_overlay`, `getting_started`, `toggle_focus_peaking`, `toggle_clipping`, `show_full_folder`, or `reset_decision`. `close_overlay` acts like Escape: it closes the topmost menu, dialog or Import, and with none open steps out of a held batch decision, a Catalog multi-selection, zoom, lights out and then Focus mode, one step per call. `toggle_focus` cycles Focus mode, lights out (Review, Compare and Survey only) and off, like Shift+Tab. `show_appearance` opens Preferences directly to Appearance. `getting_started` opens the help guide, and `show_full_folder` leaves a selected Review subset. `reset_decision` clears stars and pick/reject together on the selected Catalog photos or the active Review/Compare photo, preserving labels and never auto-advancing; Undo restores the reset as one decision. Commands never accept shell text, executable names, or arbitrary code.
 
 `workspace_state.duplicate_scan` reports job identity, phase, stage, counts, bytes read, cache hits, bounded exact-match groups and errors. Scans can be queued, running, completed, cancelled, failed, or stale. A new scan clears the old displayed results. A known primary/companion path or indexed source-revision change invalidates completed matches and marks them stale until rescanned. `scan_duplicates_in_view` follows the folder-scoped UI action and does nothing when it contains no active photos; `duplicates(action=scan)` with omitted IDs deliberately scans the catalog. `library_list(scope=all)` includes Trash for explicit inspection and restoration.
 
@@ -68,7 +68,7 @@ snapshot means the diagnostic lock was busy; retry. The history is session-local
 and survives successful retries, so it is evidence of earlier failures rather
 than the current availability of a photograph.
 
-`settings_set.settings` accepts the application's known preferences, including `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `show_getting_started`, `trash_mode`, `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Memory accepts **0 for Auto** or 64–65,536 MiB; local disk cache accepts 128–1,048,576 MiB. Auto uses a quarter of physical RAM bounded to 512 MiB–4 GiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. `trash_mode` is `system` (OS Trash, default) or `in_app`; changing it does not move files or change the app-only MCP `trash` tool. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request. The explicit `settings_set` tool commits immediately; the Preferences dialog keeps a separate draft until Apply.
+`settings_set.settings` accepts the application's known preferences, including `interface_font`, `theme`, `theme_mode`, `theme_light`, `theme_dark`, `grouping_mode`, `burst_gap_ms`, `visual_threshold`, `auto_advance`, `auto_discover_drives`, `cache_budget_mb`, `memory_budget_mb`, `show_getting_started`, `trash_mode`, `peaking_color` (`red`, `cyan`, `yellow` or `white`), `peaking_sensitivity` (`low`, `medium` or `high`), `last_photo_id`, `view_mode`, `show_inspector`, `min_rating`, and `filter`. Memory accepts **0 for Auto** or 64–65,536 MiB; local disk cache accepts 128–1,048,576 MiB. Auto uses a quarter of physical RAM bounded to 512 MiB–4 GiB. `theme_mode` is `manual`, `system`, or `zed`; the light/dark theme names select palettes for automatic modes. `trash_mode` is `system` (OS Trash, default) or `in_app`; changing it does not move files or change the app-only MCP `trash` tool. Unknown fields and invalid enum/range/type values produce tool errors before the UI receives a request. The explicit `settings_set` tool commits immediately; the Preferences dialog keeps a separate draft until Apply.
 
 Opening Review or Compare from Catalog constrains navigation only when two or
 more photos are selected. A singleton keeps the current collection available.
@@ -92,7 +92,7 @@ through the OS file manager, and physical deletion cannot be undone by MCP
 `undo`.
 
 Preferences **Apply** commits and keeps the pane open; **Apply & Close** commits
-and closes it. Cancel/Escape only discards unapplied changes. These UI semantics
+and closes it. Cancel discards unapplied changes; Escape asks first. These UI semantics
 do not change the explicit, immediate `settings_set` behavior or XMP export
 policy.
 
@@ -153,4 +153,4 @@ The protocol follows the official [MCP lifecycle](https://modelcontextprotocol.i
 
 `command` with `name: "show_rating_filter"` opens or closes the rating menu. It refuses while an import, host, preferences, or command dialog is open. `workspace_state.overlays` reports the visible rating-filter, palette and preferences state. Use `filter.min_rating` to set a filter directly; repeated settings are idempotent.
 
-On Linux, `open_folder_picker` opens the built-in photo-folder browser and `open_theme_picker` opens its JSON-file mode for an active preference draft. `workspace_state.folder_picker` reports the current directory, bounded entries, loading/error state and selection; it is null when closed. Filesystem reads run in background tasks. Escape or `close_overlay` cancels.
+Once an automation client has sent a request, `open_folder_picker` opens the built-in photo-folder browser (not the desktop's file chooser, whose state automation cannot read) and `open_theme_picker` opens its JSON-file mode for an active preference draft. `workspace_state.folder_picker` reports the current directory, bounded entries, loading/error state and selection; it is null when closed. Filesystem reads run in background tasks. Escape or `close_overlay` cancels.

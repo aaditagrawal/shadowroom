@@ -6,64 +6,154 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 
 | Shortcut | Action |
 | --- | --- |
-| Left / Right | Previous / next photograph |
+| Left / Right | Previous / next photograph; at either end the status bar says "First photo" / "Last photo" |
 | Shift+Down / Shift+Up | Extend / shrink selection by a grid row, keeping the original anchor |
+| Home / End | First / last photograph; Shift extends a Catalog selection. Home re-centres a zoomed photo |
+| Page Up / Page Down | One screen of Catalog rows (Shift extends the selection); nine frames in Review |
 | `[` / `]` | Previous / next group |
 | `P` / `X` / `U` | Pick / reject / clear flag |
 | `0`–`5` | Set star rating; zero clears it |
 | `R` | Reset stars and pick/reject together without advancing; keep color label |
-| `G` / `L` (or `E`) / `C` | Grid / loupe / compare |
-| Enter in Catalog | Enter Review; a selection of two or more photos limits navigation to that set |
+| `6`–`9` | Red / yellow / green / blue label; the key of the label a photo already has clears it, without advancing |
+| `G` / `L` (or `E`) / `C` / `S` | Grid / loupe / compare / survey |
+| Enter or Space in Catalog | Enter Review; a selection of two or more photos limits navigation (and Survey) to that set |
 | Double-click a Catalog photo | Review the full current collection at that photo |
-| `Z` or Space | Toggle fit / 100% zoom |
-| `=` / `-` | Zoom in / out |
-| Ctrl/Cmd + scroll | Zoom in / out; plain scroll pans while zoomed |
-| `F` | Toggle cyan focus peaking in Review and Compare |
+| `Z` or Space | Toggle fit / 100% zoom, centred on the point under the pointer when it rests on the photo |
+| Click the photo | At Fit, 100% centred where you clicked; when zoomed, back to Fit |
+| `=` / `-` | Zoom in / out; in Catalog, larger / smaller thumbnails |
+| Alt/Option + `0` / `1` / `2` / `4` | Fit / 100% / 200% / 400% in Review and Compare (Alt+digit never rates) |
+| Ctrl/Cmd + scroll | Zoom in / out around the pointer; plain scroll pans while zoomed |
+| Alt/Option + arrows | Pan a zoomed photo by a third of the view |
+| `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
+| Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
+| Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip; notices dock in the bottom bar (in a short form, taking room from the bar's optional items and, if they must, the stars; hover for the full text), which otherwise shows a compact culling line (capture time, then exposure). Press again for lights out in Review, Compare and Survey: the bottom bar and filmstrip fold into an 8 px cull ledger on the canvas colour along the window's bottom edge, and each decision shows a typed stamp (**PICK**, **REJECT**, **★★★★**) with its undo key at the bottom centre for a second (longer, without fading, under Reduce motion). Undo and Redo stamp what they took back or put back (**UNDO · PICK**), J and F stamp the aid (**CLIPPING ON**, **PREPARING CLIPPING…**), and a batch decision keeps its Undo notice above the ledger. A third press leaves Focus mode. In Compare, Tab changes the active pane and Shift+Tab is Focus mode |
+| F11 | Full screen on or off |
+| Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
+| `F` | Toggle focus peaking in Review and Compare (red by default; color and sensitivity in **Preferences → Culling**) |
+| `J` | Toggle the clipping overlay: blown highlights in magenta stripes (thin where only one or two channels clip), crushed shadows blue |
 | `F1` | Open Getting Started |
+| Ctrl+K or Cmd+K | Command palette; typing two or more characters also lists matching photos (filename) and folders, eight of each |
+| Ctrl+F or Cmd+F | Find a photo by filename across the whole library |
+| F6 / Shift+F6 | Move keyboard focus between the library, the photos and the inspector (ringed while the keyboard leads); in the library Up/Down/Home/End move a cursor and Return opens the row, in the inspector Left/Right switch Culling and Info; Escape or a click returns to the photos |
+| Shift+F10 or the Menu key | Open the image menu for the current photo |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
-| Ctrl+O or Cmd+O | Open a folder |
+| Ctrl+O or Cmd+O | Open Folder…: cull a folder where it is; nothing is copied |
+| Ctrl+Shift+I or Cmd+Shift+I | Import from Card…: copy and verify into the library (the mounted card, else a chosen folder) |
 | Ctrl+, or Cmd+, | Settings |
-| Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports |
+| Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog, Focus mode and lights out included; waits for pending saves, exports and imports, and says so (in Focus mode, in the bottom bar or above the lights-out ledger). Escape while it waits keeps Shadowroom open and lets the work continue. With unsaved decisions it asks first; a second press quits anyway from the recovery journal |
+| Escape | Keep Shadowroom open while a quit waits for writes, exports or an import; dismiss the error notice when one is showing (nothing else that press); in an Import field, leave the field; otherwise close the topmost menu, dialog or Import, then cancel a held batch decision, collapse a Catalog multi-selection, return zoom to Fit, step back from lights out to Focus mode and leave Focus mode, one step per press |
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
 
+Automatic advance has no bare-letter shortcut, so a stray key can't change how decisions move: use Shift+A or the toggle in the bottom bar (underlined while on), which also shows your position (`2 / 7`). The status bar confirms each change. When the bar is narrow it drops, in order, the **Reset** label, the reviewed count, the zoom −/+ buttons, Pin and Survey, and finally the Pick/Reject words; the keycaps, position, auto-advance and zoom stay. In Catalog the bar shows an **S / M / L** thumbnail-size control instead of loupe zoom, focus peaking, Pin and Survey; M and L are disabled while the catalog is too narrow for them (`=` then says so).
+
+The **cull ledger** is the thin track under the bar (along the filmstrip's top edge, in its own band in Catalog, or along the bottom edge in lights out). It covers every photo in the current view, not just the frames the filmstrip shows, like an account book: a hairline rail for unreviewed photos, a short grey bar on it for photos rated or labelled without a flag, green picks standing above the line and red rejects hanging below it (so the two differ by shape, not only colour), with a short blue mark at the current photo. When every frame fits in the filmstrip, each ledger cell sits over its frame; otherwise a hairline bracket on the ledger marks the frames the filmstrip shows. In larger views photos share cells and each cell shows its most common state, and a cell that still holds an unreviewed photo keeps a 1 px notch, so a skipped frame never disappears from the rail. Click or drag along the ledger to jump to that photo. The Trash has no ledger.
+
+Thumbnails show a rating as **★5**, a pick or reject glyph and a colour-label chip (the label's initial on its colour) on one plate at the photo's top-left, and a strip in the label colour along the bottom edge. The inspector's label swatches carry their keys (**6**–**9**; purple has none), and **1-5** after the stars in the bottom bar names the rating keys.
+
+The inspector's **Culling** tab leads with what separates burst frames: the filename, then shutter, aperture, ISO and focal length on one line, then the capture time (with hundredths when the camera records them), camera and lens, then pixel size, file size and type. Flag and stars live in the bottom bar and on the photo, so the inspector does not repeat them. **Info** adds the folder, the full capture time with its UTC offset, equipment and preview details.
+
+A decision on 50 or more selected photos is confirmed in the status bar with its count and **Undo**. A decision on 1,000 or more photos first asks above the grid: Enter applies it and Escape cancels. With several photos selected the bar and inspector show what the photos share: a flag is highlighted only when every photo has it (a partial mark when some do), and stars read "mixed" when ratings differ.
+
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
 
-Zoom ranges from 12.5% to 800%; the **−** and **+** buttons change magnification,
-and **Z** restores 100% or Fit. Adjacent frames retain zoom and pan. Focus peaking
+The loupe shows the current photo's flag, stars and label at its top-left, with the word **Rejected** on a reject. When a decision moves on to another frame (automatic advance, or the photo leaving the filtered view), the previous frame's decision appears briefly inside the photo's bottom-left corner, and the status bar names it with an **Undo** button for a few seconds. The status bar reports other completed actions the same way (undo/redo, pinning, focus peaking, resolved bursts, duplicate scans, Trash, imports with **Reveal**, exports with **Reveal**, ejects), then returns to the photo count.
+
+Zoom ranges from 12.5% to 800%; the zoom button shows the actual magnification
+at Fit (for example **Fit 45%**), the **−** and **+** buttons change it, and **Z**
+restores 100% or Fit; Alt/Option+1, +2 and +4 jump straight to 100%, 200% and
+400%, and Alt/Option+0 returns to Fit. While zoomed, a navigator at the photo's bottom-right shows
+where the view sits in the frame; click or drag it to move. Adjacent frames retain
+zoom and pan. In Compare, arrows skip the reference frame, so the two panes never
+show the same photo, and each pane is labelled on the picture with its role, file
+and decision; the active pane's label is underlined, the only active-pane mark. The pinned reference carries a pin badge on its thumbnail in the filmstrip, Catalog grid and Survey. Small windows give the photo
+room: below 1280 px wide, Review, Compare and Survey hide the sidebar (and below
+1100 px, Compare and Survey also hide the inspector, as Review does below 960 px)
+without changing your panel settings; Ctrl/Cmd+B brings the sidebar back and `I`
+the inspector. Below 600 px tall the filmstrip gives way to the cull ledger's own
+band, which still jumps to any frame. Survey (`S`) shows a frozen Catalog
+selection of two or more photos (**Selection · 4 photos**), otherwise the current
+burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column count that
+gives the largest frames; its header's
+**⇧P Keep this · reject undecided** button acts on exactly those frames. Focus peaking
 highlights abrupt luminance edges in the displayed preview, including both Compare
-panes. It is a visual aid, not an automatic sharpness verdict, and never changes
-the source or histogram.
+panes, in red by default; **Preferences → Culling** offers cyan, yellow and white
+and a Low / Medium / High sensitivity. At Fit the caption under the photo says
+peaking reads the fit preview (**Z** for 100%). The neighbouring frames' peaked
+copies are prepared ahead, so peaking does not pop in after each step. It is a
+visual aid, not an automatic sharpness verdict, and never changes the source or
+histogram. The clipping overlay (`J`, or the clipping button by the inspector's
+histogram) marks the displayed preview with one rule: crushed shadows (every
+channel at 2 or below) solid blue, and highlights in magenta stripes, wide where
+every channel is blown and thin where only one or two channels reach 254, sized
+for the screen (4 and 2 display pixels at Fit as at 100%). A
+saturated colour with one channel at 0 (grass, a fuchsia dress) is not a shadow.
+The histogram footer names the same ends in words with the overlay's colours
+(**Shadows 0.8% · Highlights 1.0%**, each with an outlined swatch of its ink),
+measured on the preview the overlay paints,
+so the figures do not change while sharper previews load (**Measuring…** until
+then). They turn to the warning colour above 0.5% of the frame, or above 2% when
+only one or two channels clip. Pressing `J` or `F` says **Preparing clipping…**
+until the overlay is on the photo, and an overlay already shown stays visible
+while a new copy is painted.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
-Ctrl/Cmd-click toggles individual frames. Import checkboxes toggle independently.
+Ctrl/Cmd-click toggles individual frames. In the Import grid a plain click or
+arrow only moves the current tile; the checkbox, Space and Ctrl/Cmd-click check
+or uncheck a photo, Shift extends from the anchor, Tab enters the fields (Job
+code first; J jumps there) and Ctrl/Cmd+Return starts the import.
 With zero or one selected photo, **Enter/L** opens Review across the current
-folder and filters, starting at the hovered photo when available or the active
-photo otherwise. With two or more selected photos, **Enter/L** freezes that
+folder and filters, starting at the selected (outlined) photo, never at the
+photo under the pointer. With two or more selected photos, **Enter/L** freezes that
 selection for Review navigation. Compare also constrains a multiple selection.
 Decisions in Review/Compare affect the current frame. Double-click and the
-**Show in review** context action always open the full current collection.
-**Show full folder** leaves a subset. Returning to Catalog restores its selection.
+**Open in Review** menu action always open the full current collection.
+**Show Full Folder** leaves a subset. Returning to Catalog restores its selection.
 
-Right-click a Catalog photo, Review image, or filmstrip thumbnail for **Show in
-folder**, **Show in review**, **Survey burst**, **Compare**, Pick, Reject, Reset,
-and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
-right-clicking a different photo makes it the action target. The menu names the
-photo or selected count. Up/Down and Enter activate a menu action; Escape closes
-it.
+Right-click a Catalog photo, Review image, or filmstrip thumbnail (or press
+Shift+F10 or the Menu key for the current photo) for the image menu. Its groups,
+separated by rules, are **Open in Review** (outside Review), **Survey** (**Survey Burst** when the
+photo is in a burst) and **Compare**; **Pick** and **Reject** (checked when the
+photo, or every selected photo, has that flag), **Rating** and **Label** chips
+(the current value outlined) and **Reset Rating and Flag**; **Show in Files**
+(**Reveal in Finder** on macOS); and **Move to Trash…** and, in the error colour,
+**Delete Permanently…**. Each row shows its key on the right. Right-clicking a
+selected Catalog photo keeps that batch; right-clicking a different photo makes
+it the action target. The menu names the photo or selected count. Up/Down (which
+wrap), Home/End and Enter activate a row, the row keys (P, X, R, 0–5, 6–9, S, C,
+Delete, Shift+Delete) act directly, and Escape, Shift+F10 or the Menu key closes it.
+A photo whose decision failed to save shows the error glyph (a circled ×) on its thumbnail plate
+until the decision saves.
+
+The command palette lists photos whose filename contains the query (so
+**4512** finds `IMG_4512.CR3`) and folders whose name or path contains it,
+after commands whose name contains the query and before looser command
+matches. Enter on a photo selects it, scrolling the Catalog to it or showing it
+in Review; a photo outside the current filter shows the whole library first, and
+the status bar says so. Enter on a folder scopes the view to it, as its sidebar
+row does. **Ctrl/Cmd+F** opens the palette for photos only (up to 50 rows);
+Trash is not searched.
 
 Delete uses **Preferences → Culling → Trash destination**: **OS Trash** by
 default, or optional **In-app** Trash. Shift+Delete always requests permanent
-deletion. Each action opens a confirmation with photo/file counts, source
-locations, and destination. **Cancel is selected initially: Enter cancels, Tab
-then Enter confirms, and Escape cancels.** Restore OS-trashed files with your file
+deletion. Each action opens a confirmation naming the photo (or the count),
+with thumbnails, file counts, source locations and destination, and a warning
+when the selection includes picks or photos rated 3 stars and up. Permanent
+deletion is marked with an error-coloured warning, a "can't be undone" callout
+and a filled red confirm button. **Cancel is selected initially: Enter cancels,
+Tab then Enter confirms, and Escape cancels.** Restore OS-trashed files with your file
 manager; app Restore/Undo applies only to in-app Trash. Physical deletion cannot
 be undone in Shadowroom and clears decision Undo history after files change.
 See [Trash and duplicates](DUPLICATES_TRASH.md) for grouping and partial failures.
 
 Text fields show a blinking caret, support arrows, Home/End, Shift selection,
 Backspace/Delete, and Ctrl/Cmd+A/C/X/V. Tab changes import or network-host fields.
+
+In **Preferences**, Tab/Shift+Tab move focus, arrows choose within a group, Space
+activates, Return is **Apply & Close** (or activates a focused button),
+Ctrl+Tab/Ctrl+PageDown switch sections, Cmd/Ctrl+S applies and Escape closes
+(asking first when there are unsaved changes). See [Themes and preferences](THEMES.md).
 
 `src/controls.rs` defines the shared keyboard/controller commands and bindings. The desktop also handles Review entry, context menus, and deletion gestures. Dedicated F13–F24 shortcuts provide a keyboard-layout-independent controller layer:
 

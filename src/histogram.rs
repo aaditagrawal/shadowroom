@@ -1,7 +1,8 @@
 //! RGB histogram element for the inspector.
 //!
 //! Renders `shadowroom::media::Histogram` as three filled, outlined channel
-//! curves over a neutral `#0f0f0f` plot. Overlaps are drawn as exact additive
+//! curves over a neutral plot plate (`#0f0f0f` in dark themes, white in light
+//! ones, from `shadowroom.histogram.background`). Overlaps are drawn as exact additive
 //! bands (white where all three channels overlap, cyan/magenta/yellow where two
 //! do) instead of relying on alpha blending, so the image reads the same on
 //! every renderer and the colours mean something.
@@ -15,15 +16,39 @@
 //!   end bins are clamped and reported separately through the clip markers.
 //! - Display smoothing is a 3-tap [1,2,1] kernel on interior bins only; the end
 //!   bins (the clipping evidence) are never smeared.
+//! - The clipping readout and the end markers use the overlay's rule
+//!   (`peaking::classify`: shadows only where every channel is near black) and
+//!   its inks, so words, markers and the J overlay agree. The caller can give
+//!   the readout a steadier preview tier than the plotted one, so it does not
+//!   change while sharper previews load.
 
 // Public options are API for the inspector; not every variant is used by every caller.
 #![allow(dead_code)]
 
 use gpui::{
     AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Pixels, Rgba, Styled, Window,
-    canvas, div, fill, point, px, rgb, rgba, size,
+    canvas, div, fill, point, prelude::FluentBuilder, px, rgb, rgba, size,
 };
-use shadowroom::media::Histogram;
+use shadowroom::{
+    media::Histogram,
+    peaking::{ClipCounts, HIGHLIGHT_INK, SHADOW_INK},
+};
+use std::{
+    cell::RefCell,
+    hash::{Hash, Hasher},
+};
+
+type PlotPaths = Vec<(gpui::Path<Pixels>, Rgba)>;
+
+thread_local! {
+    /// The last tessellated plot, keyed by its bounds and display data. GPUI
+    /// rebuilds the scene every frame, and tessellating seven bands plus three
+    /// or four outlines of 256 bins each on every frame made the histogram one
+    /// of the costliest regions with the inspector open (docs/PERFORMANCE.md,
+    /// "Human interface responsiveness"). The plot changes only with the
+    /// photo, panel geometry or scale, so other frames reuse these paths.
+    static PLOT_PATHS: RefCell<Option<(u64, PlotPaths)>> = const { RefCell::new(None) };
+}
 
 /// Vertical scaling of bin counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,6 +58,19 @@ pub enum HistogramScale {
     Linear,
     /// `ln(1 + count)`; reveals thin shadow/highlight tails.
     Log,
+}
+
+/// What the clipping readout and end markers report.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ClipSource {
+    /// The plotted histogram's own counts.
+    #[default]
+    Plotted,
+    /// Counts from a steadier preview than the plotted one (the tier the
+    /// overlay paints), so the figures don't change as previews sharpen.
+    Stable(ClipCounts),
+    /// That preview isn't decoded yet: the readout says "Measuring…".
+    Measuring,
 }
 
 /// Where the histogram's pixels came from. Drives the footer note only.
@@ -56,6 +94,23 @@ pub struct HistogramOptions {
     pub luminance: bool,
     /// Tone-axis tick labels and the source/clip footer.
     pub labels: bool,
+    /// Label text, drawn on the surrounding panel (not the plot), so callers
+    /// pass the theme's muted text; the plate itself is `plot`.
+    pub label: Rgba,
+    /// Clip readout while a channel is clipped.
+    pub label_strong: Rgba,
+    /// A clipped end above [`CLIP_WARNING`] of the frame (the theme's warning).
+    pub label_warning: Rgba,
+    /// Plot plate, its outline and the quarter-tone guides. A light plate
+    /// switches the curves to darker inks that hold up on white.
+    pub plot: Rgba,
+    pub plot_border: Rgba,
+    pub plot_grid: Rgba,
+    /// The window's Text size factor: tick and readout text and their rows
+    /// grow with it (see [`label_rows_height`]).
+    pub text_scale: f32,
+    /// Counts behind the clipping readout and the end markers.
+    pub clip: ClipSource,
 }
 
 impl Default for HistogramOptions {
@@ -66,19 +121,68 @@ impl Default for HistogramOptions {
             smooth: true,
             luminance: false,
             labels: true,
+            label: rgb(LABEL),
+            label_strong: rgb(LABEL_STRONG),
+            label_warning: rgb(LABEL_WARNING),
+            plot: rgb(PLOT_BG),
+            plot_border: rgb(PLOT_BORDER),
+            plot_grid: rgb(GRID),
+            text_scale: 1.,
+            clip: ClipSource::Plotted,
         }
+    }
+}
+
+impl HistogramOptions {
+    /// A light plate (relative luminance above one half) takes the light inks.
+    fn light(&self) -> bool {
+        let c = self.plot;
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b > 0.5
     }
 }
 
 const PLOT_BG: u32 = 0x0f0f0f;
 const PLOT_BORDER: u32 = 0x262626;
 const GRID: u32 = 0x1c1c1c;
-const LABEL: u32 = 0x6e6e6e;
-const LABEL_STRONG: u32 = 0xa0a0a0;
-const AXIS_ROW: f32 = 13.;
-const NOTE_ROW: f32 = 13.;
-/// Share of samples in an end bin before that channel counts as clipped.
+/// Standalone defaults (dark panel); the inspector passes theme colours.
+const LABEL: u32 = 0x9a9a9a;
+const LABEL_STRONG: u32 = 0xe6e6e6;
+const LABEL_WARNING: u32 = 0xce7629;
+/// "No histogram data" sits on the dark plot plate in every theme.
+const EMPTY_LABEL: u32 = 0x9a9a9a;
+const AXIS_ROW: f32 = 14.;
+const NOTE_ROW: f32 = 14.;
+const LABEL_SIZE: f32 = 11.;
+
+/// Height of the tick and readout rows below the plot at `text_scale`.
+pub fn label_rows_height(text_scale: f32) -> f32 {
+    ((AXIS_ROW + NOTE_ROW) * text_scale.max(1.)).round()
+}
+
+/// Tick and readout text size: 11 px at 100%, scaled with the text but never
+/// below the 11 px floor (90% Text size included).
+fn label_size(text_scale: f32) -> f32 {
+    (LABEL_SIZE * text_scale).max(LABEL_SIZE)
+}
+
+/// Width of a tick's text box: "255" fits at every Text size.
+fn tick_box(text_scale: f32) -> f32 {
+    (TICK_BOX * text_scale).max(TICK_BOX).ceil()
+}
+/// Share of the frame before an end counts as clipped at all.
 const CLIP_THRESHOLD: f64 = 0.001;
+/// Share of the frame above which crushed shadows or a full white-out turn
+/// the readout to the warning colour.
+pub const CLIP_WARNING: f64 = 0.005;
+/// Colour clipping (one or two channels at 255) is common on saturated
+/// subjects and warns only past this share.
+pub const CHANNEL_WARNING: f64 = 0.02;
+/// Side of the readout's ink swatches, a 1 px outline in the label colour
+/// included, so the legend reads as a bounded square at 3:1 on any panel
+/// whatever its ink (R5-a11y-03).
+const SWATCH: f32 = 8.;
+/// Tick boxes at 100% text: room for "255" at 11 px, widened with the text.
+const TICK_BOX: f32 = 28.;
 
 // Band fills (straight alpha over #0f0f0f). Bands never overlap, so alpha only
 // mixes with the plot background.
@@ -93,6 +197,12 @@ const LINE_R: u32 = 0xf0_6a_6a_e6;
 const LINE_G: u32 = 0x6a_dc_78_e6;
 const LINE_B: u32 = 0x6e_9a_ff_e6;
 const LINE_L: u32 = 0xe8_e8_e8_99;
+// Light plate: the same additive bands (they mix only with the plate), with
+// outlines darkened to keep the curves' edges at ~3:1 on white.
+const LIGHT_LINE_R: u32 = 0xc4_3c_3c_e6;
+const LIGHT_LINE_G: u32 = 0x2e_8a_40_e6;
+const LIGHT_LINE_B: u32 = 0x2f_5f_d0_e6;
+const LIGHT_LINE_L: u32 = 0x29_29_29_99;
 
 /// Default inspector histogram: linear scale, preview source note.
 pub fn histogram(hist: &Histogram, width: f32, height: f32) -> AnyElement {
@@ -100,7 +210,7 @@ pub fn histogram(hist: &Histogram, width: f32, height: f32) -> AnyElement {
 }
 
 /// `width`/`height` are the whole element, including the label rows when
-/// `options.labels` is set (26 px). Below 72 px tall the labels are dropped.
+/// `options.labels` is set (28 px). Below 72 px tall the labels are dropped.
 pub fn histogram_with(
     hist: &Histogram,
     width: f32,
@@ -110,8 +220,13 @@ pub fn histogram_with(
     let width = width.max(32.);
     let height = height.max(16.);
     let labels = options.labels && height >= 72.;
+    let text_scale = options.text_scale.clamp(0.5, 3.);
+    let label_size = px(label_size(text_scale));
+    let tick_box = tick_box(text_scale);
+    let axis_row = (AXIS_ROW * text_scale).round();
+    let note_row = label_rows_height(text_scale) - axis_row;
     let plot_height = if labels {
-        height - AXIS_ROW - NOTE_ROW
+        height - axis_row - note_row
     } else {
         height
     };
@@ -124,10 +239,15 @@ pub fn histogram_with(
         HistogramSource::EmbeddedRaw => "Embedded JPEG, not RAW data",
         HistogramSource::RenderedRaw => "RAW render · 8-bit sRGB",
     };
-    let footer_right = data.clip_note();
+    let footer_right = data.clip_parts();
     let empty = data.is_empty();
 
     let painted = data.clone();
+    let empty_label = if options.light() {
+        options.label
+    } else {
+        rgb(EMPTY_LABEL)
+    };
     let mut plot = div().relative().w(px(width)).h(px(plot_height)).child(
         canvas(
             |_, _, _| (),
@@ -143,8 +263,8 @@ pub fn histogram_with(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(10.))
-                .text_color(rgb(LABEL))
+                .text_size(label_size)
+                .text_color(empty_label)
                 .child("No histogram data"),
         );
     }
@@ -167,27 +287,27 @@ pub fn histogram_with(
         let mut axis = div()
             .relative()
             .w(px(width))
-            .h(px(AXIS_ROW))
-            .text_size(px(9.))
-            .text_color(rgb(LABEL));
+            .h(px(axis_row))
+            .text_size(label_size)
+            .text_color(options.label);
         for (value, text) in ticks {
             let x = value as f32 / 255. * width;
-            let tick = div().absolute().top(px(1.)).w(px(28.)).child(text);
+            let tick = div().absolute().top(px(1.)).w(px(tick_box)).child(text);
             axis = axis.child(match value {
                 0 => tick.left(px(0.)),
                 255 => tick.right(px(0.)).text_right(),
-                _ => tick.left(px(x - 14.)).text_center(),
+                _ => tick.left(px(x - tick_box / 2.)).text_center(),
             });
         }
         root = root.child(axis).child(
             div()
                 .w(px(width))
-                .h(px(NOTE_ROW))
+                .h(px(note_row))
                 .flex()
                 .justify_between()
                 .gap(px(6.))
-                .text_size(px(9.))
-                .text_color(rgb(LABEL))
+                .text_size(label_size)
+                .text_color(options.label)
                 .child(
                     div()
                         .overflow_hidden()
@@ -198,16 +318,49 @@ pub fn histogram_with(
                 .child(
                     div()
                         .flex_none()
-                        .text_color(rgb(if data.any_clipped() {
-                            LABEL_STRONG
+                        .flex()
+                        .text_color(if data.any_clipped() {
+                            options.label_strong
                         } else {
-                            LABEL
-                        }))
-                        .child(footer_right),
+                            options.label
+                        })
+                        .items_center()
+                        .gap(px(8.))
+                        .children(footer_right.into_iter().map(|part| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .when(part.warn, |s| s.text_color(options.label_warning))
+                                // The overlay's ink, as the end markers draw it.
+                                .when_some(part.ink, |s, ink| {
+                                    s.child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(SWATCH))
+                                            .border_1()
+                                            .border_color(options.label)
+                                            .bg(ink),
+                                    )
+                                })
+                                .child(part.text)
+                        })),
                 ),
         );
     }
     root.into_any_element()
+}
+
+/// One clipping readout entry: "Shadows 0.8%" with the overlay's ink.
+#[derive(Clone, Debug, PartialEq)]
+struct ClipPart {
+    text: String,
+    warn: bool,
+    ink: Option<Rgba>,
+}
+
+fn ink(rgb: [u8; 3]) -> Rgba {
+    gpui::rgb(u32::from_be_bytes([0, rgb[0], rgb[1], rgb[2]]))
 }
 
 /// Normalised display data, computed once per render and moved into the canvas.
@@ -217,11 +370,12 @@ struct Prepared {
     green: Vec<f32>,
     blue: Vec<f32>,
     luma: Option<Vec<f32>>,
-    /// Channel mask (r=1, g=2, b=4) clipped at the low/high end.
-    clip_low: u8,
-    clip_high: u8,
-    low_share: f64,
-    high_share: f64,
+    /// The readout's counts; `None` while they are being measured.
+    clip: Option<ClipCounts>,
+    plot: Rgba,
+    plot_border: Rgba,
+    plot_grid: Rgba,
+    light: bool,
 }
 
 impl Prepared {
@@ -233,30 +387,19 @@ impl Prepared {
                 green: Vec::new(),
                 blue: Vec::new(),
                 luma: None,
-                clip_low: 0,
-                clip_high: 0,
-                low_share: 0.,
-                high_share: 0.,
+                clip: None,
+                plot: options.plot,
+                plot_border: options.plot_border,
+                plot_grid: options.plot_grid,
+                light: options.light(),
             };
         }
         let channels = [&hist.red[..bins], &hist.green[..bins], &hist.blue[..bins]];
-        let samples = hist.samples as f64;
-        let mut clip_low = 0u8;
-        let mut clip_high = 0u8;
-        let mut low_share = 0f64;
-        let mut high_share = 0f64;
-        for (bit, channel) in channels.iter().enumerate() {
-            let low = channel[0] as f64 / samples;
-            let high = channel[bins - 1] as f64 / samples;
-            if low >= CLIP_THRESHOLD {
-                clip_low |= 1 << bit;
-            }
-            if high >= CLIP_THRESHOLD {
-                clip_high |= 1 << bit;
-            }
-            low_share = low_share.max(low);
-            high_share = high_share.max(high);
-        }
+        let clip = match options.clip {
+            ClipSource::Plotted => Some(hist.clip),
+            ClipSource::Stable(counts) => Some(counts),
+            ClipSource::Measuring => None,
+        };
 
         let smoothed: Vec<Vec<f64>> = channels
             .iter()
@@ -288,10 +431,11 @@ impl Prepared {
             green: normalise(&smoothed[1]),
             blue: normalise(&smoothed[2]),
             luma: luma.map(|l| normalise(&l)),
-            clip_low,
-            clip_high,
-            low_share,
-            high_share,
+            clip,
+            plot: options.plot,
+            plot_border: options.plot_border,
+            plot_grid: options.plot_grid,
+            light: options.light(),
         }
     }
 
@@ -299,14 +443,35 @@ impl Prepared {
         self.red.is_empty()
     }
 
-    fn any_clipped(&self) -> bool {
-        self.clip_low != 0 || self.clip_high != 0
+    /// Which ends are clipped: (shadows, highlights).
+    fn clipped_ends(&self) -> (bool, bool) {
+        self.clip.map_or((false, false), |c| {
+            (
+                c.shadow_share() >= CLIP_THRESHOLD,
+                c.highlight_share() >= CLIP_THRESHOLD,
+            )
+        })
     }
 
-    fn clip_note(&self) -> String {
+    fn any_clipped(&self) -> bool {
+        let (low, high) = self.clipped_ends();
+        low || high
+    }
+
+    /// "Shadows 0.8%" / "Highlights 1.0%" for each clipped end, in plain
+    /// words with the overlay's ink, each flagged past its warning share
+    /// (colour clipping on its own needs [`CHANNEL_WARNING`]).
+    fn clip_parts(&self) -> Vec<ClipPart> {
         if self.is_empty() {
-            return String::new();
+            return Vec::new();
         }
+        let Some(clip) = self.clip else {
+            return vec![ClipPart {
+                text: "Measuring…".into(),
+                warn: false,
+                ink: None,
+            }];
+        };
         let pct = |share: f64| {
             if share >= 0.1 {
                 format!("{:.0}%", share * 100.)
@@ -314,16 +479,94 @@ impl Prepared {
                 format!("{:.1}%", share * 100.)
             }
         };
-        match (self.clip_low != 0, self.clip_high != 0) {
-            (false, false) => "No clipping".into(),
-            (true, false) => format!("Clip ◀ {}", pct(self.low_share)),
-            (false, true) => format!("Clip ▶ {}", pct(self.high_share)),
-            (true, true) => format!("Clip ◀ {} ▶ {}", pct(self.low_share), pct(self.high_share)),
+        let (low, high) = self.clipped_ends();
+        let mut parts = Vec::new();
+        if low {
+            parts.push(ClipPart {
+                text: format!("Shadows {}", pct(clip.shadow_share())),
+                warn: clip.shadow_share() > CLIP_WARNING,
+                ink: Some(ink(SHADOW_INK)),
+            });
         }
+        if high {
+            parts.push(ClipPart {
+                text: format!("Highlights {}", pct(clip.highlight_share())),
+                warn: clip.blown_share() > CLIP_WARNING || clip.channel_share() > CHANNEL_WARNING,
+                ink: Some(ink(HIGHLIGHT_INK)),
+            });
+        }
+        if parts.is_empty() {
+            parts.push(ClipPart {
+                text: "No clipping".into(),
+                warn: false,
+                ink: None,
+            });
+        }
+        parts
+    }
+
+    /// Identity of a tessellated plot: its geometry and display values.
+    fn plot_key(&self, plot: &Plot) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for value in [plot.left, plot.bottom, plot.width, plot.height] {
+            value.to_bits().hash(&mut hasher);
+        }
+        self.light.hash(&mut hasher);
+        for channel in [&self.red, &self.green, &self.blue]
+            .into_iter()
+            .chain(self.luma.as_ref())
+        {
+            channel.len().hash(&mut hasher);
+            for value in channel {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Band fills, then channel outlines, in paint order.
+    fn plot_paths(&self, plot: &Plot) -> PlotPaths {
+        let mut paths = Vec::new();
+        let (r, g, b) = (&self.red, &self.green, &self.blue);
+        // Additive bands: what the eye would see if each channel were light.
+        // (lower, upper) per bin; white = all three, CMY = two, RGB = one.
+        let band = |f: &dyn Fn(f32, f32, f32) -> (f32, f32)| -> (Vec<f32>, Vec<f32>) {
+            (0..plot.bins).map(|i| f(r[i], g[i], b[i])).unzip()
+        };
+        let bands = [
+            (band(&|r, g, b| (0., r.min(g).min(b))), FILL_W),
+            (band(&|r, g, b| (b, r.min(g))), FILL_Y),
+            (band(&|r, g, b| (g, r.min(b))), FILL_M),
+            (band(&|r, g, b| (r, g.min(b))), FILL_C),
+            (band(&|r, g, b| (g.max(b), r)), FILL_R),
+            (band(&|r, g, b| (r.max(b), g)), FILL_G),
+            (band(&|r, g, b| (r.max(g), b)), FILL_B),
+        ];
+        for ((lows, highs), color) in &bands {
+            if let Some(path) = plot.band(lows, highs) {
+                paths.push((path, rgba(*color)));
+            }
+        }
+        let lines = if self.light {
+            [LIGHT_LINE_R, LIGHT_LINE_G, LIGHT_LINE_B, LIGHT_LINE_L]
+        } else {
+            [LINE_R, LINE_G, LINE_B, LINE_L]
+        };
+        for (channel, color) in [(r, lines[0]), (g, lines[1]), (b, lines[2])] {
+            if let Some(path) = plot.outline(channel) {
+                paths.push((path, rgba(color)));
+            }
+        }
+        if let Some(luma) = &self.luma
+            && let Some(path) = plot.outline(luma)
+        {
+            paths.push((path, rgba(lines[3])));
+        }
+        paths
     }
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App) {
-        window.paint_quad(fill(bounds, rgb(PLOT_BG)));
+        window.paint_quad(fill(bounds, self.plot));
         let left = f32::from(bounds.origin.x);
         let top = f32::from(bounds.origin.y);
         let w = f32::from(bounds.size.width);
@@ -334,7 +577,7 @@ impl Prepared {
             let x = (left + w * quarter as f32 / 4.).round();
             window.paint_quad(fill(
                 Bounds::new(point(px(x), px(top)), size(px(1.), px(h))),
-                rgb(GRID),
+                self.plot_grid,
             ));
         }
 
@@ -347,58 +590,45 @@ impl Prepared {
                 height: (h - 2.).max(1.),
                 bins: self.red.len(),
             };
-            let (r, g, b) = (&self.red, &self.green, &self.blue);
-            // Additive bands: what the eye would see if each channel were light.
-            // (lower, upper) per bin; white = all three, CMY = two, RGB = one.
-            let band = |f: &dyn Fn(f32, f32, f32) -> (f32, f32)| -> (Vec<f32>, Vec<f32>) {
-                (0..plot.bins).map(|i| f(r[i], g[i], b[i])).unzip()
-            };
-            let bands = [
-                (band(&|r, g, b| (0., r.min(g).min(b))), FILL_W),
-                (band(&|r, g, b| (b, r.min(g))), FILL_Y),
-                (band(&|r, g, b| (g, r.min(b))), FILL_M),
-                (band(&|r, g, b| (r, g.min(b))), FILL_C),
-                (band(&|r, g, b| (g.max(b), r)), FILL_R),
-                (band(&|r, g, b| (r.max(b), g)), FILL_G),
-                (band(&|r, g, b| (r.max(g), b)), FILL_B),
-            ];
-            for ((lows, highs), color) in &bands {
-                if let Some(path) = plot.band(lows, highs) {
-                    window.paint_path(path, rgba(*color));
+            let key = self.plot_key(&plot);
+            PLOT_PATHS.with_borrow_mut(|cache| {
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+                    *cache = Some((key, self.plot_paths(&plot)));
                 }
-            }
-            for (channel, color) in [(r, LINE_R), (g, LINE_G), (b, LINE_B)] {
-                if let Some(path) = plot.outline(channel) {
-                    window.paint_path(path, rgba(color));
+                if let Some((_, paths)) = cache {
+                    for (path, color) in paths.iter() {
+                        window.paint_path(path.clone(), *color);
+                    }
                 }
-            }
-            if let Some(luma) = &self.luma {
-                if let Some(path) = plot.outline(luma) {
-                    window.paint_path(path, rgba(LINE_L));
-                }
-            }
+            });
         }
 
-        // Clip markers: boxy 7 px squares in the top corners, lit in the additive
-        // colour of the clipped channels (white = all three).
-        let marker = 7.;
-        for (mask, x) in [
-            (self.clip_low, left + 3.),
-            (self.clip_high, left + w - 3. - marker),
+        // Clip markers: boxy 8 px squares in the top corners, in the
+        // overlay's ink for that end (the readout's swatches match), with a
+        // 1 px outline that holds 3:1 on the plate (R5-a11y-03).
+        let marker = 8.;
+        let ring = if self.light {
+            rgb(0x292929)
+        } else {
+            rgb(0xe6e6e6)
+        };
+        let (low, high) = self.clipped_ends();
+        for (lit, x, color) in [
+            (low, left + 3., ink(SHADOW_INK)),
+            (high, left + w - 3. - marker, ink(HIGHLIGHT_INK)),
         ] {
             // Unlit markers read as unexplained squares; draw only when clipping.
-            if mask == 0 {
+            if !lit {
                 continue;
             }
-            window.paint_quad(fill(
-                Bounds::new(point(px(x), px(top + 3.)), size(px(marker), px(marker))),
-                mask_color(mask),
-            ));
+            let square = Bounds::new(point(px(x), px(top + 3.)), size(px(marker), px(marker)));
+            window.paint_quad(fill(square, color));
+            window.paint_quad(gpui::outline(square, ring, gpui::BorderStyle::Solid));
         }
 
         window.paint_quad(gpui::outline(
             bounds,
-            rgb(PLOT_BORDER),
+            self.plot_border,
             gpui::BorderStyle::Solid,
         ));
     }
@@ -419,18 +649,6 @@ fn display_counts(counts: &[u64], smooth: bool) -> Vec<f64> {
         out[i] = (prev + 2. * raw[i] + next) / 4.;
     }
     out
-}
-
-fn mask_color(mask: u8) -> Rgba {
-    rgb(match mask {
-        0b001 => 0xf06a6a,
-        0b010 => 0x6adc78,
-        0b100 => 0x6e9aff,
-        0b011 => 0xe6d25a,
-        0b101 => 0xd26ae6,
-        0b110 => 0x5ad6dc,
-        _ => 0xf0f0f0,
-    })
 }
 
 struct Plot {
@@ -487,6 +705,19 @@ impl Plot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tick_and_readout_text_keep_the_floor_and_fit_their_boxes() {
+        // 90% Text size never draws below 11 px (R5-a11y-05).
+        assert!(label_size(0.9) >= 11.);
+        assert_eq!(label_size(1.0), 11.);
+        // "255" in Geist Mono (0.6 em advance) fits its box at every size.
+        for scale in [0.9, 1.0, 1.1, 1.25, 1.5] {
+            let advance = 3. * 0.6 * label_size(scale);
+            assert!(tick_box(scale) >= advance, "{scale}: {advance}");
+            assert!(label_rows_height(scale) >= 2. * label_size(scale));
+        }
+    }
+
     fn hist(f: impl Fn(usize) -> (u64, u64, u64)) -> Histogram {
         let mut h = Histogram {
             red: vec![0; 256],
@@ -494,6 +725,7 @@ mod tests {
             blue: vec![0; 256],
             luminance: vec![0; 256],
             samples: 0,
+            clip: Default::default(),
         };
         for i in 0..256 {
             let (r, g, b) = f(i);
@@ -517,8 +749,85 @@ mod tests {
         let p = Prepared::new(&h, HistogramOptions::default());
         assert!((p.red[128] - 1.).abs() < 1e-6);
         assert_eq!(p.red[255], 1.);
-        assert_eq!(p.clip_high, 0b111);
-        assert_eq!(p.clip_low, 0);
+        // The readout and markers come from the overlay's counts, not the bins.
+        let blown = ClipCounts {
+            samples: 1_000,
+            blown: 300,
+            ..ClipCounts::default()
+        };
+        let p = Prepared::new(
+            &h,
+            HistogramOptions {
+                clip: ClipSource::Stable(blown),
+                ..Default::default()
+            },
+        );
+        assert_eq!(p.clipped_ends(), (false, true));
+        let parts = p.clip_parts();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].text.starts_with("Highlights "), "{parts:?}");
+        assert!(parts[0].warn, "a large share warns");
+    }
+
+    #[test]
+    fn clipping_readout_names_both_ends_and_warns_past_half_a_percent() {
+        let readout = |clip: ClipCounts| {
+            let mut h = hist(|_| (390, 390, 390));
+            h.clip = clip;
+            Prepared::new(&h, HistogramOptions::default())
+                .clip_parts()
+                .into_iter()
+                .map(|part| (part.text, part.warn, part.ink.is_some()))
+                .collect::<Vec<_>>()
+        };
+        // 0.8% crushed shadows, 0.2% blown highlights.
+        assert_eq!(
+            readout(ClipCounts {
+                samples: 10_000,
+                shadows: 80,
+                blown: 20,
+                channel: 0,
+            }),
+            vec![
+                ("Shadows 0.8%".to_string(), true, true),
+                ("Highlights 0.2%".to_string(), false, true),
+            ]
+        );
+        // Colour clipping alone warns only past 2%.
+        assert_eq!(
+            readout(ClipCounts {
+                samples: 10_000,
+                channel: 150,
+                ..ClipCounts::default()
+            }),
+            vec![("Highlights 1.5%".to_string(), false, true)]
+        );
+        assert_eq!(
+            readout(ClipCounts {
+                samples: 10_000,
+                channel: 250,
+                ..ClipCounts::default()
+            })[0]
+                .1,
+            true
+        );
+        assert_eq!(
+            readout(ClipCounts {
+                samples: 10_000,
+                ..ClipCounts::default()
+            }),
+            vec![("No clipping".to_string(), false, false)]
+        );
+        // A steadier tier still being decoded: no figures, no markers.
+        let measuring = Prepared::new(
+            &hist(|_| (10, 10, 10)),
+            HistogramOptions {
+                clip: ClipSource::Measuring,
+                ..Default::default()
+            },
+        );
+        assert_eq!(measuring.clip_parts()[0].text, "Measuring…");
+        assert_eq!(measuring.clipped_ends(), (false, false));
     }
 
     #[test]
@@ -537,6 +846,7 @@ mod tests {
             blue: vec![],
             luminance: vec![],
             samples: 0,
+            clip: Default::default(),
         };
         assert!(Prepared::new(&h, HistogramOptions::default()).is_empty());
     }
@@ -566,5 +876,27 @@ mod tests {
             },
         );
         assert!(log.red[10] > lin.red[10]);
+    }
+
+    #[test]
+    fn light_plates_take_the_light_inks() {
+        assert!(!HistogramOptions::default().light());
+        let light = HistogramOptions {
+            plot: rgb(0xffffff),
+            ..Default::default()
+        };
+        assert!(light.light());
+        let h = hist(|_| (10, 10, 10));
+        let dark = Prepared::new(&h, HistogramOptions::default());
+        let pale = Prepared::new(&h, light);
+        let plot = Plot {
+            left: 0.,
+            bottom: 60.,
+            width: 200.,
+            height: 58.,
+            bins: 256,
+        };
+        // Cached paths never carry one plate's inks onto the other.
+        assert_ne!(dark.plot_key(&plot), pale.plot_key(&plot));
     }
 }

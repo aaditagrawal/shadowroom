@@ -1,0 +1,1159 @@
+{
+  "description": "Human-interface hill-climb scores for Shadowroom, measured by independent reviewers from real captures of the native window and from the code at each commit. 0-5 scales unless noted; the accessibility scorecard is percent of applicable checks passed.",
+  "commits": {
+    "before": "c0760d5",
+    "r1": "3a5567b",
+    "r2": "e355fe4",
+    "r3": "05c6fc1",
+    "r4": "837512e",
+    "r5": "72b936e",
+    "r6": "641979c"
+  },
+  "method": "docs/HUMAN_INTERFACE.md",
+  "surfaces": {
+    "design": {
+      "criteria": [
+        {
+          "criterion": "C1",
+          "name": "Typographic hierarchy",
+          "weight": 8,
+          "before": 2.5,
+          "r1": 3,
+          "r2": 3,
+          "r3": 3,
+          "r4": 3,
+          "r5": 3.5,
+          "evidence": "Type-role pass (4efa270) shipped: git grep at 72b936e finds 0 literal ui::font(n) sizes (39 at r4); every call is a role (72x LABEL, 14x MICRO, 7x TITLE, 6x BODY, 3x DISPLAY); dialog title is TITLE; one section_header() (desktop.rs:6580-6587: LABEL, MEDIUM, muted, sentence case) used by sidebar/inspector sections, theme list and Import (ingest_ui.rs:2744), so Import no longer shouts in capitals (shots/r5/import_panel__dark: 'Job', 'Destination', 'Naming'). +0.5 for consistent application. Not 4: the roles still collapse - MICRO == LABEL == 11 (layout.rs:31-33) and in Import the section header,"
+        },
+        {
+          "criterion": "C2",
+          "name": "Spacing rhythm and grid consistency",
+          "weight": 7,
+          "before": 3.5,
+          "r1": 4,
+          "r2": 4,
+          "r3": 4,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "No rhythm change. Ledger re-cut inside the same 16px band (TRACK 7, TRACK_TOP 4, ledger.rs:23-36) so bar heights hold; lights-out band is 8px; short windows trade the filmstrip for the ledger band without new spacing values. Grid gap still off-scale vs the strip's 8px; no deliberate optical corrections. Hold."
+        },
+        {
+          "criterion": "C3",
+          "name": "Color discipline and semantic color",
+          "weight": 9,
+          "before": 3,
+          "r1": 4,
+          "r2": 4,
+          "r3": 4,
+          "r4": 4,
+          "r5": 4.5,
+          "evidence": "Both r4 drifts fixed and now enforced by a theme test (theme.rs:1031-1071, oklch_hue): label blue is periwinkle, 34/30/32/27 deg (OKLCH) from the accent in Dark/Light/HC Dark/HC Light and 36-37 deg from purple; warning is orange, 29-36 deg from rating amber (ok5.py). The ledger has its own tokens and is shape-coded (picks above the rail, rejects below, ledger.rs:59-66), so pick vs reject no longer relies on hue. Clipping readout swatches equal the overlay inks (histogram.rs:463-472; crops/readout.png). Not 5: the warm side is now crowded - warning vs error is 31 deg at 1.02:1 luminance in Ligh"
+        },
+        {
+          "criterion": "C4",
+          "name": "Selection, hover, focus and active state clarity",
+          "weight": 10,
+          "before": 2,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "Label blue no longer imitates the 2px accent 'current' underline (R4-design-02 fixed); the HC ledger states now separate (5.08:1 / 4.03:1). Hold at 4, not 4.5: auto-advance is still the only toggle with a 2px text underline when on (desktop.rs:9851-9863) while pin/survey are fill-only; a plain 1px box now means two things in two adjacent menus - 'keycap' in the rating filter menu (41343e4: boxed 0-5) and 'current value' in the image menu Rating/Label rows (shots/r5/grid_context_menu, rating_filter_menu); the text-colour underline now carries chosen segment, auto-advance on, Compare active pane"
+        },
+        {
+          "criterion": "C5",
+          "name": "Image-first canvas (chrome recedes, neutrality)",
+          "weight": 10,
+          "before": 3.5,
+          "r1": 4,
+          "r2": 4,
+          "r3": 4,
+          "r4": 4.5,
+          "r5": 5,
+          "evidence": "Anchor 5 met. Lights-out is a second Focus press (b801639): title bar, toolbar, status bar, side panels, decision bar and filmstrip all go; an 8px ledger band remains at the bottom edge (ledger.rs:405-421). The photo is 1292x860 at 1440x900 = 86% of the window (impl-r5-loupe/r5_lights_out__dark) and 720x480 at 800x520 (impl-r5-loupe-800/r5_lights_out__dark). Focus-level notices now dock in the decision bar instead of covering the photo (r5/focus_mode__dark). Below 960px the inspector yields in Review and below 600px the filmstrip yields to the ledger band: photo 461x307 = 34% of 800x520 (was 1"
+        },
+        {
+          "criterion": "C6",
+          "name": "Information density for pro culling",
+          "weight": 8,
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3,
+          "r3": 3.5,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "Focus mode now keeps a compact culling line (exposure + capture time) in the decision bar (loupe_aids.rs:429-485), fixing the r4 caveat; clipping figures are measured on the Fit tier so they no longer change as previews sharpen (ca39c74); the navigator fades when idle. Hold at 4: no sharpness/eye assist, lens still ellipsizes at the default inspector width, density adjustable only via S/M/L thumbnails."
+        },
+        {
+          "criterion": "C7",
+          "name": "Decision-state legibility on thumbnails",
+          "weight": 9,
+          "before": 3,
+          "r1": 4,
+          "r2": 4,
+          "r3": 4.5,
+          "r4": 4.5,
+          "r5": 5,
+          "evidence": "The r4 blocker is fixed: shadowroom.ledger.rail/reviewed tokens give reviewed vs unreviewed 3.29/3.19/5.08/4.03:1 in Dark/Light/HC Dark/HC Light and, independently, shape (1px rail vs 3px bar vs 4px above/below bars, ledger.rs:59-66; crops/ledger_r4r5.png rows 2-4). Bucketed cells that still hide an unreviewed frame keep a 1px notch (ledger.rs:279-295, test a_skipped_frame_inside_a_bucket_leaves_a_notch); a free-standing track drops cell gaps and draws a hairline bracket over the frames the strip shows (shots/r5/loupe_review__dark__1024x680; crops/l1024.png). Filmstrip label strips now use the"
+        },
+        {
+          "criterion": "C8",
+          "name": "Iconography consistency",
+          "weight": 5,
+          "before": 3.5,
+          "r1": 3.5,
+          "r2": 4,
+          "r3": 4.5,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "Fixed: the clipping toggle has its own glyph (assets/icons/shadowroom/clipping.svg, the half-filled square in shots/r5/save_failed beside LIN/LOG), so the warning triangle no longer doubles as a view toggle; Focus mode got focus-mode.svg. New collision: the inspector tab renamed 'Culling' (8eb2b18) took the histogram glyph, which is the same SVG as 'Toggle histogram' (icon map desktop.rs:81-82 maps both 'graph' and 'histogram' to histogram.svg; used at 10536 and 12778; crops/icons.png rows 1-2). One fix, one regression: hold 4."
+        },
+        {
+          "criterion": "C9",
+          "name": "Empty, loading and error craft",
+          "weight": 6,
+          "before": 2.5,
+          "r1": 3,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 4,
+          "evidence": "Loading craft: the camera icon and 'Loading preview...' are gone from Review/thumbnails; a 2px muted line on the pane's top edge stands in while the wanted tier loads (desktop.rs:8277-8303) and the camera marks only failures. Toggling J/F keeps the previous overlay and says 'Preparing clipping...' until the new copy is visible (ca39c74), closing the overlay pop (R4-design-05). Empty library: two buttons, a two-line measure and keycaps (shots/r5/empty_workspace__dark). Import keeps per-card results with failed tiles and Retry. Residuals: Import tiles (ingest_ui.rs:2417) and the deletion grid (d"
+        },
+        {
+          "criterion": "C10",
+          "name": "Motion and feedback",
+          "weight": 5,
+          "before": 1.5,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 4,
+          "evidence": "A vocabulary now exists across views: 120/150ms entrances, instant exits, the lights-out stamp (320ms hold + 180ms quadratic fade, held 700ms and no fade under Reduce motion, loupe_aids.rs:17-22, 385-428), the navigator's idle fade (1.5s, gone at once under Reduce motion), the static loading line. Culling stays unanimated. Not 4.5: no decision acknowledgement outside lights-out (bar and ledger never flash), and the stamp's 180ms fade is a new duration outside the 120/150 set."
+        },
+        {
+          "criterion": "C11",
+          "name": "Light-theme parity",
+          "weight": 7,
+          "before": 2.5,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 4,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "R4-design-08 fixed: light filmstrip strips now use the scrim ink matching the chip (crops/ledger_r4r5.png row 3). New palettes keep parity (light label blue #4c49b8, warning #9a4d10, ledger rail #c4c9d1 / reviewed #626c7c). Not 5: the light theme still borrows the dark scrim plates for every on-photo element including the new stamp, menus and toasts use the same black 0.35 shadow as dark (no light elevation logic), and the lights-out band is brighter than the light canvas."
+        },
+        {
+          "criterion": "C12",
+          "name": "Polish details",
+          "weight": 7,
+          "before": 3,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 4,
+          "r4": 3.5,
+          "r5": 3.5,
+          "evidence": "r4 items fixed: peaking tooltip names the configured ink (ca39c74), the theme name left the status bar (icon + tooltip, desktop.rs:12728-12752), the Focus notice no longer overlaps the photo, the 1024 ledger has its bracket. New rough details at r5: letters on label chips collide with keys (Purple swatch shows 'P' = Pick, image-menu chips R/Y/G/B/P beside 'Reset ... R' and 'Pick P'); the Culling tab and Toggle histogram share a glyph; boxed digit = keycap in one menu and = current value in the next; Import dropdowns bypass menu_surface (ingest_ui.rs:2913-2926 uses .shadow_lg(), the only one); "
+        },
+        {
+          "criterion": "C13",
+          "name": "Keyboard affordance visibility",
+          "weight": 5,
+          "before": 3.5,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 4,
+          "r4": 4,
+          "r5": 4,
+          "evidence": "Keycaps spread: dialog footers (key_hints, dialog.rs:375ff), palette rows, empty-state hints and rating-menu digits are boxed caps; Focus/lights-out announce Shift+Tab/Esc. Not higher: two keycap idioms coexist (boxed caps vs the plain muted letters in the decision bar and image menu); Purple still has no key and now shows 'P' (the Pick key) on its inspector swatch (desktop.rs:5879-5885, 9220-9224); image-menu label chips show letters, not their 6-9 keys; hints never fade."
+        },
+        {
+          "criterion": "C14",
+          "name": "Visual novelty within identity",
+          "weight": 4,
+          "before": 2,
+          "r1": 2.5,
+          "r2": 3,
+          "r3": 4,
+          "r4": 4,
+          "r5": 4.5,
+          "evidence": "Round 5 adds signatures a crop identifies: the ledger now reads like an account book (picks stand above the line, rejects hang below, skipped frames notch it, a typographic '[ ]' bracket marks the strip's window); lights-out folds all chrome into that 8px line; decisions there are confirmed by a typed 13px MEDIUM mono stamp ('PICK', 'REJECT', '****') on a scrim plate - B4 as specified in spirit. All grow from mono/darkroom/keyboard and are functional. Not 5: B2 edge-code captions are still missing, so thumbnails still carry Lightroom-idiom pastel chips, and the stamp exists only in lights-out."
+        }
+      ],
+      "totals": {
+        "before": {
+          "weighted": 2.775,
+          "weighted_excl_C11": 2.796,
+          "unweighted": 2.75,
+          "weighted_zed_criteria_only": 2.678
+        },
+        "r1": {
+          "weighted": 3.435,
+          "weighted_excl_C11": 3.43,
+          "unweighted": 3.357,
+          "weighted_zed_criteria_only": 3.39
+        },
+        "r2": {
+          "weighted": 3.6,
+          "weighted_excl_C11": 3.608,
+          "unweighted": 3.571,
+          "weighted_zed_criteria_only": 3.562
+        },
+        "r3": {
+          "weighted": 3.845,
+          "weighted_excl_C11": 3.833,
+          "unweighted": 3.857,
+          "weighted_zed_criteria_only": 3.781
+        },
+        "r4": {
+          "weighted": 3.925,
+          "weighted_excl_C11": 3.919,
+          "unweighted": 3.893,
+          "weighted_zed_criteria_only": 3.767
+        },
+        "r5": {
+          "weighted": 4.18,
+          "weighted_excl_C11": 4.194,
+          "unweighted": 4.143,
+          "weighted_zed_criteria_only": 3.986
+        }
+      },
+      "zed_comparison": {
+        "zed_weighted": 4.21,
+        "shadowroom_r5_whole_rubric": 4.18,
+        "shadowroom_r5_on_zed_criteria": 3.986,
+        "per_criterion_gap": {
+          "C1": {
+            "shadowroom_r5": 3.5,
+            "zed": 4,
+            "weighted_points": -4.0
+          },
+          "C2": {
+            "shadowroom_r5": 4,
+            "zed": 4.5,
+            "weighted_points": -3.5
+          },
+          "C3": {
+            "shadowroom_r5": 4.5,
+            "zed": 4.5,
+            "weighted_points": 0.0
+          },
+          "C4": {
+            "shadowroom_r5": 4,
+            "zed": 4.5,
+            "weighted_points": -5.0
+          },
+          "C8": {
+            "shadowroom_r5": 4,
+            "zed": 4.5,
+            "weighted_points": -2.5
+          },
+          "C9": {
+            "shadowroom_r5": 4,
+            "zed": 3.5,
+            "weighted_points": 3.0
+          },
+          "C10": {
+            "shadowroom_r5": 4,
+            "zed": 3,
+            "weighted_points": 5
+          },
+          "C11": {
+            "shadowroom_r5": 4,
+            "zed": 4.5,
+            "weighted_points": -3.5
+          },
+          "C12": {
+            "shadowroom_r5": 3.5,
+            "zed": 4.5,
+            "weighted_points": -7.0
+          },
+          "C13": {
+            "shadowroom_r5": 4,
+            "zed": 4.5,
+            "weighted_points": -2.5
+          },
+          "C14": {
+            "shadowroom_r5": 4.5,
+            "zed": 3.5,
+            "weighted_points": 4.0
+          }
+        },
+        "verdict": "Not yet. Whole-rubric 4.18 vs Zed 4.21 is a near-tie only because photo criteria Zed is not scored on (C5, C7 at 5) lift Shadowroom; like-for-like on Zed's 11 chrome criteria Shadowroom is 3.99 vs 4.21. Shadowroom leads on C9, C10, C14 and trails on C12 (-7 weighted points), C4 (-5), C1 (-4), C2, C11 (-3.5 each), C8, C13 (-2.5 each)."
+      },
+      "references_fixed": {
+        "photo_mechanic": 2.77,
+        "lightroom_classic": 3.26,
+        "narrative_select": 3.37,
+        "zed_chrome": 4.21
+      },
+      "finding_status_r5": {
+        "resolved": 35,
+        "partial": 7,
+        "unresolved": 4,
+        "regressed": 1
+      }
+    },
+    "a11y": {
+      "criteria": [
+        {
+          "criterion": "contrast",
+          "before": 75.4,
+          "r1": 100.0,
+          "r2": 100.0,
+          "r3": 97.1,
+          "r4": 97.1,
+          "r5": 97.1,
+          "passed": {
+            "r4": 134,
+            "r5": 134
+          },
+          "applicable": {
+            "r4": 138,
+            "r5": 138
+          },
+          "lenient_outline_variant": {
+            "before": 77.5,
+            "r1": 100.0,
+            "r2": 100.0,
+            "r3": 100.0,
+            "r4": 100.0,
+            "r5": 100.0
+          },
+          "extended_pairs_pct": {
+            "before": 66.7,
+            "r1": 84.8,
+            "r2": 84.8,
+            "r3": 94.7,
+            "r4": 95.7,
+            "r5": 96.1
+          },
+          "high_contrast": {
+            "r4": {
+              "core": 100.0,
+              "extended": 98.3
+            },
+            "r5": {
+              "core": 100.0,
+              "extended": 98.3
+            }
+          },
+          "failing_r5": [
+            "Dark:border.panel 1.41",
+            "Dark:border.elevated 1.29",
+            "Light:border.panel 1.26",
+            "Light:border.elevated 1.32"
+          ],
+          "extended_failing_r5": [
+            "Dark:ext.control_border.toolbar 1.41",
+            "Dark:ext.import.included_tile 1.32",
+            "Dark:ext.clip.readout_shadow_swatch 2.85",
+            "Dark:ext.import.failed_chip_text 3.85",
+            "Light:ext.control_border.toolbar 1.26",
+            "Light:ext.import.included_tile 1.37",
+            "Light:ext.import.failed_chip_text 3.85",
+            "Shadowroom High Contrast Dark:ext.import.failed_chip_text 3.85",
+            "Shadowroom High Contrast Light:ext.clip.readout_highlight_swatch 2.92",
+            "Shadowroom High Contrast Light:ext.import.failed_chip_text 3.85"
+          ],
+          "evidence": "Strict (baseline rule) unchanged 97.1: 134/138 core pairs, the 4 failures are the choice-group hairlines (1.41/1.29 Dark, 1.26/1.32 Light), now a recorded decision (a) that I agree with, so the lenient variant is 100. New r5 tokens all pass on chrome: warning #e8893a/#9a4d10 6.8/5.8 on bars, 5.4-7.4 as text on every surface; label blue #a3a6f0/#4c49b8 7.8/6.8 on panel; ledger reviewed vs rail 3.29/3.19 (HC 5.08/4.03, the r4 HC failure fixed), bracket 6.0-13.9; highlighted destructive row 10.6/12.1 (R4-a11y-02 fixed); REJECT stamp 5.78 over a white sky; palette match underline 10.6-21.0; menu l"
+        },
+        {
+          "criterion": "keyboard",
+          "before": 57.9,
+          "r1": 63.2,
+          "r2": 73.7,
+          "r3": 73.7,
+          "r4": 78.9,
+          "r5": 78.9,
+          "passed": {
+            "r4": 15,
+            "r5": 15
+          },
+          "applicable": 19,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "K13",
+            "K14",
+            "K17",
+            "K19"
+          ],
+          "evidence": "No flips (15/19). r5 fixes order problems inside dialogs: Preferences controls exist only in the visible section and Tab follows visual order with reveal-on-Tab; the quit prompt's Tab order follows each platform's button order. Escape now cancels a waiting quit in every view (desktop.rs:5366, before overlays), lights-out steps back one level per Escape, F11 toggles full screen, Add host stays open 'Connecting…' and Escape closes it. Ctrl+Q is still the first statement of key() and still waits for a running copy. Still failing: control-level focus (K13), main-window Tab order (K14), Quit accele"
+        },
+        {
+          "criterion": "pointer",
+          "before": 57.1,
+          "r1": 71.4,
+          "r2": 71.4,
+          "r3": 71.4,
+          "r4": 71.4,
+          "r5": 71.4,
+          "passed": {
+            "r4": 10,
+            "r5": 10
+          },
+          "applicable": 14,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "P2",
+            "P6",
+            "P9",
+            "P12"
+          ],
+          "evidence": "No flips (10/14). Image-menu chips grew to 24 px with 4 px gaps (R4-a11y-06), but decision-bar stars stay 20 px under 760 px, scrollbars 12 px, compact controls 24 px and there is still no pressed state."
+        },
+        {
+          "criterion": "text",
+          "before": 33.3,
+          "r1": 33.3,
+          "r2": 33.3,
+          "r3": 33.3,
+          "r4": 77.8,
+          "r5": 77.8,
+          "passed": {
+            "r4": 7,
+            "r5": 7
+          },
+          "applicable": 9,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "T6",
+            "T9"
+          ],
+          "evidence": "No flips (7/9). The type-role pass leaves no literal font size in src/desktop and floors roles at 11 px at 90%; the histogram and keycaps now scale and palette descriptions ellipsize at 125%. Residuals: histogram ticks/readout 9.9 px at 90% (its own 11 x scale, not ui::font), fixed 14/18 px badge boxes, 28 px tick boxes at 150%; grid filenames and IME unchanged."
+        },
+        {
+          "criterion": "color_independence",
+          "before": 60.0,
+          "r1": 80.0,
+          "r2": 80.0,
+          "r3": 80.0,
+          "r4": 80.0,
+          "r5": 80.0,
+          "passed": {
+            "r4": 8,
+            "r5": 8
+          },
+          "applicable": 10,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "C5",
+            "C10"
+          ],
+          "evidence": "No flips (8/10). The ledger is now shape-coded, the Purple swatch and menu chips carry letters, so every label chip has a glyph. C5 stays failing and its worst pair worsened: periwinkle Blue sits closer to Purple (Light protan dE 2.0 vs 4.4), and the new 'warning never reads as a star' / 'blue never reads as the accent' separations exist only for normal vision (protan 0.3, deutan 0.1 in the worst palettes)."
+        },
+        {
+          "criterion": "motion_feedback",
+          "before": 60.0,
+          "r1": 80.0,
+          "r2": 90.0,
+          "r3": 90.0,
+          "r4": 90.0,
+          "r5": 90.0,
+          "passed": {
+            "r4": 9,
+            "r5": 9
+          },
+          "applicable": 10,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "M2"
+          ],
+          "evidence": "No flips (9/10). R4-a11y-03 fixed: Focus mode and lights-out show the closing status and Escape keeps the app open. New stamp and navigator fades respect reduced motion. Lights-out confirms a decision with a 0.5 s stamp and drops the Undo notice. Caret blink still ignored."
+        },
+        {
+          "criterion": "assistive_tech",
+          "before": 14.3,
+          "r1": 14.3,
+          "r2": 28.6,
+          "r3": 28.6,
+          "r4": 57.1,
+          "r5": 57.1,
+          "passed": {
+            "r4": 4,
+            "r5": 4
+          },
+          "applicable": 7,
+          "flipped_r4_r5": [],
+          "failing_r5": [
+            "A1",
+            "A2",
+            "A7"
+          ],
+          "evidence": "No flips (4/7). High Contrast improves (ledger fixed, warning and blue retuned) but still leaves on-photo roles at standard strength; no accessibility tree; imported-theme diagnostics unchanged."
+        },
+        {
+          "criterion": "platform_conventions",
+          "before": 46.7,
+          "r1": 60.0,
+          "r2": 60.0,
+          "r3": 60.0,
+          "r4": 66.7,
+          "r5": 60.0,
+          "passed": {
+            "r4": 10,
+            "r5": 9
+          },
+          "applicable": 15,
+          "flipped_r4_r5": [
+            "L8 P->F"
+          ],
+          "failing_r5": [
+            "L2",
+            "L4",
+            "L5",
+            "L6",
+            "L8",
+            "L12"
+          ],
+          "evidence": "One flip down (10 -> 9 of 15): L8 regresses because exports now always use the built-in picker, on macOS too (decision (c), which I do not accept: the portal can take a title and start folder; GPUI's wrapper cannot). Notifications improved (Linux desktop-entry hint, pulled-card and failed-export notifications) but macOS still posts through osascript. F11 full screen follows Linux/Windows; macOS gets no equivalent."
+        }
+      ],
+      "mean": {
+        "criterion": "unweighted mean of 8 categories (contrast strict)",
+        "before": 50.6,
+        "r1": 62.8,
+        "r2": 67.1,
+        "r3": 66.8,
+        "r4": 77.4,
+        "r5": 76.5,
+        "delta_r4_r5": -0.9,
+        "lenient_outline_contrast_variant": {
+          "before": 50.9,
+          "r1": 62.8,
+          "r2": 67.1,
+          "r3": 67.1,
+          "r4": 77.7,
+          "r5": 76.9,
+          "delta_r4_r5": -0.8
+        }
+      },
+      "decisions": {
+        "a": "Agree. WCAG 1.4.11 does not require a boundary for text-labelled segments; the chosen segment's 2 px text bar on its fill (4.71-15.98:1 in all four palettes) and the focus ring (3.35-10.6:1) carry the state, and the desktop test asserts both on panel, dialog and toolbar surfaces. Residual: keycaps and Import tiles are hairlines outside the decision's wording (advisory; checkbox/text carry state).",
+        "b": "Agree. Below 600 px (desktop.rs:12985) the photo keeps the filmstrip's height, a one-time hint says so, keyboard navigation is unaffected and the 16 px ledger band still jumps to any frame with shape-coded marks. Cost: thumbnails' badges leave the screen, which is exactly the 200%-scaling case (960x540 logical); Survey/Compare remain one key away.",
+        "c": "Disagree from the accessibility side. Exports now never show the native chooser (chooser_for folder_picker.rs:93-110), on macOS too although the rationale names Linux. The portal FileChooser itself takes a title and current_folder (the limit is GPUI 0.2.2's prompt_for_paths), and the native dialog is the one file UI that GTK/AppKit expose to screen readers, while the built-in picker has no accessibility tree (A1). L8 regresses to fail."
+      },
+      "finding_status_r5": {
+        "unresolved": 15,
+        "resolved": 29,
+        "partial": 11,
+        "regressed": 1
+      }
+    },
+    "review": {
+      "criteria": [
+        {
+          "criterion": "N1_visibility_of_system_status",
+          "before": 1.5,
+          "r1": 3.5,
+          "r2": 4.0,
+          "r3": 4.5,
+          "r4": 4.5,
+          "r5": 4.5,
+          "evidence": "All three r4 blockers to 5 are fixed. (1) Pressing J or F now says 'Preparing clipping…' until the overlay copy exists, and settle_aid swaps in 'Clipping shown' once it is on the photo (loupe_aids.rs:163-235; impl-r5-loupe r5_focus_notice status 'Clipping shown …' with stripes present). (2) A bucket that holds an unreviewed frame under a decided majority keeps a 1 px notch (ledger.rs:282-296), with a unit test for 2,000 frames over 450 cells. (3) At 1024 a hairline bracket marks the frames the strip shows, x 16-619, over ticks for frames 1-6 (r5 loupe_review 1024; ledger.rs:174-185, desktop.rs"
+        },
+        {
+          "criterion": "N2_match_with_real_world",
+          "before": 3.0,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "'Shadows' now means near-black on every channel (≤2), so saturated grass no longer reads as crushed shadow (peaking.rs:138-150; impl-r5-loupe r4_clipping: 2 blue pixels on 05-wildlife, previously the meadow was flooded). 'Review' is no longer doubled: the inspector tab is 'Culling' (desktop.rs:10531-10535; r5 loupe_review) and the palette says 'Review View' (desktop.rs:4827). The stamp speaks a photographer's words ('PICK', 'REJECT', '★★★★'). Not 5: 'Lights out' in the light and High Contrast Light themes leaves a #dcdcdc / #d6d6d6 surround, which is not what the name promises (R5-review-04). "
+        },
+        {
+          "criterion": "N3_user_control_and_freedom",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 4.0,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "The navigator now fades after 1.5 s of stillness and returns on pointer movement over the photo or any pan or zoom (culling.rs:199-247; impl-r5-loupe r5_navigator_idle has no navigator at 100%). Focus mode is a clear ladder: Shift+Tab steps off → Focus → lights-out → off, and Esc steps back one level (loupe_aids.rs:274-317). F11 toggles full screen (desktop.rs:4209, 5709). Not 5: the decision chip still cannot be hidden, and in lights-out it is the only chrome left on the photo (r5_lights_out: chip at top-left; R2-review-06). Turning J off keeps the old striped copy on screen until the plain c"
+        },
+        {
+          "criterion": "N4_consistency_and_standards",
+          "before": 2.5,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "Red has one meaning again. Highlights are magenta stripes (255,51,204), shadows solid blue (0,72,255), peaking red, and reject red only in decisions (peaking.rs:120-129; impl-r5-loupe r5_clip_peak shows red edges and blue shadows apart). The histogram swatches and end markers use the overlay inks (histogram.rs ClipPart swatches; clip markers at 583+). The ledger follows one rule at every size: per-frame cells over the strip only when all frames fit, otherwise a gapless minimap with a bracket. Focus Mode has its own glyph (desktop.rs:134, 4981). Not 5: docs/THEMES.md:152 says the reviewed bar i"
+        },
+        {
+          "criterion": "N5_error_prevention",
+          "before": 2.5,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "The clipping aid stopped crying wolf. Of the five demo photos, only 01-alpine warns ('Shadows 1.6%' in orange, over trees that really are black: r5_clip_peak). 02, 06 read 'No clipping', and 04 (1.3%) and 05 (1.2%) show colour clipping below the 2% CHANNEL_WARNING (histogram.rs:168, 441-480). One shared classify() feeds both the overlay and the readout, with a unit test (peaking.rs:138-150, tests). Alt+digit still never rates. Not 5: thin colour-clipping stripes turn into speckle at Fit, so the 'blown vs colour-clipped' distinction the stripes encode is lost exactly where cullers look (R5-revi"
+        },
+        {
+          "criterion": "N6_recognition_rather_than_recall",
+          "before": 2.5,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.0,
+          "evidence": "Gains: the Purple chip now carries 'P' in the inspector (r5 loupe_review label row), and the stamp names each decision. Losses that offset them: the Focus-mode entry notice ('Shift+Tab again for lights out · Esc to exit') is the only place lights-out is taught on screen. It is ellipsised at 1024 and 800, and hint_once never repeats it (culling.rs:1126). F11 has no palette entry, although a 'fullscreen' icon is registered (desktop.rs:131) (R5-review-07). There is still no star hover preview and no key for Purple. Held at 4.0."
+        },
+        {
+          "criterion": "N7_flexibility_and_efficiency",
+          "before": 3.0,
+          "r1": 3.0,
+          "r2": 4.0,
+          "r3": 4.0,
+          "r4": 4.5,
+          "r5": 4.5,
+          "evidence": "Added: lights-out (photo 1291×860 at 1440×900, 961×640 at 1024×680), F11, a notch to find skipped frames, and Next Unreviewed on a modified arrow (desktop.rs:5584). Toggling one aid no longer drops the other, because the last overlay copy stays until the new one is ready (desktop.rs:7803-7826; R4-review-04). Not 5: still no wheel over the filmstrip (REV-20), and the zoomed overlay prefetch still covers one direction only."
+        },
+        {
+          "criterion": "N8_aesthetic_and_minimalist_design",
+          "before": 3.0,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "Focus-mode notices no longer cover the photo (r5 focus_mode 1440/1024: nothing inside the image bounds). The navigator steps aside. The clipping noise is gone. Lights-out is close to an ideal culling surface: the photo, an 8 px ledger and a brief stamp on a 94% plate (impl-r5-loupe r5_lights_out_stars mid). The ledger reads as an account book: picks stand above the line, rejects hang below it, reviewed frames are a grey bar on it (l1440 crop). Lost half a point: a docked 'Focus m…' fragment looks broken, and the always-on chip clutters lights-out."
+        },
+        {
+          "criterion": "N9_help_recognize_and_recover_from_errors",
+          "before": 2.5,
+          "r1": 3.0,
+          "r2": 4.0,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.0,
+          "evidence": "Lights-out keeps what must not wait: the closing status with 'Esc keeps Shadowroom open', failed saves and warnings appear on a plate above the ledger (loupe_aids.rs:490-560), and Focus mode puts the save-failure control in the bar. Undo in lights-out gives no visible confirmation except the chip changing, because the stamp fires only from apply_decisions (desktop.rs:3340) and Info notices are filtered out (R5-review-03). No step up."
+        },
+        {
+          "criterion": "N10_help_and_documentation",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 4.0,
+          "r3": 4.5,
+          "r4": 4.5,
+          "r5": 4.5,
+          "evidence": "CONTROLS.md documents lights-out, the stamp, F11, the shape-coded ledger, the bracket and the notch (CONTROLS.md:29-30, 51). The J notice explains the new inks. Remaining: F11 appears in no palette item and not in the Guide, the in-app teaching of lights-out is truncated at laptop widths, and THEMES.md disagrees with the code on the reviewed bar."
+        },
+        {
+          "criterion": "visual_polish",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "evidence": "The r4 blockers are fixed: the 1024 ledger has a bracket and runs without gaps, so it no longer reads as a mislabelled row, the navigator fades, and no plate sits over the photo. The light, HC Light and HC Dark ledgers all keep shape coding with tokens that pass the theme tests (theme.rs:1033-1070). The stamp is quiet and legible (dark and HC Light crops). Not 5: the 'Focus m…' / 'Focus mode ·…' fragment, thin stripes aliasing to dots at Fit (clipz crop of impl-r5-loupe r4_clipping), and a light-grey 'lights out'."
+        },
+        {
+          "criterion": "expert_efficiency",
+          "before": 2.5,
+          "r1": 3.5,
+          "r2": 4.0,
+          "r3": 4.0,
+          "r4": 4.5,
+          "r5": 4.5,
+          "evidence": "Re-ran the 2,000-frame wedding cull against r5 (details in the report). Pass 1 in lights-out at 1440 gives a 1291×860 photo, a 0.5 s stamp per decision, and the playhead marching along an 8 px ledger. Focus checks with Alt+1 leave the photo clean after 1.5 s, apart from the chip. J and F can both stay on, because highlights and peaking no longer collide. 'Am I done?': with 2,000 frames over about 912 px, every skipped frame either wins its 2 px bucket (empty rail) or leaves a 1 px notch. Clicking it lands within 4 frames, and Next Unreviewed finishes the job. That is a real answer at a glance,"
+        }
+      ],
+      "mean_nielsen": {
+        "before": 2.65,
+        "r1": 3.15,
+        "r2": 3.75,
+        "r3": 4.05,
+        "r4": 4.15,
+        "r5": 4.4
+      },
+      "mean_all_12": {
+        "before": 2.667,
+        "r1": 3.208,
+        "r2": 3.75,
+        "r3": 4.042,
+        "r4": 4.167,
+        "r5": 4.417
+      },
+      "finding_status_r5": {
+        "resolved": 45,
+        "partial": 5,
+        "unresolved": 1
+      }
+    },
+    "catalog": {
+      "criteria": [
+        {
+          "criterion": "N1_visibility_of_system_status",
+          "before": 2.0,
+          "r1": 3.0,
+          "r2": 3.8,
+          "r3": 4.2,
+          "r4": 4.3,
+          "r5": 4.5,
+          "evidence": "r5: drive copy state is now the row's trailing column (flex_shrink_0, whitespace_nowrap, muted LABEL size) while the name ellipsizes via the shared row's flex_1/min_w(0) (desktop.rs:7276-7300, 6929-6932). States are short: 'Copying 42%', 'Paused 42%', 'Queued', 'Safe to eject', 'N failed', 'Cancelled', 'Stopped', 'N new' (ingest_ui.rs:762-800, unit test ingest_ui.rs:5603-5671). The rating menu counts each level for the current scope (desktop.rs:7636, 7657-7662; shots/r5/rating_filter_menu: 7/4/4/3/2/1, correct for the fixture). The ledger is shape-coded: picks sit above the rail, reviewed on i"
+        },
+        {
+          "criterion": "N2_match_real_world",
+          "before": 2.5,
+          "r1": 2.7,
+          "r2": 3.2,
+          "r3": 3.6,
+          "r4": 3.7,
+          "r5": 3.9,
+          "evidence": "r5: the guide now describes both verbs correctly ('Open Folder… (Ctrl+O) culls photos where they are; nothing is copied. Import from Card… (Ctrl+Shift+I) copies and verifies…', help.rs:28-35; shots/r5/first_run_getting_started). The palette reads 'Rate ★ / 1 star' (desktop.rs:5118-5130). The empty-state body says one sentence per verb. Remaining: with no removable card, 'Import from Card…' still opens a folder chooser (ingest_ui.rs:1138-1141), and the Linux picker title for Open Folder is 'Open photo folder' (folder_picker.rs:17). The 'Blue' label is now periwinkle/violet (#a3a6f0 dark, #4c49b"
+        },
+        {
+          "criterion": "N3_user_control_freedom",
+          "before": 3.0,
+          "r1": 3.3,
+          "r2": 4.0,
+          "r3": 4.2,
+          "r4": 4.2,
+          "r5": 4.2,
+          "evidence": "No change in r5. reveal_photo still calls clear_filters() and announces 'Showing all photos to find …' with no way back (search.rs:134, 151; search.rs is unchanged since r4). The rating menu now takes 0-5, arrows and Enter while it is open (desktop.rs:5429-5442), which is efficiency, not control. Sidebar 'All photos' still clears every constraint in one click."
+        },
+        {
+          "criterion": "N4_consistency_standards",
+          "before": 2.0,
+          "r1": 2.2,
+          "r2": 2.9,
+          "r3": 3.4,
+          "r4": 3.5,
+          "r5": 3.9,
+          "evidence": "r5 fixes: one Reset name in the menu, palette and guide (copy::RESET_DECISION 'Reset Rating and Flag', copy.rs:377; shots/r5/grid_context_menu), with 'Reset' kept as the bar's short form. 'Open in Review' is hidden while in Review (review_actions.rs:385; impl-r5-overlays/context_menu_keyboard). All popovers draw on one menu_surface() with the shared 4/14 px shadow (dialog.rs:357-372, used by the rating menu desktop.rs:7638 and the image menu review_actions.rs:724). The guide's empty-library primary is now 'Import from Card…', the same as the empty state. New drift: the palette names the views "
+        },
+        {
+          "criterion": "N5_error_prevention",
+          "before": 2.0,
+          "r1": 2.4,
+          "r2": 3.6,
+          "r3": 3.7,
+          "r4": 4.0,
+          "r5": 4.2,
+          "evidence": "r5: the palette stays precise beside photo and folder results (desktop.rs:376-420, test palette_stays_precise_beside_photo_results desktop.rs:13771). 'demo' now lists only the 'Demo Shoot' folder, not 'Delete Permanently…' (impl-r5-overlays/palette_demo). A loose fuzzy match can still show up for short queries ('exp' lists 'Toggle 100% Zoom' via its description, shots/r5/palette_query), but no destructive command appears that way in the captures. The rating menu now owns digit keys, so 0-5 can't rate the photo behind it (desktop.rs:5430-5431)."
+        },
+        {
+          "criterion": "N6_recognition_over_recall",
+          "before": 2.5,
+          "r1": 2.6,
+          "r2": 3.3,
+          "r3": 3.5,
+          "r4": 3.9,
+          "r5": 4.1,
+          "evidence": "r5: the rating menu shows a boxed digit for each row (keycaps, desktop.rs:7663-7669), and the trigger tooltip says 'Filter by minimum rating · 0-5 choose in the menu' (desktop.rs:7458). Palette matches are underlined and set in medium weight (desktop.rs:11405-11416; impl-r5-overlays/palette_lake). Still recall-bound: the trigger has no shortcut, rows are six identical hollow stars, and the new Purple 'P' looks like a keycap but no P key applies a purple label."
+        },
+        {
+          "criterion": "N7_flexibility_efficiency",
+          "before": 2.0,
+          "r1": 2.1,
+          "r2": 3.0,
+          "r3": 3.2,
+          "r4": 3.8,
+          "r5": 3.9,
+          "evidence": "r5: arrow/Enter/digit navigation in the rating menu, a precise palette next to photo results. Unchanged: no shortcut that opens or sets the rating filter (Cmd::RatingFilter's palette key is '', desktop.rs:4949-4955), no folder-name disambiguation, no collapsible sidebar sections, and search covers filenames only."
+        },
+        {
+          "criterion": "N8_aesthetic_minimalist",
+          "before": 3.0,
+          "r1": 3.2,
+          "r2": 3.6,
+          "r3": 3.9,
+          "r4": 3.9,
+          "r5": 4.1,
+          "evidence": "r5: the empty library has two buttons (primary 'Import from Card…', secondary 'Open Folder…'), a two-line body of about 470 px, and one keycap hint row (culling.rs:759-848; shots/r5/empty_workspace). Other drives appear as a muted 'or import from …' text line, skipping the card the primary would open. The status bar drops the ~130 px theme name for an icon. Palette descriptions end in an ellipsis. Remaining clutter: the sidebar and inspector toggles still appear twice (title bar plus status bar, toolbar plus status bar). The status bar's right edge is four look-alike 24 px icons, two of which "
+        },
+        {
+          "criterion": "N9_error_recognition_recovery",
+          "before": 2.5,
+          "r1": 2.8,
+          "r2": 3.6,
+          "r3": 3.9,
+          "r4": 4.1,
+          "r5": 4.2,
+          "evidence": "r5: a drive row now says when an import on it stopped short ('1 failed', 'Cancelled', 'Stopped' via needs_attention, ingest_ui.rs:783-797). Unchanged in Catalog: Duplicates has no 'Reject Extras', Trash has no 'Delete All Permanently…' (shots/r5/duplicates_results, trash_view), and widening a photo search has no undo."
+        },
+        {
+          "criterion": "N10_help_documentation",
+          "before": 3.0,
+          "r1": 3.1,
+          "r2": 3.6,
+          "r3": 3.9,
+          "r4": 3.7,
+          "r5": 4.0,
+          "evidence": "r5 removes the r4 regression: section 1 teaches both verbs with their own shortcuts, and the test asserts that 'Add Photos' and 'Reset Stars' are absent (help.rs:28-35, 300-310). The guide's buttons are 'Open Folder…' plus primary 'Import from Card…', matching the empty state. Residuals visible in shots/r5/first_run_getting_started: the quick keys still wrap 'H / Histogram' onto a second line, and section 3 breaks 'pick' and '/reject' across lines."
+        },
+        {
+          "criterion": "visual_polish",
+          "before": 2.5,
+          "r1": 3.2,
+          "r2": 3.5,
+          "r3": 3.9,
+          "r4": 4.0,
+          "r5": 4.2,
+          "evidence": "r5: the rating menu has the shared shadow (light: #b7b8bc / #cfd0d2 / #d8d9db at 2 / 5 / 9 px below its bottom edge, fading to the canvas), counts, and boxed digits. Menu label chips are larger, with initials. Palette descriptions ellipsize instead of clipping. The ledger has a clean three-level shape code. The status bar is less crowded. Still held back: the hover fill is unchanged (#171717 on #0f0f0f). In light theme a label's chip and strip still differ in the same cell (Yellow chip #d9bd72 vs strip #7e6200, Red #e0918a vs #b3362e, Blue #a3a6f0 vs #4c49b8; sampled from r5 catalog_grid__ligh"
+        },
+        {
+          "criterion": "expert_efficiency",
+          "before": 2.0,
+          "r1": 2.1,
+          "r2": 3.0,
+          "r3": 3.2,
+          "r4": 3.7,
+          "r5": 3.8,
+          "evidence": "r5: rating-menu keys and a precise mixed palette ('lake' returns only 02-lakeside.jpg, impl-r5-overlays/palette_lake). Still behind Photo Mechanic and Lightroom: no Reject Extras, no bulk empty-Trash, no direct rating-filter key (Alt+0-5), no folder disambiguation or collapsible sections, and search can't widen without losing the working set."
+        }
+      ],
+      "means": {
+        "before": 2.42,
+        "r1": 2.73,
+        "r2": 3.43,
+        "r3": 3.72,
+        "r4": 3.9,
+        "r5": 4.08,
+        "delta_r4_r5": 0.18
+      },
+      "finding_status_r5": {
+        "resolved": 40,
+        "unresolved": 4,
+        "partial": 6
+      }
+    },
+    "io": {
+      "criteria": [
+        {
+          "criterion": "N1_visibility_of_system_status",
+          "before": 1.5,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: the Completed outcome now stays in the panel instead of the panel closing and jumping to the grid (commit d58a625; ingest_ui.rs outcome kept). Otherwise the same as r2: export progress was 'Exporting · 1 job', the drive row had no state and there were no OS notifications. r4: the sidebar drive row carries 'Copying 42% / Paused / Starting / Queued' (drive_state, ingest_ui.rs:735-750, test :4931). A job copying another card gets its own footer row with a mini bar ('CARD_A · Paused 0 of 5 · 212 of 674 MB', ingest_ui.rs:4170-4220; impl-r4-ingest-3/r4i_queued), and the status bar adds '· 1 queued'. A pulled card reads 'EOS_DIGITAL was removed · 4 of 5 photos verified · reinsert the card to continue' (desktop/copy.rs:231; r4i_card_removed). The return is announced, desktop notifications fire on finish (ingest_ui.rs:1103, 4805-4840), and History has status chips. Still missing: export progress is still 'Exporting · 1 job' (desktop.rs:12109); a pulled card or a failed export never reaches the OS while the window is in the background (ingest_ui.rs:993-1003 announces only in-app); and the panel outcome 'Imported 5 photos' disagrees with the status bar's 'Imported 4 photos, 1 video' (r4i_card_reinserted).",
+          "evidence": "r5: each card keeps its result. A card that is not on screen gets a footer band, for example 'FAIL_A · Import stopped · 4 photos of 5 imported and verified · 1 failed [Details] [Retry failed] [Show manifest] ✕' (impl-r5-io-final/r5io_a_failed_b_shown). A pulled card fires a desktop 'Import paused' notification, and its return fires 'Import continues' (ingest_ui.rs:1263-1287). A failed export notifies too (feedback.rs:347-367, desktop.rs:2573-2581). History's running rows read 'N of M photos' (ingest_ui.rs:4101-4114), and Add host shows 'Connecting to 10.255.255.1… checking that shadowroom-remo"
+        },
+        {
+          "criterion": "N2_match_real_world",
+          "before": 2.0,
+          "r1": 2.0,
+          "r2": 3.0,
+          "r3": 3.0,
+          "r4": 3.5,
+          "r5": 4.0,
+          "r4_justification": "r3: 'free on this disk' replaced 'free on Library' (r3 import_panel). Entry labels were unchanged ('Add photos', 'Open folder…', 'Import from Card/Folder…' at 05c6fc1 desktop.rs:4343, 6504, 6704), and History rows still printed the UUID and verification field (05c6fc1 ingest_ui.rs:2984). r4: there are now two honest verbs. 'Import from Card…' copies and verifies; 'Open Folder…' culls in place ('Import from Card copies and verifies into your library · Open Folder culls where the files are, nothing is copied', impl-r4-ingest-3/empty_workspace). The built-in picker is titled after its verb ('Open folder to cull in place', folder_picker.rs:589-600), and History reads 'Mon 16 Nov · 06:47 · FLAKY · 4 photos · 2.9 MB → Library [Failed · 1]'. New mismatches: in production on Linux the native portal chooser is titled 'Open Folder' for every purpose, including Import and both exports (gpui-0.2.2 platform/linux/platform.rs:306-309), with 'Export Here' as the accept label for picks and XMP alike (folder_picker.rs:92-99). Videos are counted as 'photos' ('Imported 5 photos' for 4 photos + 1 video, ingest_ui.rs:1035, 1194). 'Open manifest' actually reveals the file (Cmd::RevealPath, ingest_ui.rs:3905, 4118).",
+          "evidence": "r5: there is one count helper, media_count/import_result (desktop/copy.rs:162-215), so the outcome, status bar, notification, queue notice and History all read '4 photos, 1 video' (test copy.rs:677-727). The picks header now counts sidecars with the same discovery the export uses: '2 files · 1.3 MB.' (catalog.rs:1215-1224, folder_picker.rs:603-640; r5 export_picks_dialog). The completion notice reads 'Exported 2 picks (2 files) to picks-51' (r5 import_panel status bar), and 'Open manifest' became 'Show manifest', which matches what it does. Residual issues: the pulled-card sentence and History"
+        },
+        {
+          "criterion": "N3_user_control_freedom",
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: Mark and Cancel confirmations no longer expire. They stay until answered, Enter confirms and Esc keeps (confirm without TTL, ingest_ui.rs:384-396, 1874-1890), and palette Cancel Import now raises the same prompt instead of cancelling outright ('cancel_now' arms IngestConfirm::Cancel, ingest_ui.rs:1674-1680). r4: a pulled card pauses and resumes by itself, and a user pause made before the pull is respected (Control::lose_source/regain_source, ingest.rs:860-880). Retry failed re-plans exactly the failed photos (ingest_ui.rs:1441-1474). New rigidity: Cancel stops the running job and drops every queued card (worker.rs Cancel branch, cancel_epoch). There is no way to remove one queued card or to skip a pulled card and let the queue move on, so B can wait behind a missing A indefinitely. The consequence is at least stated ('Verified photos stay imported; queued cards are not started.', ingest_ui.rs:4347). Mark as imported still cannot be undone.",
+          "evidence": "r5: Cancel stops only the running card, and the next queued card starts (worker.rs:171-172, 475-481; test tests.rs 'cancel_skips_the_pulled_card_and_starts_the_queued_one'). Each queued card has a ✕ (Dequeue, worker.rs:482-488; ingest_ui.rs:5101-5136), and 'Clear queue' appears when more than one card waits (ingest_ui.rs:4704-4760). While A is out, 'Skip CARD_A · start CARD_B' shows in both A's and B's views (ingest_ui.rs:4973-4999, 5139-5165; r5io_b_queued_a_out). The Cancel confirm says '{next} starts next'. Remaining: Mark as imported is still final. A dispatcher race can let Skip or Cancel"
+        },
+        {
+          "criterion": "N4_consistency_standards",
+          "before": 2.0,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: the picker gained the shared ✕ and lost the duplicate Home (874ceb6; r3/r4 folder_picker shots). The six entry labels remained. r4: the entry labels map 1:1 to Cmd::Import and Cmd::OpenFolder (culling.rs:774-786, desktop.rs:3688-3692). History is a styled list with chips and a header History button, and dialog chrome is uniform. New inconsistencies: the built-in picker's static hint 'Enter Open · Ctrl+Enter Use' (folder_picker.rs:898) contradicts the primary buttons 'Open “Library”', 'Import “…”', 'Export to “Library”' and 'Write 1 sidecar' (folder_picker.rs:585-602). The native and built-in choosers word the same action differently. Outcome and status counts disagree. After a failure, 'Retry failed' and the footer's 'Import 1 photo' do the same thing (r4i_failed_details).",
+          "evidence": "r5: the picker's footer hints are keycaps whose verbs match the button: 'Ctrl Enter Export' with 'Export to “Library”', 'Ctrl Enter Open' with 'Open “data”', and 'Enter Go into' (folder_picker.rs:965-975; r5 export_picks_dialog, folder_picker). The two exports are told apart again ('Export 2 picks in this view' versus 'Export decision XMP for 1 selected photo' / 'Write 1 sidecar'). One count is used everywhere. After a failure there is exactly one Retry button ('Retry 1 photo · 675 KB', retry_is_primary, ingest_ui.rs:4431-4440; r5io_failed_tile). New small inconsistencies: Cancelled results an"
+        },
+        {
+          "criterion": "N5_error_prevention",
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: palette Cancel is guarded, so a stray command no longer cancels a copy. The export default (Library root) and the unrecoverable Mark were unchanged. r4: a second card is planned and queued instead of refused, and the worker refuses a duplicate source ('This source is already importing/queued', worker.rs Start branch). A queued plan is re-preflighted before it starts (worker.rs queue launch), a reinserted card is never rescanned or queued twice (Jobs::busy_with), and photos lost to a pull are deferred rather than counted as failures (copy.rs fold/deferred). A native export choice still goes through check_export_destination (folder_picker.rs:175-196, catalog.rs:1575). Remaining: the built-in export picker still opens on the import Library root on first use (desktop.rs:3343-3352; r4 export_picks_dialog says 'Export to “Library”'); the native path drops the remembered folder because `initial` is never passed (folder_picker.rs:140-150); and Mark as imported is still final.",
+          "evidence": "r5: exports always use the built-in picker, which shows the header, the remembered folder and the in-app folder rule (chooser_for, folder_picker.rs:93-109, test :1035-1069). Open Folder no longer starts in the import Library: it starts at the last opened folder, else a card, else Pictures (desktop.rs:3524-3545; r5 folder_picker opens /mnt/data with 'Open “data”'). A read error now waits up to 1.5 s, probing every 250 ms, before counting a photo as failed (LOSS_GRACE, copy.rs:1268-1384). A card is followed to a new mount only by filesystem UUID (copy.rs:1294-1305), and every rebased read still "
+        },
+        {
+          "criterion": "N6_recognition_over_recall",
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: timeline rows show their counts again (R2-io-01 fixed). History still had to be recalled. r4: History rows give the date, time, source, count, size, destination and a status chip, and expand to show errors with Reveal and Open manifest (ingest_ui.rs:3758-3920; r4i_history). The header of a queued card's view shows 'Import from CARD_B', and the button reads 'Queued · starts after CARD_A'. Remaining: a failed photo has no mark on its tile, so finding it means reading Details (r4i_failed_details: FLA_9999 looks like any new photo).",
+          "evidence": "r5: a failed photo has a red outline and a '⚠ Failed' chip carrying the error (ingest_ui.rs:1366-1390, ~2457; r5io_failed_tile, #d46a6a on the near-black plate is about 5:1). A Details line that names a photo jumps to its tile (show_group, ingest_ui.rs:4600-4620). Another card's result names the card ('CARD_A · Cancelled …'). History offers Retry failed only where a retry still makes sense ('superseded', ingest_ui.rs:4163-4172). Remaining: there are no palette entries for Retry failed, Skip or Clear queue, and a card back at a new mount point shows no state in the sidebar (drive_state compares"
+        },
+        {
+          "criterion": "N7_flexibility_efficiency",
+          "before": 1.5,
+          "r1": 1.5,
+          "r2": 3.0,
+          "r3": 3.0,
+          "r4": 4.0,
+          "r5": 4.0,
+          "r4_justification": "r3: the confirmations became keyboard-answerable (Enter/Esc), and import palette commands appear only where they act (609f96a). There was still no queue and scanning was refused while a job ran (05c6fc1 worker.rs 'An import is running; wait or cancel…'). r4: card B can be scanned on its own scan_control while A copies, and Start queues it (worker.rs Lanes/Jobs). Ctrl+Shift+I picks the first card that is not already importing (import_from_card, ingest_ui.rs:873-893), Ctrl+O culls in place, Retry failed is one click, and the next card starts when the current one ends. Still missing: Retry failed, Details, Open manifest and removing a queued card have no palette entries or shortcuts (no 'retry_failed' palette item in desktop.rs).",
+          "evidence": "r5: Skip, per-card ✕, Clear queue, and Retry failed from another card's band or from History all save rescans and restarts. They are all exposed to automation (ingest_dequeue, ingest_clear_queue, ingest_retry_failed, ingest_ui.rs:1660-1690). They are still mouse-only in the app. The palette has Start, Pause or Resume, and Cancel Import (desktop.rs:4657-4677) but no Retry Failed, Skip Missing Card, Remove from Queue or Clear Queue, and none has a shortcut. Score unchanged."
+        },
+        {
+          "criterion": "N8_aesthetic_minimalist",
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3.0,
+          "r3": 3.0,
+          "r4": 3.0,
+          "r5": 3.5,
+          "r4_justification": "r3: the duplicated 'Library · path' header is gone and the Import panel is otherwise unchanged. r4: the footer now stacks up to four bands: another job's row, the outcome strip with three or four buttons, the trust line, then the summary and button (r4i_queued, r4i_failed_details). The same sentence repeats in the footer and the status bar ('EOS_DIGITAL was removed · 4 of 5 photos verified · reinsert…' appears twice in r4i_card_removed). History, the picker and the empty state are clean.",
+          "evidence": "r5: the footer is capped at two bands above the action row, by priority, and the trust line yields first (ingest_ui.rs:4786-4851, take(2); r5io_failed_tile shows two result bands and no trust line). This fixes the r4 four-band stack. Offsetting this: another card's failure is still repeated word for word in the status bar (r5io_a_failed_b_shown). 'Skip CARD_A · start CARD_B' is a very long secondary button beside 'Queued · starts after CARD_A ✕'. The right edge stacks three ✕ glyphs with three meanings (dismiss this result, dismiss the other result, close Import)."
+        },
+        {
+          "criterion": "N9_error_recovery",
+          "before": 1.5,
+          "r1": 2.0,
+          "r2": 2.5,
+          "r3": 2.5,
+          "r4": 4.0,
+          "r5": 4.5,
+          "r4_justification": "r3: no change. There was no source-missing path, errors were joined with '; ', and there was no Details or manifest. r4: a pulled card is detected (source_present: root lists, parent exists, same volume identity, copy.rs:1248-1260). The job pauses with verified work committed, nothing is counted as failed, and it resumes on reinsertion with the deferred photos retried (copy.rs:1391-1445; test tests.rs:1336 asserts failed==0, no duplicates, card untouched). A failed job leaves 'Import stopped · 4 of 5 photos imported and verified · 1 failed' with Details (one error per line, scrollable to 160px), Retry failed and Open manifest (ingest_ui.rs:4040-4170). Gaps: the outcome is kept only when the panel shows that card (`if here`, ingest_ui.rs:1112), so with card B on screen, A's Details and Retry failed are unreachable. The pull is classified the instant a read fails, so on real hardware a lingering mount can count the in-flight photo as failed (tests only simulate a pull by renaming, tests.rs:1324). Remounting at a different path never resumes.",
+          "evidence": "r5: R4-io-06 is fixed in the engine. An EIO 500 ms before the mount goes is deferred, not failed (tests.rs 'a_read_error_shortly_before_the_card_vanishes_is_deferred_not_failed'). Errors on a present card fail after one grace period (':read_errors_on_a_present_card_fail_after_one_grace_period'). A card back at another mount point resumes there with no duplicates and the card untouched (':a_card_back_at_another_mount_point_resumes_there_without_duplicates'), and a label-only card is never followed. R4-io-07 is fixed as well: A's Details and Retry failed stay in B's footer, and History rows have"
+        },
+        {
+          "criterion": "N10_help_documentation",
+          "before": 2.5,
+          "r1": 3.0,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 4.0,
+          "r4_justification": "r3: unchanged. r4: the empty state explains both verbs, the picker subtitles say 'Photos stay where they are; nothing is copied' and 'Copies and verifies photos into your library; the source is never modified', the queued and pulled states explain themselves, and INGEST.md documents queueing and pulls (e4bc549). Offsetting this, the default native chooser on Linux shows none of the export explanations (count, size, 'originals are copied byte for byte and verified'), only 'Open Folder' and 'Export Here'. Add host still says 'Enter checks the agent' with no shadowroom-remote prerequisite (r4 add_host_dialog).",
+          "evidence": "r5: INGEST.md documents the queue, Skip, pulled cards, the new-mount-point behaviour and per-card results (4ae17e8). EXPORT.md explains why exports keep the built-in picker. Add host now states the prerequisite: 'The host needs shadowroom-remote installed and on its PATH.' (r5 add_host_dialog), and the command field is empty with the default shown as a placeholder. The Preferences notify row says 'finishes or needs attention (a card was removed, an export failed)' (ingest_ui.rs:5371). Residual: Add host's failure text is protocol jargon (network.rs:695)."
+        },
+        {
+          "criterion": "visual_polish",
+          "before": 2.5,
+          "r1": 2.5,
+          "r2": 3.0,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 3.5,
+          "r4_justification": "r3: timeline counts are no longer clipped, the Ctrl+Enter hint is drawn in full ink (6.65:1 measured on r4 import_panel dark versus 4.62 at r2), and inactive fields have the 3:1 outline. r4: History chips (Verified green outline, Failed · 1 red outline, Cancelled neutral) are on identity and flat with hairline borders, and the picker is tidy. Defects: the day-row count sits about 8px from the date ('Mon 26 Oct 6') and is not right-aligned with the column. The timeline's row divider stops about 25px short of the column edge (crops/r4_timeline.png). The History title and Close sit at different baselines (y≈68 vs 75), and the in-progress History row reads '0 photos' (impl-r4-ingest/r4i_history).",
+          "evidence": "r5: failed tiles (red outline plus a chip) and History chips stay on identity: flat, hairline, single accent, red only for errors. History's title and Close now share a baseline (r5 import_history), and the keycap hints are tidy. Unchanged defects: the timeline day count still sits about 4 px after 'Mon 26 Oct', with both counts' right edges at x=341, and the divider stops at x≈359 against the column edge at x=383 (crops/r5_timeline.png is pixel-identical to r4). New defects: the export picker's key hints wrap 'Esc Cancel' onto a second line at 1440×900 (r5 export_picks_dialog), and success-ch"
+        },
+        {
+          "criterion": "expert_efficiency",
+          "before": 1.5,
+          "r1": 1.5,
+          "r2": 2.5,
+          "r3": 2.5,
+          "r4": 3.5,
+          "r5": 4.0,
+          "r4_justification": "r3: unchanged; card B still could not be scanned while A copied. r4: the two-card offload works in one sitting. Scan B while A copies, J, type the code, Ctrl+Enter queues B, A finishes, then B starts by itself, and a pulled A resumes on reinsertion. The panel no longer closes on completion. Short of Photo Mechanic's queue: one Cancel kills the whole queue, a pulled A blocks B with no 'skip', there is no per-card remove or reorder, and A's failure outcome is lost while B is on screen.",
+          "evidence": "r5: the two-card offload now behaves like a pro queue. Scan B while A copies, queue B, then pull A. B's view offers 'Skip CARD_A · start CARD_B' and B starts at once. Remove one queued card or clear the queue, retry A's failed photos from B's footer or from History, and a card reinserted at /run/media/u/EOS_DIGITAL1 resumes by itself. Short of top marks: in default 'ask' mode that reinsertion also hijacks the Import view into a dead 'Scanning EOS_DIGITAL1' state, so the user has to navigate back to B or A (R5-io-01). There is no reorder and no keyboard path for Skip or Retry."
+        }
+      ],
+      "means": {
+        "before": 2.08,
+        "r1": 2.29,
+        "r2": 3.17,
+        "r3": 3.25,
+        "r4": 3.75,
+        "r5": 4.17,
+        "delta_r4_r5": 0.42
+      },
+      "finding_status_r5": {
+        "resolved": 37,
+        "partial": 8,
+        "unresolved": 1
+      }
+    },
+    "overlays": {
+      "criteria": [
+        {
+          "criterion": "1_visibility_of_system_status",
+          "before": 2.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.75,
+          "r4": 4.0,
+          "r5": 4.25,
+          "r4_justification": "r3: status notices keep the selection count and progress beside them ('7 photos | ✓ Unsaved decisions are now saved', r4/saves_recovered vs r2 which replaced the count) and stale hints are withdrawn (feedback.rs:220-233 withdraw_notice); quit prompt suppresses the duplicate toast (feedback.rs:619-627) and status bar drops its Retry while prompting (feedback.rs:414-421). r4: failed decisions marked on the thumbnail (r4/save_failed filmstrip 01-alpine shows a warning glyph in the label chip; OV-11 acceptance met), Focus mode floats notices on the canvas (loupe_aids.rs:113-153), desktop notification only while backgrounded (ingest_ui.rs:788-795), contrast note when the system forces a HC variant (appearance.rs:80-86). Not 4.5: photo-search mode has no visible scope once a query is typed (only the placeholder changes, desktop.rs:11178-11184), and the Preferences body hides overflow with no scrollbar, so the selected theme row is cut under the footer at 1440x900 (r4/preferences_appearance light).",
+          "evidence": "r5: the Preferences body now has the shared scrollbar (desktop.rs:12171-12175 track_scroll + 12489-12494 self.scrollable('prefs-scrollbar')). So the overflow that hid the checked theme row in r4 is visible: r5/preferences_appearance light 1440x900 shows the whole theme list plus a thumb, and impl-r5-overlays-800/preferences_appearance shows a thumb at 800x520. Add network host now shows 'Connecting to {host}… checking that shadowroom-remote answers' with a disabled 'Connecting…' primary (dialog.rs:722-735, 760-771). The delete footer names what Enter will do for the ringed button ('Enter Move'"
+        },
+        {
+          "criterion": "2_match_real_world",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 3.75,
+          "r4_justification": "r3 unchanged for this surface. r4 gains: picker title and subtitle name the verb ('Open folder to cull in place / Photos stay where they are; nothing is copied', folder_picker.rs:589-602), menu 'Show in Files'. r4 losses: Getting Started section 1 says 'Add Photos (Ctrl+O) opens Import for a card or folder' (help.rs:31) but no 'Add Photos' exists any more and Ctrl+O is now Open Folder (desktop.rs:5426); palette shows 'Rate ★ 1 stars' (desktop.rs:4916, visible now that ratings lead the list); picker footer says 'Enter Open · Ctrl+Enter Use' beside a button labelled 'Open “Library”'. Residuals: 'Enter checks the agent' (dialog.rs:561), 'Profiles: docs/CONTROLS.md' (desktop.rs:11824), Performance telemetry, 'Operating system Trash (recover using your file manager)'. Net flat.",
+          "evidence": "r5 removes the r4 losses. The guide teaches the two verbs ('Open Folder… (Ctrl+O) culls photos where they are; nothing is copied. Import from Card… (Ctrl+Shift+I) copies and verifies…', r5/getting_started). Palette rows read '1 star', '2 stars' and 'Clear Rating · remove stars' (r5/palette_empty; desktop.rs:5126). The picker hint verb matches its button ('Ctrl Enter Open' beside 'Open “data”', r5/folder_picker). 'Enter checks the agent' is replaced by what the host needs (dialog.rs:654-656). Residuals: 'Profiles: docs/CONTROLS.md' (desktop.rs:12271), the Performance telemetry line (desktop.rs:"
+        },
+        {
+          "criterion": "3_user_control_freedom",
+          "before": 2.5,
+          "r1": 4.0,
+          "r2": 4.0,
+          "r3": 4.25,
+          "r4": 4.25,
+          "r5": 4.25,
+          "r4_justification": "r3: discard prompt now [Discard][Keep Editing] with the default rightmost (55251b0); quit prompt buttons focusable with Tab/Shift+Tab/arrows and Return/Space activating the ringed one (feedback.rs:866-910); guide Return runs its Primary (help.rs:108-114); Add Network Host from the palette over a dirty Preferences no longer drops the draft (desktop.rs, 8e6f96a). r4: Ctrl+K/Ctrl+F switch palette scope and keep the query (desktop.rs:3703-3714, search.rs:30-43). Not higher: the Add-host guard is a red error toast telling the user to go back ('Apply or cancel your preference changes…') instead of offering the discard prompt, and a second Esc on the discard prompt still returns to editing.",
+          "evidence": "Unchanged in substance. Add host stays open while it connects and turns its primary into 'Try again' on failure (dialog.rs:760-771), which is a small gain. Not higher: the guard against opening Add host over a dirty Preferences is still a red toast ('Apply or cancel your preference changes before adding a network host', desktop.rs:3813) instead of offering the discard prompt."
+        },
+        {
+          "criterion": "4_consistency_standards",
+          "before": 2.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.75,
+          "r4": 3.5,
+          "r5": 3.75,
+          "r4_justification": "r3: the quit prompt joined the dialog stack and one tint is painted beneath the topmost modal (desktop.rs:12757-12773; sidebar (60,800) = (10,10,10)/(172,177,184) in every modal state r2-r4 incl. quit_blocked_unsaved); picker got the header × (folder_picker.rs:767); discard order fixed; tooltips got the shared shadow. r4 introduces naming drift between new pieces: image menu 'Reset Stars and Flag' (review_actions.rs:68) vs palette 'Reset Rating and Flag' (desktop.rs:4539); guide 'Show in folder, Show in review' (help.rs:68) vs menu 'Show in Files' / 'Open in Review'; picker 'Open' means both 'enter folder' (hint) and 'choose this folder' (button); picker subtitle at DIALOG_INSET 24px but toolbar/list at 16px (folder_picker.rs:770 vs 779), visibly 8px apart in r4/folder_picker. Still: prose footer hints in delete and picker, ragged palette right column. Quit-prompt Tab order is registration order (Cancel, Quit Anyway, Retry) which mismatches the macOS visual order. r4 back to the r2 level.",
+          "evidence": "Gains: seven command names now come from shared constants used by the sidebar, empty state, image menu, palette and guide (copy.rs:369-385; review_actions.rs:84-93). 'Reset Rating and Flag' is the only name for that command (R4-05 resolved). Dialog footers share one keycap hint component (dialog.rs:378-401) in the delete, picker and theme-picker footers and the empty state. Every popover menu draws on menu_surface (dialog.rs:357-372). Palette categories sit in a fixed right column (desktop.rs:11498-11513, r5/palette_empty 'Review' column flush at x≈903). Quit-prompt Tab follows the visual orde"
+        },
+        {
+          "criterion": "5_error_prevention",
+          "before": 3.0,
+          "r1": 4.0,
+          "r2": 4.0,
+          "r3": 4.0,
+          "r4": 4.0,
+          "r5": 4.0,
+          "r4_justification": "Delete dialogs unchanged r2→r4 (r4/delete_confirm and permanent_delete_confirm pixel-identical layout; deletion_ui.rs only 2 lines changed). Picker subtitle 'nothing is copied' disambiguates the two import verbs. Remaining: three-line unabbreviated source path, doubled restore advice.",
+          "evidence": "The delete footer now says which button Enter presses ('Tab Switch · Enter Cancel' by default, 'Enter Move/Delete · Esc Cancel' once Confirm is ringed; r5/delete_confirm vs delete_confirm_focus_confirm), which is a real but small gain. Unchanged: the unabbreviated source path wraps to 3 lines and the restore advice is still doubled (r5/delete_confirm, impl-r5-overlays-800/delete_confirm_batch)."
+        },
+        {
+          "criterion": "6_recognition_over_recall",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.75,
+          "r4": 3.75,
+          "r5": 4.0,
+          "r4_justification": "r3: culling commands with keycaps lead the empty palette (r4/palette_empty: Pick P, Reject X, Clear Flag U…); guide uses one platform's key names (help.rs test asserts no 'Ctrl/Cmd'); quit prompt states 'Press Ctrl+Q again to quit anyway' (feedback.rs:996-1003). r4: image menu shows shortcuts inline and inline rating/label pickers (r4/grid_context_menu). Not higher: still no match highlighting in the palette (desktop.rs:11063-11080 plain text), guide quick keys are prose, Preferences failure footer still 'use Retry unsaved decisions' (desktop.rs:11902).",
+          "evidence": "Palette matches are highlighted: matched title letters are MEDIUM with a text-coloured underline (desktop.rs:11405-11416, 11471-11477; r5/palette_query 'Exp' underlined in all three Export rows, impl-r5-overlays/palette_lake '02-lakeside'). Footers show keycaps instead of prose. The rating filter shows a count and a digit keycap per level (r5/rating_filter_menu). Not higher: the guide's quick keys are still prose lines that wrap mid-binding ('· H / Histogram' at 1440; 'Shift / +B Swap' at 125%). The quit prompt shows no keycaps. Preferences' failure footer still says 'use Retry unsaved decisio"
+        },
+        {
+          "criterion": "7_flexibility_efficiency",
+          "before": 2.5,
+          "r1": 3.5,
+          "r2": 3.25,
+          "r3": 4.0,
+          "r4": 4.25,
+          "r5": 4.5,
+          "r4_justification": "r3: palette arrows wrap, PgUp/PgDn by 12, Home/End when the query is empty (desktop.rs:388-404, 5270-5280), window of 12 rows follows the selection (desktop.rs:11008-11013); import rows only where they act (R2-01 resolved: r4/palette_empty has no Pause/Cancel Import); guide Up/Down/PgUp/PgDn/Space/Home/End scroll (help.rs:89-118); Preferences Tab trapped (dialog.rs:96-110, preferences.rs:126-129). r4: filename and folder search in the palette, Ctrl+F photos-only (search.rs), Shift+F10/Menu image menu. Not 4.5: no match highlight, loose fuzzy matching floods mixed results ('lake' returns 1 photo then 9 'Label …' rows, impl-r4-cull/r4_palette_mixed).",
+          "evidence": "Beside photo or folder results the palette keeps commands whose title contains the query, plus at most 3 loose title matches, and drops description-only matches (desktop.rs:374-396). 'lake' now returns one row, 02-lakeside.jpg (impl-r5-overlays/palette_lake), against ten in r4. In Preferences, Tab follows visual order because controls are built only in the drawn section (bc15a5a). A control reached by Tab scrolls into view (dialog.rs:524-570 (reveal_once at 538)). Still missing: a visible Photos/All scope toggle, and with no photo results description-only matches still list last without explan"
+        },
+        {
+          "criterion": "8_aesthetic_minimalist",
+          "before": 3.0,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.5,
+          "r4": 3.5,
+          "r5": 3.75,
+          "r4_justification": "r3: culling-first palette reads calmer. r4: image menu grouped with separators, red only on Delete Permanently. But r4 Appearance tab gained Text size and now overflows: at 1440x900 the selected 'Shadowroom Light' row is sliced by the footer (r4/preferences_appearance light), at 125% only two themes show, at 800x520 the theme list is entirely below the fold (impl-r4-a11y-125, -800), with no scrollbar; palette descriptions are hard-clipped mid-word ('without advar', 'type in this palet') despite text_ellipsis (desktop.rs:11072-11079); noisy fuzzy matches. Guide still ~600 words of muted 12px prose; delete dialog still ≈435 px.",
+          "evidence": "Appearance no longer slices the checked theme: the list leads and the body scrolls with a thumb (r5/preferences_appearance light). Palette descriptions end in '…' ('witho…', 'Tra…') and the category column is even. The delete footer is two compact keycap pairs instead of a sentence. Not higher: the guide is still about 600 words of muted 12 px prose under a fixed quick-keys block. At 125%/1024x680 that block takes about 170 px, and at 800x520 it leaves about 230 px of reading area (impl-r5-overlays-125, -800/getting_started). The delete dialog is still about 435 px for one file. At 125% dialog"
+        },
+        {
+          "criterion": "9_recover_from_errors",
+          "before": 1.5,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.75,
+          "r4": 4.0,
+          "r5": 4.0,
+          "r4_justification": "r3: quit prompt is the one place to Retry (no toast underneath, r4/quit_blocked_unsaved). r4: unsaved photos marked on thumbnails until saved (d4ca45e; r4/save_failed). Remaining: toast detail still wraps to three ragged lines in a 460 px card (R2-10), Preferences failure state names a command.",
+          "evidence": "Unchanged for this surface. The toast detail still wraps to three ragged lines beside Retry/Details/× (r5/save_failed, R2-10). Add host keeps its failure in place with 'Try again' (dialog.rs:763-766). The Preferences failure state still names a command in lowercase."
+        },
+        {
+          "criterion": "10_help_documentation",
+          "before": 3.0,
+          "r1": 3.0,
+          "r2": 3.0,
+          "r3": 3.5,
+          "r4": 3.0,
+          "r5": 3.5,
+          "r4_justification": "r3 fixed most of OV-17: real scrollbar (help.rs:142-147 scrollable), 'Scroll for the full guide' gone, keyboard scrolling, Ctrl not Ctrl/Cmd on Linux, 'Esc asks before discarding'. r4 regresses the text against the r4 product: section 1 describes 'Add Photos (Ctrl+O) opens Import' though Ctrl+O now opens a folder in place and the button is 'Import from Card…'/'Open Folder…'; 'Image actions' lists menu items by their old names; 'Preferences → Culling' is hard-coded (help.rs:51), so macOS shows the wrong noun and the guide's own cfg(macos) test (help.rs:256-258) would fail. Quick keys still prose; Controller tab unchanged.",
+          "evidence": "The r4 regression is repaired. Section 1 describes Open Folder and Import from Card with the right shortcuts. 'Image actions' lists the real menu labels (Open in Review, Survey, Compare, Pick, Reject, Rating, Label, Reset Rating and Flag, Show in Files, Move to Trash…, Delete Permanently…). {settings} replaces the hard-coded 'Preferences' (help.rs:56, 79). guide_names_only_labels_that_exist checks a curated list plus every '…'-terminated phrase against the image menu and palette titles (help.rs:316-360). Limits: the test misses non-ellipsis names, so the guide's 'Export Picks' and 'Export XMP'"
+        },
+        {
+          "criterion": "visual_polish",
+          "before": 2.5,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 3.75,
+          "r4": 3.5,
+          "r5": 3.75,
+          "r4_justification": "r3: scrim dip on nested open fixed: modal_tint keeps one element id while any modal is open, so only the first open fades and nested surfaces fade over a steady tint (dialog.rs:263-277); tooltip shadow; text-field outlines at 3:1. r4 regressions: Preferences Appearance clipped mid-row with no scroll affordance; picker subtitle/toolbar 8px misalignment; palette description hard clip; ragged category/keycap column persists (r4/palette_empty 'Review' right edge moves with keycap width). Image menu and HC palettes are clean.",
+          "evidence": "The Preferences scrollbar, the aligned palette right column, ellipsized descriptions, 24 px menu chips with initials (review_actions.rs:11, 660-675), shadowed menus and the keycap footers all read cleanly in both themes. Remaining: the picker's Up button box at x=397 vs the title at 405 (r5/folder_picker; same in the 800x520 picker and the theme picker's Home button). Guide quick keys break mid-binding. A Tab reveal at 125% leaves the Reduce motion description cut by the footer (impl-r5-overlays-125/prefs_tab_motion). A tooltip opened before a modal stays painted over the palette and Preferenc"
+        },
+        {
+          "criterion": "expert_efficiency",
+          "before": 2.5,
+          "r1": 3.5,
+          "r2": 3.5,
+          "r3": 4.0,
+          "r4": 4.25,
+          "r5": 4.5,
+          "r4_justification": "r3: palette navigation keys, culling-first order, guide keyboard, quit Tab, Preferences Tab trap. r4: Ctrl+F filename jump with reveal that widens filters and says so (search.rs:128-157), image menu from keyboard, Ctrl+K⇄Ctrl+F keeps the query. Missing match highlighting and a precision threshold for loose matches.",
+          "evidence": "Palette precision beside photo hits, highlighted matches, visual-order Tab with auto-reveal in Preferences, keycap footers that name the Ctrl+Enter verb, and a digit keycap per rating level. Missing: the scope tag for Ctrl+F vs Ctrl+K and keycaps in the image menu."
+        }
+      ],
+      "mean_nielsen": {
+        "before": 2.55,
+        "r1": 3.55,
+        "r2": 3.525,
+        "r3": 3.775,
+        "r4": 3.775,
+        "r5": 3.975
+      },
+      "mean_all_12": {
+        "before": 2.542,
+        "r1": 3.542,
+        "r2": 3.521,
+        "r3": 3.792,
+        "r4": 3.792,
+        "r5": 4.0
+      },
+      "decisions": {
+        "a_choice_group_hairlines": "Agree. Every segment is named by its text, and the state (2 px text-coloured bar on the selected fill) plus the focus ring are what convey selection and focus. dialog.rs:802-836 tests both at ≥3:1 on panel, elevated and toolbar surfaces in all four built-in palettes. Visible in r5/preferences_appearance ('Manual', 'Geist Mono', 'System' bars) and impl-r5-overlays-125/prefs_tab_motion (blue ring on 'Off'). Caveat: the test composites ghost_element.selected over the surface but does not assert that the bar is drawn. A theme that drops the bar would pass, so add a render-level check or assert the bar's colour key in the segment builder.",
+        "b_filmstrip_yields_below_600": "Agree (outside this surface). At 800x520 the photo gains the filmstrip's height while the ledger band still shows position and decisions (impl-r5-loupe-800/loupe_review). Overlays are unaffected: Preferences, the palette, the picker and delete all fit at 800x520 with scroll where needed.",
+        "c_exports_use_builtin_picker_linux": "Agree. Within overlays this is the more consistent choice: the built-in picker carries a verb-specific title, a subtitle, keycap hints and a primary whose verb the Ctrl+Enter hint repeats (r5/folder_picker). The GPUI 0.2.2 portal can set neither title nor start folder. Cost: no GTK bookmarks or recents. Keep a 'Use system dialog…' escape hatch if the portal gains those options."
+      },
+      "finding_status_r5": {
+        "resolved": 33,
+        "partial": 8,
+        "unresolved": 5
+      }
+    }
+  },
+  "r6_verification": {
+    "method": "One reviewer checked every round-5 finding against r6 captures and code; surfaces were not re-scored.",
+    "round5_findings_status": {
+      "resolved": 36,
+      "partial": 2,
+      "unresolved": 5,
+      "regressed": 0
+    },
+    "verdicts": {
+      "design": "up, about +0.4",
+      "a11y": "up, about +6-8 points",
+      "review": "up, about +0.25",
+      "catalog": "up, about +0.3",
+      "io": "up, about +0.3",
+      "overlays": "up, about +0.4"
+    },
+    "new_findings": "3 minor, 8 polish; no blocker or major regression"
+  }
+}

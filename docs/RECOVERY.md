@@ -2,9 +2,11 @@
 
 Ratings, flags and labels are optimistic until the catalog actor acknowledges
 their SQLite FULL-synchronized transaction. The footer and MCP state distinguish
-pending, failed and durable decisions. Repeated values have distinct revisions;
+pending, failed and durable decisions: "Saving…" while decision writes are in
+flight, "Saved" briefly after they land, nothing when clean, and "N unsaved ·
+Retry" when a write failed. Preference writes stay silent unless they fail. Repeated values have distinct revisions;
 an old acknowledgement cannot clear a newer decision. Failed values remain
-dirty and the command palette exposes **Retry unsaved decisions**.
+dirty and the command palette exposes **Retry Unsaved Decisions**.
 
 Preferences use a synced temporary file and same-directory rename. On Unix,
 success also requires syncing the containing directory and its ancestors. A
@@ -19,7 +21,12 @@ Normal window close, application-menu Quit, Cmd/Ctrl+Q and MCP quit all enter th
 same asynchronous close gate. It stops admitting new mutations, drains pending
 decisions/preferences, waits for accepted export jobs to reach a terminal state,
 then checks a catalog/preferences flush acknowledgement. A failed decision or
-flush leaves the window open. The export worker is joined during service
+flush leaves the window open. When decisions (or recovered preferences) cannot be
+saved, Ctrl/Cmd+Q asks **Quit with N unsaved decisions?** instead: **Retry**
+(Return) retries and finishes closing once the writes land, **Cancel** (Escape)
+keeps the window open, and **Quit Anyway** (or a second Ctrl/Cmd+Q) first writes
+and syncs the recovery journal described below and quits only if that succeeds;
+the next launch restores the changes from it. MCP `quit` never quits anyway. The export worker is joined during service
 shutdown, after accepted active and queued jobs finish.
 
 GPUI 0.2.2's macOS OS-termination observer runs too late to veto termination.

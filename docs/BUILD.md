@@ -148,8 +148,8 @@ record first-profile/cache population separately.
 ## Linux
 
 The GPUI desktop needs an X11 or Wayland session and compatible Vulkan drivers.
-Linux uses a built-in folder/theme picker; desktop portals are not required for
-those dialogs. On Ubuntu 24.04, install the development prerequisites:
+Folder, export and theme choosers use the XDG desktop portal's file chooser when one is
+running and fall back to a built-in picker otherwise, so portals are optional. On Ubuntu 24.04, install the development prerequisites:
 
 ```sh
 sudo apt-get update

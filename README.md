@@ -56,8 +56,9 @@ the documented RAW/HEIF codecs; a desktop session and Vulkan driver remain
 required. The macOS build is signed ad hoc and is not notarized. Each asset
 includes a SHA-256 checksum.
 
-Linux folder/theme pickers and OS Trash run inside the app without requiring
-GIO for those actions. See [Linux portability](docs/PORTABILITY.md) for the
+Folder, export and theme choosers use the desktop's file-chooser portal on Linux, with a
+built-in picker when no portal is available; OS Trash runs inside the app without
+requiring GIO. See [Linux portability](docs/PORTABILITY.md) for the
 experimental Rust media backends and static CPU/X11 browsing prototype.
 
 Fedora 44 x86_64 packages also use the
@@ -82,10 +83,13 @@ On macOS, the default build needs Xcode's Metal tools. Command Line Tools users
 can add `--features runtime-shaders`. Linux needs a desktop session and Vulkan
 drivers. Native package and AppImage instructions are in the [build guide](docs/BUILD.md).
 
-Open a folder with **Cmd/Ctrl+O** or **Add photos** to plan a copy import. Passing a
-folder on the command line indexes it in place. Pick or rate frames as you review,
+Two verbs get photos in. **Open Folder…** (**Cmd/Ctrl+O**) culls a folder where it
+is; nothing is copied. **Import from Card…** (**Cmd/Ctrl+Shift+I**) copies a card or
+folder into your library and verifies every copy. Passing a folder on the command
+line opens it in place. Pick or rate frames as you review,
 then use **Export** to copy picks. Export XMP sidecars and other commands are in
-the command palette (**Cmd/Ctrl+K**).
+the command palette (**Cmd/Ctrl+K**), which also finds photos by filename and
+folders by name; **Cmd/Ctrl+F** opens it for photos only.
 
 | Key | Action |
 | --- | --- |
@@ -99,7 +103,8 @@ the command palette (**Cmd/Ctrl+K**).
 | `B` | Pin comparison reference |
 | Space or `Z` | Fit / 100% |
 | `+` / `−` | Increase / decrease zoom |
-| `F` | Toggle focus peaking |
+| `F` / `J` | Toggle focus peaking / clipping overlay |
+| Alt+`1` / `2` / `4`, Alt+`0` | 100% / 200% / 400% zoom, Fit |
 | `F1` | Getting Started guide |
 | Shift+`↓` / Shift+`↑` | Extend / shrink selection by a grid row |
 | `[` / `]` | Previous / next group |
@@ -160,7 +165,8 @@ Catalog, settings, and caches use the operating system's local application-data
 directories. A disconnected drive does not remove its catalog entries; cached
 previews can remain available offline. The footer distinguishes pending, failed,
 and saved changes. Normal quit waits for saves and accepted exports; failed writes
-remain visible for retry. See [recovery and durability](docs/RECOVERY.md).
+remain visible for retry, and quitting with them offers Retry, Cancel or Quit
+Anyway (restored from the recovery journal at next launch). See [recovery and durability](docs/RECOVERY.md).
 
 Ratings, flags, and labels do not edit source photographs. Decisions remain in
 the local catalog until you explicitly export XMP to a chosen destination; there
@@ -182,12 +188,12 @@ The startup **Getting Started** guide explains the workflow, shortcuts, color
 labels, time groups and caching. Reopen it with **F1** or **?**; Preferences → Help
 controls whether it appears at startup. In Catalog, double-click a photo to review
 the full folder at that image. **Enter/L** also opens the full folder for zero or
-one selected photo, using the hovered photo when available; select multiple
-photos first to review only that set. **Show full folder** leaves a subset, and
-**G** returns to Catalog. Right-click a photo for Show in folder, Show in review,
-Survey burst, Compare, decisions, and deletion actions. Preferences **Apply**
-commits and stays open; **Apply & Close** also closes the pane. Cancel/Escape
-discards only changes made since the last Apply.
+one selected photo, at the outlined photo; select multiple
+photos first to review only that set. **Show Full Folder** leaves a subset, and
+**G** returns to Catalog. Right-click a photo (or press Shift+F10) for Open in Review,
+Survey, Compare, decisions, Show in Files and deletion actions. Preferences **Apply**
+commits and stays open; **Apply & Close** also closes the pane. Cancel
+discards only changes made since the last Apply; Escape asks before discarding.
 
 ## Documentation and development
 

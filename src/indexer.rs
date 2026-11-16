@@ -1108,6 +1108,10 @@ pub struct Drive {
     pub path: PathBuf,
     pub removable: bool,
     pub photo_folders: Vec<PathBuf>,
+    /// Filesystem identity (`uuid:…`, else `label:…`), so the same card at
+    /// another mount point is recognised.
+    #[serde(default)]
+    pub volume: String,
 }
 /// Mounted source candidates only. Indexing a Drive.path scans the whole selected drive.
 pub fn discover_drives() -> Vec<Drive> {
@@ -1205,11 +1209,13 @@ pub fn discover_drives() -> Vec<Drive> {
         .map(|p| path.join(p))
         .filter(|p| p.is_dir())
         .collect();
+        let volume = crate::ingest::volume_identity(&path);
         drives.push(Drive {
             name,
             path,
             removable,
             photo_folders,
+            volume,
         });
     }
     drives.sort_by(|a, b| a.path.cmp(&b.path));

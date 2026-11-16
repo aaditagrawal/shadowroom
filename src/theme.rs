@@ -37,32 +37,11 @@ pub struct PreparedColors<const N: usize> {
     colors: [Rgba; N],
 }
 impl<const N: usize> PreparedColors<N> {
-    /// Uses exactly Workspace::c's precedence: theme value, fallback-theme value,
-    /// supplied literal; invalid selected values retry the fallback theme, then
-    /// use opaque grey. Compile once after theme activation, outside render.
+    /// Uses exactly Workspace::c's precedence (see [`resolve_role`]).
+    /// Compile once after theme activation, outside render.
     pub fn new(theme: &Theme, fallback: &Theme, roles: [(&str, &str); N]) -> Self {
         Self {
-            colors: roles.map(|(key, literal)| {
-                let value = theme
-                    .colors
-                    .get(key)
-                    .or_else(|| fallback.colors.get(key))
-                    .map(String::as_str)
-                    .unwrap_or(literal);
-                Rgba::parse(value)
-                    .or_else(|| {
-                        fallback
-                            .colors
-                            .get(key)
-                            .and_then(|value| Rgba::parse(value))
-                    })
-                    .unwrap_or(Rgba {
-                        r: 128,
-                        g: 128,
-                        b: 128,
-                        a: 255,
-                    })
-            }),
+            colors: roles.map(|(key, literal)| resolve_role(theme, fallback, key, literal)),
         }
     }
     /// Constant-index callers compile to a direct load: no hashing or parsing.
@@ -71,11 +50,63 @@ impl<const N: usize> PreparedColors<N> {
     }
 }
 
+/// One role lookup for the desktop: the theme's own value, then a role derived
+/// from the theme's own surfaces (Shadowroom-only roles of imported themes),
+/// then the fallback theme, then the supplied literal. An invalid selected
+/// value retries the fallback theme; anything still unparseable is opaque grey.
+pub fn resolve_role(theme: &Theme, fallback: &Theme, key: &str, literal: &str) -> Rgba {
+    let from_fallback = || {
+        fallback
+            .colors
+            .get(key)
+            .and_then(|value| Rgba::parse(value))
+    };
+    match theme.colors.get(key) {
+        Some(value) => Rgba::parse(value).or_else(from_fallback),
+        None => theme
+            .derived_color(key)
+            .or_else(|| match fallback.colors.get(key) {
+                Some(value) => Rgba::parse(value),
+                None => Rgba::parse(literal),
+            }),
+    }
+    .unwrap_or(Rgba {
+        r: 128,
+        g: 128,
+        b: 128,
+        a: 255,
+    })
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
     }
 }
+
+pub const HIGH_CONTRAST_DARK: &str = "Shadowroom High Contrast Dark";
+pub const HIGH_CONTRAST_LIGHT: &str = "Shadowroom High Contrast Light";
+
+/// Photo-overlay roles, identical in both built-in palettes. Thumbnail badges
+/// and on-photo captions sit on image content, which can be white or black in
+/// either appearance, so their colours are tuned for the dark scrim plate
+/// (worst case: the plate over a white photo region) rather than for chrome.
+pub const PHOTO_OVERLAY: [(&str, &str); 13] = [
+    ("shadowroom.scrim", "#0f0f0fd0"),
+    ("shadowroom.scrim.text", "#e6e6e6"),
+    ("shadowroom.scrim.muted", "#b8b8b8"),
+    ("shadowroom.scrim.pick", "#7fbf7f"),
+    ("shadowroom.scrim.reject", "#e07a7a"),
+    ("shadowroom.scrim.rating", "#e0b341"),
+    ("shadowroom.scrim.accent", "#7fb3e6"),
+    ("shadowroom.scrim.label.red", "#e0918a"),
+    ("shadowroom.scrim.label.yellow", "#d9bd72"),
+    ("shadowroom.scrim.label.green", "#86bfa8"),
+    ("shadowroom.scrim.label.blue", "#b8c3ff"),
+    ("shadowroom.scrim.label.purple", "#c79fc5"),
+    // Initial on a filled label chip (all five fills are light pastels).
+    ("shadowroom.scrim.label.text", "#0f0f0f"),
+];
 
 impl Theme {
     /// Built-in dark palette, including visible hover states on dialog surfaces.
@@ -93,7 +124,7 @@ impl Theme {
                 ("status_bar.background", "#181818"),
                 ("toolbar.background", "#181818"),
                 ("text", "#e6e6e6"),
-                ("text.muted", "#8a8a8a"),
+                ("text.muted", "#9a9a9a"),
                 ("text.disabled", "#666666"),
                 ("text.accent", "#5b9bd5"),
                 ("icon", "#b8b8b8"),
@@ -105,20 +136,44 @@ impl Theme {
                 ("element.hover", "#303030"),
                 ("element.active", "#2a2a2a"),
                 ("element.selected", "#232323"),
-                ("ghost_element.hover", "#303030"),
-                ("ghost_element.selected", "#232323"),
+                // Translucent ghost fills keep hover a whisper below selection
+                // on every surface (panel, dialog, canvas).
+                ("ghost_element.hover", "#ffffff08"),
+                ("ghost_element.selected", "#ffffff12"),
                 ("success", "#7fbf7f"),
                 ("error", "#d46a6a"),
-                ("warning", "#e0b341"),
+                // Orange, 30° (OKLCH) from rating amber and darker than it,
+                // so a warning never reads as a star, protan and deutan
+                // vision included; 35° from error red.
+                ("warning", "#ce7629"),
                 ("info", "#5b9bd5"),
                 ("scrollbar.thumb.background", "#8a8a8a40"),
                 ("scrollbar.thumb.hover_background", "#8a8a8a80"),
                 ("editor.selection.background", "#5b9bd533"),
                 ("editor.foreground", "#e6e6e6"),
                 ("shadowroom.canvas", "#0f0f0f"),
+                ("shadowroom.well", "#161616"),
+                ("shadowroom.histogram.background", "#0f0f0f"),
+                ("shadowroom.histogram.grid", "#1c1c1c"),
+                ("shadowroom.control_border", "#707070"),
                 ("shadowroom.pick", "#7fbf7f"),
                 ("shadowroom.reject", "#d46a6a"),
                 ("shadowroom.rating", "#e0b341"),
+                ("shadowroom.label.red", "#e0918a"),
+                ("shadowroom.label.yellow", "#d9bd72"),
+                ("shadowroom.label.green", "#86bfa8"),
+                // Periwinkle, 29° from the accent and much lighter, so a blue
+                // strip never reads as the "current" underline in any colour
+                // vision; Purple leans magenta and darker, away from Blue.
+                ("shadowroom.label.blue", "#b8c3ff"),
+                ("shadowroom.label.purple", "#c79fc5"),
+                ("shadowroom.label.text", "#0f0f0f"),
+                // Cull ledger: the unreviewed hairline rail and reviewed
+                // (rated or labelled, unflagged) cells, 3:1+ apart.
+                ("shadowroom.ledger.rail", "#3a3a3a"),
+                ("shadowroom.ledger.reviewed", "#8a8a8a"),
+                ("shadowroom.focus_ring", "#5b9bd5"),
+                ("shadowroom.scrim.modal", "#00000099"),
             ],
         )
     }
@@ -137,7 +192,7 @@ impl Theme {
                 ("status_bar.background", "#f8f9fb"),
                 ("toolbar.background", "#f8f9fb"),
                 ("text", "#292e37"),
-                ("text.muted", "#626c7c"),
+                ("text.muted", "#566070"),
                 ("text.disabled", "#8992a0"),
                 ("text.accent", "#245c91"),
                 ("icon", "#434e5f"),
@@ -153,18 +208,180 @@ impl Theme {
                 ("ghost_element.selected", "#3979b418"),
                 ("success", "#39734f"),
                 ("error", "#a53e42"),
-                ("warning", "#8a661f"),
+                ("warning", "#985f3b"),
                 ("info", "#245c91"),
                 ("scrollbar.thumb.background", "#626c7c40"),
                 ("scrollbar.thumb.hover_background", "#626c7c80"),
                 ("editor.selection.background", "#3979b433"),
                 ("editor.foreground", "#292e37"),
-                ("shadowroom.canvas", "#dce0e6"),
-                ("shadowroom.pick", "#39734f"),
+                // Neutral (R=G=B) so the photo's white balance is not tinted.
+                ("shadowroom.canvas", "#dcdcdc"),
+                ("shadowroom.well", "#e4e4e4"),
+                ("shadowroom.histogram.background", "#ffffff"),
+                ("shadowroom.histogram.grid", "#00000014"),
+                ("shadowroom.control_border", "#717a88"),
+                ("shadowroom.pick", "#2f6844"),
                 ("shadowroom.reject", "#a53e42"),
-                ("shadowroom.rating", "#8a661f"),
+                ("shadowroom.rating", "#5e4508"),
+                ("shadowroom.label.red", "#b3362e"),
+                ("shadowroom.label.yellow", "#7e6200"),
+                ("shadowroom.label.green", "#2a7560"),
+                ("shadowroom.label.blue", "#5d55f3"),
+                ("shadowroom.label.purple", "#832692"),
+                ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.ledger.rail", "#c4c9d1"),
+                ("shadowroom.ledger.reviewed", "#626c7c"),
+                ("shadowroom.focus_ring", "#3979b4"),
+                ("shadowroom.scrim.modal", "#1f2a3a59"),
             ],
         )
+    }
+
+    /// Shadowroom Dark with every role pushed to high contrast: the same
+    /// neutral near-black chrome and single blue accent, black canvas, white
+    /// text, AAA (7:1) body and secondary text, and outlines strong enough
+    /// (3:1+) that hairlines, fields and choice groups stay visible.
+    pub fn high_contrast_dark() -> Self {
+        Self::builtin(
+            HIGH_CONTRAST_DARK,
+            "dark",
+            &[
+                ("background", "#000000"),
+                ("surface.background", "#0d0d0d"),
+                ("elevated_surface.background", "#161616"),
+                ("panel.background", "#0d0d0d"),
+                ("editor.background", "#000000"),
+                ("title_bar.background", "#0d0d0d"),
+                ("status_bar.background", "#0d0d0d"),
+                ("toolbar.background", "#0d0d0d"),
+                ("text", "#ffffff"),
+                ("text.muted", "#dadada"),
+                ("text.disabled", "#8f8f8f"),
+                ("text.accent", "#8cc4ff"),
+                ("icon", "#f2f2f2"),
+                ("icon.muted", "#c4c4c4"),
+                ("border", "#8a8a8a"),
+                ("border.variant", "#9a9a9a"),
+                ("border.focused", "#8cc4ff"),
+                ("element.background", "#1a1a1a"),
+                ("element.hover", "#333333"),
+                ("element.active", "#2b2b2b"),
+                ("element.selected", "#2a2a2a"),
+                ("ghost_element.hover", "#ffffff14"),
+                ("ghost_element.selected", "#ffffff2e"),
+                ("success", "#8fe08f"),
+                ("error", "#ff8a8a"),
+                ("warning", "#ea8e48"),
+                ("info", "#8cc4ff"),
+                ("scrollbar.thumb.background", "#cfcfcf80"),
+                ("scrollbar.thumb.hover_background", "#cfcfcfc0"),
+                ("editor.selection.background", "#8cc4ff40"),
+                ("editor.foreground", "#ffffff"),
+                ("shadowroom.canvas", "#000000"),
+                ("shadowroom.well", "#121212"),
+                ("shadowroom.histogram.background", "#000000"),
+                ("shadowroom.histogram.grid", "#333333"),
+                ("shadowroom.control_border", "#b0b0b0"),
+                ("shadowroom.pick", "#8fe08f"),
+                ("shadowroom.reject", "#ff8a8a"),
+                ("shadowroom.rating", "#ffd166"),
+                ("shadowroom.label.red", "#ffa59e"),
+                ("shadowroom.label.yellow", "#f0d58a"),
+                ("shadowroom.label.green", "#9fe0c4"),
+                ("shadowroom.label.blue", "#8a8ef6"),
+                ("shadowroom.label.purple", "#d1a7d1"),
+                ("shadowroom.label.text", "#000000"),
+                // The rail stays dim even here: `border` (3:1 outlines) as the
+                // rail made reviewed vs unreviewed 1.98:1.
+                ("shadowroom.ledger.rail", "#4a4a4a"),
+                ("shadowroom.ledger.reviewed", "#c4c4c4"),
+                ("shadowroom.focus_ring", "#8cc4ff"),
+                ("shadowroom.scrim.modal", "#000000b3"),
+            ],
+        )
+    }
+
+    /// Shadowroom Light at high contrast: white surfaces, black text, a
+    /// darker accent, and dark outlines; the photo canvas stays neutral grey.
+    pub fn high_contrast_light() -> Self {
+        Self::builtin(
+            HIGH_CONTRAST_LIGHT,
+            "light",
+            &[
+                ("background", "#ffffff"),
+                ("surface.background", "#f5f5f5"),
+                ("elevated_surface.background", "#ffffff"),
+                ("panel.background", "#f5f5f5"),
+                ("editor.background", "#ececec"),
+                ("title_bar.background", "#f5f5f5"),
+                ("status_bar.background", "#f5f5f5"),
+                ("toolbar.background", "#f5f5f5"),
+                ("text", "#000000"),
+                ("text.muted", "#2a303a"),
+                ("text.disabled", "#6b7280"),
+                ("text.accent", "#0a4a85"),
+                ("icon", "#1d2530"),
+                ("icon.muted", "#3a4452"),
+                ("border", "#5c6470"),
+                ("border.variant", "#6e7682"),
+                ("border.focused", "#0a4a85"),
+                ("element.background", "#e6e9ee"),
+                ("element.hover", "#d5dae2"),
+                ("element.active", "#c4ccd8"),
+                ("element.selected", "#0a4a8533"),
+                ("ghost_element.hover", "#00000012"),
+                ("ghost_element.selected", "#0a4a8529"),
+                ("success", "#1f5c36"),
+                ("error", "#8f1d22"),
+                ("warning", "#924a02"),
+                ("info", "#0a4a85"),
+                ("scrollbar.thumb.background", "#3a445280"),
+                ("scrollbar.thumb.hover_background", "#3a4452c0"),
+                ("editor.selection.background", "#0a4a8540"),
+                ("editor.foreground", "#000000"),
+                // Neutral (R=G=B) so the photo's white balance is not tinted.
+                ("shadowroom.canvas", "#d6d6d6"),
+                ("shadowroom.well", "#e0e0e0"),
+                ("shadowroom.histogram.background", "#ffffff"),
+                ("shadowroom.histogram.grid", "#00000026"),
+                ("shadowroom.control_border", "#3d4450"),
+                ("shadowroom.pick", "#1f5c36"),
+                ("shadowroom.reject", "#8f1d22"),
+                ("shadowroom.rating", "#3d2c00"),
+                ("shadowroom.label.red", "#9c2a22"),
+                ("shadowroom.label.yellow", "#5f4a00"),
+                ("shadowroom.label.green", "#1d5c4a"),
+                ("shadowroom.label.blue", "#4d39e3"),
+                ("shadowroom.label.purple", "#6a126e"),
+                ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.ledger.rail", "#a0a6b0"),
+                ("shadowroom.ledger.reviewed", "#3a4452"),
+                ("shadowroom.focus_ring", "#0a4a85"),
+                ("shadowroom.scrim.modal", "#0000008c"),
+            ],
+        )
+    }
+
+    /// Every built-in palette: Shadowroom Dark/Light and their high-contrast
+    /// variants.
+    pub fn builtins() -> Vec<Self> {
+        vec![
+            Self::dark(),
+            Self::light(),
+            Self::high_contrast_dark(),
+            Self::high_contrast_light(),
+        ]
+    }
+
+    /// The high-contrast variant used for `name` when the system asks for more
+    /// contrast: only the two standard Shadowroom palettes have one; imported
+    /// and already high-contrast themes are used as chosen.
+    pub fn high_contrast_variant(name: &str) -> Option<&'static str> {
+        match name {
+            "Shadowroom Dark" => Some(HIGH_CONTRAST_DARK),
+            "Shadowroom Light" => Some(HIGH_CONTRAST_LIGHT),
+            _ => None,
+        }
     }
 
     fn builtin(name: &str, appearance: &str, pairs: &[(&str, &str)]) -> Self {
@@ -172,6 +389,8 @@ impl Theme {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
+        // A repeated key would silently override an earlier, reviewed value.
+        debug_assert_eq!(colors.len(), pairs.len(), "duplicate colour key in {name}");
         for (key, source) in [
             ("text.placeholder", "text.muted"),
             ("icon.placeholder", "icon.muted"),
@@ -197,6 +416,11 @@ impl Theme {
             if let Some(value) = colors.get(source).cloned() {
                 colors.insert(key.into(), value);
             }
+        }
+        // Overlays drawn on photographs (thumbnail badges, compare captions)
+        // sit on image content, not chrome, so both appearances share them.
+        for (key, value) in PHOTO_OVERLAY {
+            colors.insert(key.to_string(), value.to_string());
         }
         for key in [
             "ghost_element.background",
@@ -327,6 +551,31 @@ impl Theme {
                 .get(key)
                 .map(String::as_str)
                 .unwrap_or("#808080"),
+        )
+    }
+
+    /// Shadowroom-only surface roles that Zed themes never define, derived from
+    /// the theme's own surfaces. An imported palette then keeps a visible
+    /// thumbnail well and a perceivable control outline instead of borrowing
+    /// the built-in near-black values. `None` when the theme lacks the inputs;
+    /// callers fall back to the same-appearance built-in palette. Colours the
+    /// theme supplies itself always win (see `Workspace::c`).
+    pub fn derived_color(&self, key: &str) -> Option<Rgba> {
+        let get = |k: &str| self.colors.get(k).and_then(|s| Rgba::parse(s));
+        let (top, base, share) = match key {
+            // Between the window background and the panel: a contact-sheet well.
+            "shadowroom.well" => (get("panel.background")?, get("background")?, 0.4),
+            // Muted text pulled toward the panel: a 3:1-class control outline.
+            "shadowroom.control_border" => (get("text.muted")?, get("panel.background")?, 0.65),
+            _ => return None,
+        };
+        let base = Rgba { a: 255, ..base };
+        Some(
+            Rgba {
+                a: (f64::from(top.a) * share).round() as u8,
+                ..top
+            }
+            .composite_over(base),
         )
     }
 
@@ -503,6 +752,24 @@ impl Rgba {
         0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
     }
     /// Foreground alpha composites over an opaque supplied background.
+    /// OKLCH hue in degrees (0-360), for keeping semantic hues apart.
+    pub fn oklch_hue(self) -> f64 {
+        let lin = |c: u8| {
+            let c = f64::from(c) / 255.;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let (r, g, b) = (lin(self.r), lin(self.g), lin(self.b));
+        let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+        let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+        let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+        let a = 1.977_998_495_1 * l - 2.428_592_205 * m + 0.450_593_709_9 * s;
+        let b = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766 * s;
+        b.atan2(a).to_degrees().rem_euclid(360.)
+    }
     pub fn contrast_ratio(self, background: Self) -> f64 {
         let a = self.composite_over(background).relative_luminance();
         let b = background.relative_luminance();
@@ -560,7 +827,7 @@ pub fn theme_search_paths() -> Vec<PathBuf> {
 
 pub fn discover_themes_in(roots: &[PathBuf]) -> ThemeDiscovery {
     let mut result = ThemeDiscovery {
-        themes: vec![Theme::dark(), Theme::light()],
+        themes: Theme::builtins(),
         diagnostics: Vec::new(),
     };
     let mut seen = HashSet::new();
@@ -694,6 +961,299 @@ pub(crate) fn normalize_jsonc(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cvd::Vision;
+
+    /// Colour-vision simulation (Machado, Oliveira & Fernandes 2009, severity
+    /// 1.0) and CIEDE2000, for palette tests.
+    mod cvd {
+        use super::Rgba;
+
+        #[derive(Clone, Copy, Debug)]
+        pub enum Vision {
+            Normal,
+            Protan,
+            Deutan,
+        }
+
+        fn lin(c: f64) -> f64 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        fn unlin(v: f64) -> f64 {
+            let v = v.clamp(0., 1.);
+            if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1. / 2.4) - 0.055
+            }
+        }
+
+        fn simulate(c: Rgba, vision: Vision) -> [f64; 3] {
+            let rgb = [c.r, c.g, c.b].map(|v| f64::from(v) / 255.);
+            let m = match vision {
+                Vision::Normal => return rgb,
+                Vision::Protan => [
+                    [0.152_286, 1.052_583, -0.204_868],
+                    [0.114_503, 0.786_281, 0.099_216],
+                    [-0.003_882, -0.048_116, 1.051_998],
+                ],
+                Vision::Deutan => [
+                    [0.367_322, 0.860_646, -0.227_968],
+                    [0.280_085, 0.672_501, 0.047_413],
+                    [-0.011_820, 0.042_940, 0.968_881],
+                ],
+            };
+            let l = rgb.map(lin);
+            m.map(|row| unlin(row[0] * l[0] + row[1] * l[1] + row[2] * l[2]))
+        }
+
+        fn lab(rgb: [f64; 3]) -> [f64; 3] {
+            let [r, g, b] = rgb.map(lin);
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+            let f = |t: f64| {
+                if t > 216. / 24389. {
+                    t.cbrt()
+                } else {
+                    (24389. / 27. * t + 16.) / 116.
+                }
+            };
+            let (fx, fy, fz) = (f(x), f(y), f(z));
+            [116. * fy - 16., 500. * (fx - fy), 200. * (fy - fz)]
+        }
+
+        /// CIEDE2000 between two colours as seen with `vision`.
+        pub fn delta_e(a: Rgba, b: Rgba, vision: Vision) -> f64 {
+            let [l1, a1, b1] = lab(simulate(a, vision));
+            let [l2, a2, b2] = lab(simulate(b, vision));
+            let (c1, c2) = (a1.hypot(b1), a2.hypot(b2));
+            let cm = (c1 + c2) / 2.;
+            let g = 0.5 * (1. - (cm.powi(7) / (cm.powi(7) + 25f64.powi(7))).sqrt());
+            let (a1p, a2p) = ((1. + g) * a1, (1. + g) * a2);
+            let (c1p, c2p) = (a1p.hypot(b1), a2p.hypot(b2));
+            let h1p = b1.atan2(a1p).to_degrees().rem_euclid(360.);
+            let h2p = b2.atan2(a2p).to_degrees().rem_euclid(360.);
+            let (dlp, dcp) = (l2 - l1, c2p - c1p);
+            let mut dh = h2p - h1p;
+            if c1p * c2p == 0. {
+                dh = 0.;
+            } else if dh > 180. {
+                dh -= 360.;
+            } else if dh < -180. {
+                dh += 360.;
+            }
+            let dhp = 2. * (c1p * c2p).sqrt() * (dh / 2.).to_radians().sin();
+            let (lpm, cpm) = ((l1 + l2) / 2., (c1p + c2p) / 2.);
+            let hpm = if c1p * c2p == 0. {
+                h1p + h2p
+            } else if (h1p - h2p).abs() <= 180. {
+                (h1p + h2p) / 2.
+            } else if h1p + h2p < 360. {
+                (h1p + h2p + 360.) / 2.
+            } else {
+                (h1p + h2p - 360.) / 2.
+            };
+            let cos = |deg: f64| deg.to_radians().cos();
+            let t = 1. - 0.17 * cos(hpm - 30.) + 0.24 * cos(2. * hpm) + 0.32 * cos(3. * hpm + 6.)
+                - 0.20 * cos(4. * hpm - 63.);
+            let dtheta = 30. * (-((hpm - 275.) / 25.).powi(2)).exp();
+            let rc = 2. * (cpm.powi(7) / (cpm.powi(7) + 25f64.powi(7))).sqrt();
+            let sl = 1. + 0.015 * (lpm - 50.).powi(2) / (20. + (lpm - 50.).powi(2)).sqrt();
+            let (sc, sh) = (1. + 0.045 * cpm, 1. + 0.015 * cpm * t);
+            let rt = -(2. * dtheta).to_radians().sin() * rc;
+            ((dlp / sl).powi(2)
+                + (dcp / sc).powi(2)
+                + (dhp / sh).powi(2)
+                + rt * (dcp / sc) * (dhp / sh))
+                .sqrt()
+        }
+    }
+
+    #[test]
+    fn built_in_states_overlays_and_labels_hold_contrast() {
+        let white = Rgba::parse("#ffffff").unwrap();
+        for theme in Theme::builtins() {
+            let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
+            let name = &theme.name;
+            for surface in ["panel.background", "elevated_surface.background"] {
+                let base = c(surface);
+                let hover = c("ghost_element.hover").composite_over(base);
+                let selected = c("ghost_element.selected").composite_over(base);
+                assert!(
+                    selected.contrast_ratio(base) > hover.contrast_ratio(base),
+                    "{name}: hover must stay weaker than selection on {surface}"
+                );
+                assert!(c("shadowroom.control_border").contrast_ratio(base) >= 3.0);
+                assert!(
+                    c("text.muted").contrast_ratio(selected) >= 4.5,
+                    "{name} {surface}"
+                );
+            }
+            // Text fields sit on the window background, keycaps on the canvas.
+            for surface in ["background", "shadowroom.canvas"] {
+                assert!(
+                    c("shadowroom.control_border").contrast_ratio(c(surface)) >= 3.0,
+                    "{name}: control outline on {surface}"
+                );
+            }
+            for surface in ["panel.background", "shadowroom.canvas"] {
+                assert!(
+                    c("text.muted").contrast_ratio(c(surface)) >= 4.5,
+                    "{name} {surface}"
+                );
+                assert!(c("shadowroom.rating").contrast_ratio(c(surface)) >= 4.5);
+            }
+            // On-photo roles are identical in both appearances and readable on
+            // the scrim plate over the worst case, a white photo region.
+            let plate = c("shadowroom.scrim").composite_over(white);
+            for (key, value) in PHOTO_OVERLAY {
+                assert_eq!(theme.colors[key], value, "{name}: {key}");
+                if key == "shadowroom.scrim.label.text" {
+                    // Drawn on the filled label chip, not on the plate.
+                    for label in ["red", "yellow", "green", "blue", "purple"] {
+                        let fill = c(&format!("shadowroom.scrim.label.{label}"));
+                        assert!(c(key).contrast_ratio(fill) >= 7.0, "{name}: {label}");
+                    }
+                } else if key != "shadowroom.scrim" {
+                    let minimum = if key.contains("label") || key.ends_with("text") {
+                        4.5
+                    } else {
+                        3.0
+                    };
+                    assert!(c(key).contrast_ratio(plate) >= minimum, "{name}: {key}");
+                }
+            }
+            for label in ["red", "yellow", "green", "blue", "purple"] {
+                let swatch = c(&format!("shadowroom.label.{label}"));
+                assert!(
+                    swatch.contrast_ratio(c("panel.background")) >= 3.0,
+                    "{name} {label}"
+                );
+                assert!(c("shadowroom.label.text").contrast_ratio(swatch) >= 4.5);
+                // Thumbnail label strips sit on the image well and the
+                // filmstrip's canvas slot.
+                for surface in ["shadowroom.well", "shadowroom.canvas"] {
+                    assert!(
+                        swatch.contrast_ratio(c(surface)) >= 3.0,
+                        "{name} {label} on {surface}"
+                    );
+                }
+            }
+            // Cull ledger ticks on the panel: decisions and reviewed frames
+            // are graphics that must read (3:1); unreviewed is the dim
+            // hairline rail, visible on the panel and 3:1 from reviewed cells
+            // in every palette, High Contrast included (R4-design-01).
+            for key in [
+                "shadowroom.pick",
+                "shadowroom.reject",
+                "shadowroom.ledger.reviewed",
+                "text.accent",
+            ] {
+                assert!(
+                    c(key).contrast_ratio(c("panel.background")) >= 3.0,
+                    "{name}: ledger {key}"
+                );
+            }
+            let rail = c("shadowroom.ledger.rail");
+            assert!(
+                c("shadowroom.ledger.reviewed").contrast_ratio(rail) >= 3.0,
+                "{name}: reviewed vs unreviewed ledger cells"
+            );
+            assert!(
+                rail.contrast_ratio(c("panel.background")) >= 1.5,
+                "{name}: ledger rail on the panel"
+            );
+            // Warnings never read as ratings, and blue labels never as the
+            // accent: at least 25° apart in OKLCH hue.
+            let hue = |key: &str| c(key).oklch_hue();
+            let apart = |a: f64, b: f64| {
+                let d = (a - b).abs() % 360.;
+                d.min(360. - d)
+            };
+            assert!(
+                apart(hue("warning"), hue("shadowroom.rating")) >= 25.,
+                "{name}: warning vs rating"
+            );
+            assert!(
+                apart(hue("shadowroom.label.blue"), hue("shadowroom.focus_ring")) >= 25.,
+                "{name}: label blue vs accent"
+            );
+            // Errors never read as warnings: 25° apart and a different glyph
+            // (circle-x vs triangle) at every render site (R5-design-06).
+            assert!(
+                apart(hue("warning"), hue("error")) >= 25.,
+                "{name}: warning vs error"
+            );
+            // The same pairs hold apart by lightness too, so protan and deutan
+            // viewers still tell them apart: CIEDE2000 >= 12 after a Machado
+            // (2009) simulation, the bar SCRATCH contrast.py audits
+            // (R5-a11y-04). Blue and Purple, the closest label pair, keep
+            // >= 12 in normal vision and >= 10 in both simulations.
+            for (a, b, minimum) in [
+                ("warning", "shadowroom.rating", 12.),
+                ("shadowroom.label.blue", "text.accent", 12.),
+                ("shadowroom.label.blue", "shadowroom.label.purple", 10.),
+            ] {
+                for vision in [Vision::Protan, Vision::Deutan] {
+                    let delta = cvd::delta_e(c(a), c(b), vision);
+                    assert!(
+                        delta >= minimum,
+                        "{name}: {a} vs {b} {vision:?} dE2000 {delta:.1}"
+                    );
+                }
+            }
+            assert!(
+                cvd::delta_e(
+                    c("shadowroom.label.blue"),
+                    c("shadowroom.label.purple"),
+                    Vision::Normal
+                ) >= 12.,
+                "{name}: Blue vs Purple"
+            );
+            let canvas = c("shadowroom.canvas");
+            assert!(
+                canvas.r == canvas.g && canvas.g == canvas.b,
+                "{name}: canvas tint"
+            );
+        }
+    }
+
+    #[test]
+    fn imported_themes_derive_shadowroom_surfaces_from_their_own_roles() {
+        let themes = Theme::from_zed_json(
+            r##"{"name":"Probe","appearance":"dark","style":{
+                "background":"#282c34","panel.background":"#21252b",
+                "text.muted":"#9da5b4","shadowroom.control_border":"#ff0000"}}"##,
+        )
+        .unwrap();
+        let theme = &themes[0];
+        let fallback = Theme::dark();
+        let well = resolve_role(theme, &fallback, "shadowroom.well", "#000000");
+        // Between the theme's background and panel, not the built-in #161616.
+        assert_eq!(well, Rgba::parse("#252930").unwrap());
+        // A role the theme supplies always wins over derivation.
+        assert_eq!(
+            resolve_role(theme, &fallback, "shadowroom.control_border", "#000000"),
+            Rgba::parse("#ff0000").unwrap()
+        );
+        // Roles that cannot be derived use the same-appearance built-in.
+        assert_eq!(
+            resolve_role(theme, &fallback, "shadowroom.scrim.pick", "#000000"),
+            Rgba::parse("#7fbf7f").unwrap()
+        );
+        let sparse = &Theme::from_zed_json(r#"{"name":"Sparse","style":{}}"#).unwrap()[0];
+        assert_eq!(
+            resolve_role(sparse, &fallback, "shadowroom.well", "#000000"),
+            Rgba::parse("#161616").unwrap()
+        );
+        // Imported colors are never rewritten by derivation.
+        assert!(!theme.colors.contains_key("shadowroom.well"));
+    }
     #[test]
     fn contrast_diagnostics_preserve_theme_fidelity_and_alpha() {
         assert!(
@@ -739,6 +1299,71 @@ mod tests {
                 assert!(Rgba::parse(&base.resolved_color(key)).is_some());
             }
             assert!(base.contrast_ratio("text", "panel.background").unwrap() >= 4.5);
+        }
+    }
+    #[test]
+    fn high_contrast_variants_reach_aaa_text_and_strong_outlines() {
+        for (theme, base) in [
+            (Theme::high_contrast_dark(), Theme::dark()),
+            (Theme::high_contrast_light(), Theme::light()),
+        ] {
+            let name = &theme.name;
+            assert_eq!(theme.appearance, base.appearance);
+            // Same roles as the palette it varies, so nothing falls back.
+            for key in base.colors.keys() {
+                assert!(theme.colors.contains_key(key), "{name}: {key}");
+            }
+            let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
+            for surface in [
+                "background",
+                "panel.background",
+                "elevated_surface.background",
+                "toolbar.background",
+                "status_bar.background",
+                "shadowroom.canvas",
+            ] {
+                let s = c(surface);
+                let selected = c("ghost_element.selected").composite_over(s);
+                for text in ["text", "text.muted"] {
+                    assert!(
+                        c(text).contrast_ratio(s) >= 7.0,
+                        "{name}: {text} on {surface}"
+                    );
+                    assert!(
+                        c(text).contrast_ratio(selected) >= 7.0,
+                        "{name}: {text} on selected {surface}"
+                    );
+                }
+                for key in ["text.accent", "error", "success", "warning"] {
+                    assert!(
+                        c(key).contrast_ratio(s) >= 4.5,
+                        "{name}: {key} on {surface}"
+                    );
+                }
+                for key in [
+                    "border",
+                    "border.variant",
+                    "shadowroom.control_border",
+                    "shadowroom.focus_ring",
+                    "icon.muted",
+                ] {
+                    assert!(
+                        c(key).contrast_ratio(s) >= 3.0,
+                        "{name}: {key} on {surface}"
+                    );
+                }
+            }
+            // The high-contrast palette is at least as strong as its base.
+            for (fg, bg) in [
+                ("text.muted", "panel.background"),
+                ("border", "panel.background"),
+                ("shadowroom.control_border", "elevated_surface.background"),
+            ] {
+                assert!(
+                    theme.contrast_ratio(fg, bg).unwrap() > base.contrast_ratio(fg, bg).unwrap(),
+                    "{name}: {fg} on {bg}"
+                );
+            }
         }
     }
     #[test]

@@ -139,6 +139,48 @@ def _():
     # same disc as Codicons pass-filled; slash angle matches circle-slash
     return [circle(8, 8, 7), stroke([(4.6, 11.4), (11.4, 4.6)], cw=False)]
 
+@icon("reset-decision", "Reset rating and pick/reject")
+def _():
+    # an eraser (45-degree block with a ferrule line) over a short baseline:
+    # "clear the marks", unlike the empty Unreviewed circle or the Undo arrow
+    a, b, c, d = (1.5, 9.5), (7.5, 3.5), (12.5, 8.5), (6.5, 14.5)
+    return [stroke([a, b, c, d, a]), stroke([(3.5, 7.5), (8.5, 12.5)]),
+            stroke([(9.5, 14.5), (14.5, 14.5)])]
+
+@icon("peaking", "Focus peaking")
+def _():
+    # a focus reticle: ring, four edge ticks and a centre dot (not the
+    # four-corner fullscreen glyph)
+    ring = [circle(8, 8, 5), circle(8, 8, 4, cw=False)]
+    ticks = [rrect(7.5, 1, 8.5, 3.5), rrect(7.5, 12.5, 8.5, 15),
+             rrect(1, 7.5, 3.5, 8.5), rrect(12.5, 7.5, 15, 8.5)]
+    return ring + ticks + [circle(8, 8, 1.25)]
+
+@icon("clipping", "Clipping overlay")
+def _():
+    # an exposure frame whose upper-right corner is filled: the clipping
+    # triangles of a histogram, not the warning triangle (errors only)
+    return [frame(2, 2, 14, 14, 1), poly([(6, 3), (13, 3), (13, 10)])]
+
+@icon("culling", "Culling panel")
+def _():
+    # the cull ledger: a rail with decided frames above and below it, the
+    # inspector tab's own shape (the histogram mountain toggles the histogram)
+    return [rrect(1, 8, 15, 9), rrect(3, 3, 5, 7), rrect(7, 5, 9, 7), rrect(11, 10, 13, 14)]
+
+@icon("error", "Failure")
+def _():
+    # circle-x: something failed (unsaved decision, failed save or copy); the
+    # warning triangle stays for warnings and danger actions
+    return [circle(8, 8, 7), circle(8, 8, 6, cw=False),
+            stroke([(5.5, 5.5), (10.5, 10.5)]), stroke([(10.5, 5.5), (5.5, 10.5)])]
+
+@icon("focus-mode", "Focus mode")
+def _():
+    # one photograph on an emptied screen: the outer frame stays, the chrome
+    # inside it is gone (not the four-corner full-screen glyph)
+    return [frame(1, 2, 15, 14, 1.5), rrect(4.5, 5.5, 11.5, 10.5, 0.5)]
+
 @icon("auto-advance", "Auto-advance after a decision")
 def _():
     # decide (check) then move (arrow)
@@ -174,6 +216,14 @@ def _():
             "L12.458 3H13.459L12.65 12.708C12.543 13.993 11.449 15 10.159 15H5.84C4.55 15 3.456 13.994 3.349 12.708Z",
             stroke([(8, 11.5), (8, 5.5)]),
             stroke([(6, 7.5), (8, 5.5), (10, 7.5)])]
+
+@icon("import", "Import into the library")
+def _():
+    # an arrow dropping into an open tray: copies come in (unlike export's
+    # arrow leaving a bar)
+    return [stroke([(2.5, 9.5), (2.5, 13.5), (13.5, 13.5), (13.5, 9.5)]),
+            stroke([(8, 1.5), (8, 10)]),
+            stroke([(5, 7), (8, 10), (11, 7)])]
 
 @icon("drive", "Drive")
 def _():
