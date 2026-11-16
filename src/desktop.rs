@@ -3637,6 +3637,14 @@ impl Workspace {
                     cx.notify();
                     return;
                 }
+                if !self.palette
+                    && !self.preferences
+                    && self.import_ui.open
+                    && self.import_ui.dismiss_confirmation()
+                {
+                    cx.notify();
+                    return;
+                }
                 if self.palette {
                     self.palette = false;
                 } else if self.preferences {
