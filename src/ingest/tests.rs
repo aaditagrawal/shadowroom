@@ -1404,6 +1404,8 @@ fn cancel_while_waiting_for_a_pulled_card_keeps_verified_photos() {
     control.cancel();
     let report = job.join().unwrap().unwrap();
     assert_eq!(report.progress.phase, Phase::Cancelled);
+    // The terminal report no longer waits for the card.
+    assert!(!report.progress.source_missing);
     assert_eq!(report.progress.failed, 0);
     assert!(report.progress.completed <= 2);
     assert_eq!(
@@ -1616,6 +1618,7 @@ fn cancel_skips_the_pulled_card_and_starts_the_queued_one() {
     worker.send(Command::Cancel).unwrap();
     let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
     assert_eq!(a.phase, Phase::Cancelled);
+    assert!(!a.source_missing, "{a:?}");
     assert_eq!(a.failed, 0, "{a:?}");
     // B starts by itself: no new Scan or Start.
     let copying = job_progress(&rx, &card_b, |p| p.phase == Phase::Copying);

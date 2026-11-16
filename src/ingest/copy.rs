@@ -1787,6 +1787,9 @@ pub fn execute_with(
             std::panic::resume_unwind(panic);
         }
     });
+    // A finished job waits for nothing: a cancel while the card was out
+    // ends the wait, and the terminal report must not read as paused.
+    report.progress.source_missing = false;
     report.progress.phase = if control.is_cancelled() {
         Phase::Cancelled
     } else if report.progress.errors.is_empty() {

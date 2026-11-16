@@ -1241,7 +1241,7 @@ impl Workspace {
                     {
                         progress.phase = Phase::Paused;
                     }
-                    if progress.source_missing {
+                    if progress.source_missing && !progress.phase.is_terminal() {
                         progress.phase = Phase::Paused;
                     }
                     self.import_ui.progress = progress;
