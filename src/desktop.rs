@@ -439,7 +439,7 @@ fn title_match(query: &str, title: &str) -> Vec<std::ops::Range<usize>> {
                 let end = chars
                     .get(start + phrase.len())
                     .map_or(title.len(), |&(byte, _)| byte);
-                return vec![chars[start].0..end];
+                return std::iter::once(chars[start].0..end).collect();
             }
         }
     }
@@ -13571,9 +13571,10 @@ mod ui_tests {
         };
         cache.match_query("exp", &[]);
         assert_eq!(titles(&cache)[0], "Export Picks in This View…");
-        assert_eq!(title_match("exp", "Export Picks in This View…"), [0..3]);
+        let one = |range: std::ops::Range<usize>| std::iter::once(range).collect::<Vec<_>>();
+        assert_eq!(title_match("exp", "Export Picks in This View…"), one(0..3));
         assert_eq!(title_match("ep", "Export Picks"), [0..1, 2..3]);
-        assert_eq!(title_match("pick bu", "Pick Burst Winner"), [0..7]);
+        assert_eq!(title_match("pick bu", "Pick Burst Winner"), one(0..7));
         assert!(title_match("zz", "Export").is_empty());
         assert!(title_match("", "Export").is_empty());
     }
