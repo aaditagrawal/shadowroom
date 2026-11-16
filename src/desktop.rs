@@ -5696,6 +5696,10 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Histogram plot plate: the dark plate in dark themes, white in light.
+    fn histogram_plate(&self) -> Hsla {
+        self.c("shadowroom.histogram.background", "#0f0f0f")
+    }
     fn canvas_bg(&self) -> Hsla {
         self.c("shadowroom.canvas", "#0f0f0f")
     }
@@ -7866,9 +7870,10 @@ impl Workspace {
         let (cell, image) = ui::GRID_SIZES[self.grid_size_index()];
         (cell, image, image + ui::GRID_ROW_CHROME)
     }
-    /// Columns that keep grid cells at least the chosen size wide.
+    /// Columns that keep grid cells at least the chosen size wide. The
+    /// scrollbar lives inside the right gutter, so both gutters are equal.
     fn grid_cols(&self) -> usize {
-        ((self.center_size.0 - scrollbar::WIDTH - 2. * ui::PANEL_INSET + ui::GRID_GAP)
+        ((self.center_size.0 - 2. * ui::PANEL_INSET + ui::GRID_GAP)
             / (self.grid_metrics().0 + ui::GRID_GAP))
             .floor()
             .clamp(1., 64.) as usize
@@ -7880,11 +7885,9 @@ impl Workspace {
         let handle = self.grid_scroll.clone();
         // Equal cells (placeholders share the box), so the well width is known
         // and badges can be pinned to each photo's contained rectangle.
-        let cell_w = (self.center_size.0
-            - scrollbar::WIDTH
-            - 2. * ui::PANEL_INSET
-            - ui::GRID_GAP * (cols as f32 - 1.))
-            / cols as f32;
+        let cell_w =
+            (self.center_size.0 - 2. * ui::PANEL_INSET - ui::GRID_GAP * (cols as f32 - 1.))
+                / cols as f32;
         let well_w = (cell_w - 2. * space::XS - 2. * ui::HAIRLINE).max(1.);
         let list = uniform_list(
             "photo-grid",
@@ -7903,7 +7906,10 @@ impl Workspace {
                             .min_w(px(0.))
                             .flex()
                             .gap(px(ui::GRID_GAP))
-                            .px(px(ui::PANEL_INSET))
+                            // Equal gutters: the 12 px scrollbar column beside
+                            // the list is part of the right one.
+                            .pl(px(ui::PANEL_INSET))
+                            .pr(px(ui::PANEL_INSET - scrollbar::WIDTH))
                             .pt(px(space::LG));
                         for col in 0..cols {
                             let position = row * cols + col;
@@ -8941,9 +8947,12 @@ impl Workspace {
                 + if tight { 0. } else { 16. + space::SM };
             zoom + gap + control + if compare { control } else { 0. }
         };
+        // Groups: decide | rate … position | workflow | view | delete.
+        let view_group = grid || zoomable;
+        let dividers = if view_group { 4. } else { 3. };
         let base = 2. * if tight { space::XS } else { ui::BAR_INSET }
             + 2. * control // flag icons
-            + 2. * (1. + 2. * space::XS + gap) // dividers
+            + dividers * (1. + 2. * space::XS + gap)
             + stars_width
             + gap
             + if mixed_rating { 5. * SMALL_CHAR + gap } else { 0. }
@@ -9126,6 +9135,7 @@ impl Workspace {
                         "",
                     )),
             )
+            .child(self.control_divider())
             .child(
                 self.toggle_button(
                     "header-advance",
@@ -9181,6 +9191,7 @@ impl Workspace {
                     )),
                 )
             })
+            .when(view_group, |bar| bar.child(self.control_divider()))
             .when(grid, |bar| bar.child(self.grid_size_control(cx)))
             .when(zoomable, |bar| {
                 bar.child(
@@ -9526,11 +9537,14 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
+                            plot: self.histogram_plate().into(),
+                            plot_border: self.border().into(),
+                            plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
                             ..Default::default()
                         },
                     ));
                 } else {
-                    body = body.child(div().h(px(122.)).bg(self.canvas_bg()));
+                    body = body.child(div().h(px(122.)).bg(self.histogram_plate()));
                 }
             }
             if !self.inspector_info {

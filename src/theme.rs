@@ -147,6 +147,8 @@ impl Theme {
                 ("editor.foreground", "#e6e6e6"),
                 ("shadowroom.canvas", "#0f0f0f"),
                 ("shadowroom.well", "#161616"),
+                ("shadowroom.histogram.background", "#0f0f0f"),
+                ("shadowroom.histogram.grid", "#1c1c1c"),
                 ("shadowroom.control_border", "#707070"),
                 ("shadowroom.pick", "#7fbf7f"),
                 ("shadowroom.reject", "#d46a6a"),
@@ -202,6 +204,8 @@ impl Theme {
                 // Neutral (R=G=B) so the photo's white balance is not tinted.
                 ("shadowroom.canvas", "#dcdcdc"),
                 ("shadowroom.well", "#e4e4e4"),
+                ("shadowroom.histogram.background", "#ffffff"),
+                ("shadowroom.histogram.grid", "#00000014"),
                 ("shadowroom.control_border", "#717a88"),
                 ("shadowroom.pick", "#2f6844"),
                 ("shadowroom.reject", "#a53e42"),
