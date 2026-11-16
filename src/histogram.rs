@@ -24,6 +24,22 @@ use gpui::{
     canvas, div, fill, point, px, rgb, rgba, size,
 };
 use shadowroom::media::Histogram;
+use std::{
+    cell::RefCell,
+    hash::{Hash, Hasher},
+};
+
+type PlotPaths = Vec<(gpui::Path<Pixels>, Rgba)>;
+
+thread_local! {
+    /// The last tessellated plot, keyed by its bounds and display data. GPUI
+    /// rebuilds the scene every frame, and tessellating seven bands plus three
+    /// or four outlines of 256 bins each on every frame made the histogram one
+    /// of the costliest regions with the inspector open (docs/PERFORMANCE.md,
+    /// "Human interface responsiveness"). The plot changes only with the
+    /// photo, panel geometry or scale, so other frames reuse these paths.
+    static PLOT_PATHS: RefCell<Option<(u64, PlotPaths)>> = const { RefCell::new(None) };
+}
 
 /// Vertical scaling of bin counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -332,6 +348,60 @@ impl Prepared {
         }
     }
 
+    /// Identity of a tessellated plot: its geometry and display values.
+    fn plot_key(&self, plot: &Plot) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for value in [plot.left, plot.bottom, plot.width, plot.height] {
+            value.to_bits().hash(&mut hasher);
+        }
+        for channel in [&self.red, &self.green, &self.blue]
+            .into_iter()
+            .chain(self.luma.as_ref())
+        {
+            channel.len().hash(&mut hasher);
+            for value in channel {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Band fills, then channel outlines, in paint order.
+    fn plot_paths(&self, plot: &Plot) -> PlotPaths {
+        let mut paths = Vec::new();
+        let (r, g, b) = (&self.red, &self.green, &self.blue);
+        // Additive bands: what the eye would see if each channel were light.
+        // (lower, upper) per bin; white = all three, CMY = two, RGB = one.
+        let band = |f: &dyn Fn(f32, f32, f32) -> (f32, f32)| -> (Vec<f32>, Vec<f32>) {
+            (0..plot.bins).map(|i| f(r[i], g[i], b[i])).unzip()
+        };
+        let bands = [
+            (band(&|r, g, b| (0., r.min(g).min(b))), FILL_W),
+            (band(&|r, g, b| (b, r.min(g))), FILL_Y),
+            (band(&|r, g, b| (g, r.min(b))), FILL_M),
+            (band(&|r, g, b| (r, g.min(b))), FILL_C),
+            (band(&|r, g, b| (g.max(b), r)), FILL_R),
+            (band(&|r, g, b| (r.max(b), g)), FILL_G),
+            (band(&|r, g, b| (r.max(g), b)), FILL_B),
+        ];
+        for ((lows, highs), color) in &bands {
+            if let Some(path) = plot.band(lows, highs) {
+                paths.push((path, rgba(*color)));
+            }
+        }
+        for (channel, color) in [(r, LINE_R), (g, LINE_G), (b, LINE_B)] {
+            if let Some(path) = plot.outline(channel) {
+                paths.push((path, rgba(color)));
+            }
+        }
+        if let Some(luma) = &self.luma
+            && let Some(path) = plot.outline(luma)
+        {
+            paths.push((path, rgba(LINE_L)));
+        }
+        paths
+    }
+
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App) {
         window.paint_quad(fill(bounds, rgb(PLOT_BG)));
         let left = f32::from(bounds.origin.x);
@@ -357,36 +427,17 @@ impl Prepared {
                 height: (h - 2.).max(1.),
                 bins: self.red.len(),
             };
-            let (r, g, b) = (&self.red, &self.green, &self.blue);
-            // Additive bands: what the eye would see if each channel were light.
-            // (lower, upper) per bin; white = all three, CMY = two, RGB = one.
-            let band = |f: &dyn Fn(f32, f32, f32) -> (f32, f32)| -> (Vec<f32>, Vec<f32>) {
-                (0..plot.bins).map(|i| f(r[i], g[i], b[i])).unzip()
-            };
-            let bands = [
-                (band(&|r, g, b| (0., r.min(g).min(b))), FILL_W),
-                (band(&|r, g, b| (b, r.min(g))), FILL_Y),
-                (band(&|r, g, b| (g, r.min(b))), FILL_M),
-                (band(&|r, g, b| (r, g.min(b))), FILL_C),
-                (band(&|r, g, b| (g.max(b), r)), FILL_R),
-                (band(&|r, g, b| (r.max(b), g)), FILL_G),
-                (band(&|r, g, b| (r.max(g), b)), FILL_B),
-            ];
-            for ((lows, highs), color) in &bands {
-                if let Some(path) = plot.band(lows, highs) {
-                    window.paint_path(path, rgba(*color));
+            let key = self.plot_key(&plot);
+            PLOT_PATHS.with_borrow_mut(|cache| {
+                if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+                    *cache = Some((key, self.plot_paths(&plot)));
                 }
-            }
-            for (channel, color) in [(r, LINE_R), (g, LINE_G), (b, LINE_B)] {
-                if let Some(path) = plot.outline(channel) {
-                    window.paint_path(path, rgba(color));
+                if let Some((_, paths)) = cache {
+                    for (path, color) in paths.iter() {
+                        window.paint_path(path.clone(), *color);
+                    }
                 }
-            }
-            if let Some(luma) = &self.luma {
-                if let Some(path) = plot.outline(luma) {
-                    window.paint_path(path, rgba(LINE_L));
-                }
-            }
+            });
         }
 
         // Clip markers: boxy 7 px squares in the top corners, lit in the additive

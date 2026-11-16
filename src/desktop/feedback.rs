@@ -42,6 +42,9 @@ pub(super) struct Flash {
     pub tone: Tone,
     pub action: Option<NoticeAction>,
     pub until: Instant,
+    /// When the status bar began showing notices without a gap: a notice that
+    /// replaces a visible one keeps it, so it neither fades nor flickers.
+    pub since: Instant,
 }
 impl Flash {
     pub(super) fn new(
@@ -60,7 +63,15 @@ impl Flash {
             tone,
             action,
             until: now + ttl,
+            since: now,
         }
+    }
+    /// Continues the run of notices that `previous` belonged to.
+    fn after(mut self, previous: Option<&Flash>) -> Self {
+        if let Some(previous) = previous {
+            self.since = previous.since;
+        }
+        self
     }
 }
 
@@ -71,6 +82,8 @@ pub(super) struct DecisionNote {
     pub summary: String,
     pub subject: String,
     pub until: Instant,
+    /// When notes began showing without a gap (see [`Flash::since`]).
+    pub since: Instant,
 }
 
 /// Quit was requested while decisions or recovered preferences cannot be
@@ -120,6 +133,52 @@ pub(super) struct Feedback {
     pub quit_prompt: Option<QuitPrompt>,
     /// The error text whose raw details are expanded in the toast.
     pub details_for: Option<String>,
+    /// Decisions the on-photo chip last showed, per photo, so a chip that
+    /// appears in place (not by a change of photo) can settle in.
+    pub chips: RefCell<Vec<ChipMemory>>,
+    /// An entrance drawn this frame is still running: render requests the
+    /// next animation frame (see `Workspace::entrance_opacity`).
+    pub animating: Cell<bool>,
+}
+
+/// What a photo's decision chip last showed and when it appeared in place.
+pub(super) struct ChipMemory {
+    id: i64,
+    decision: (Flag, u8, ColorLabel),
+    changed: Option<Instant>,
+}
+
+impl Feedback {
+    /// When `photo`'s chip last appeared while the photo stayed on screen: its
+    /// first decision, not later changes, which update the chip in place so
+    /// fast rating changes never flicker. A photo seen for the first time
+    /// records its decision without an appearance, so navigation never
+    /// animates the chip.
+    fn chip_appeared(&self, photo: &Photo) -> Option<Instant> {
+        let empty = (Flag::None, 0, ColorLabel::None);
+        let decision = (photo.flag, photo.rating, photo.label);
+        let mut chips = self.chips.borrow_mut();
+        if let Some(memory) = chips.iter_mut().find(|memory| memory.id == photo.id) {
+            if memory.decision != decision {
+                if memory.decision == empty {
+                    memory.changed = Some(Instant::now());
+                }
+                memory.decision = decision;
+            }
+            return memory.changed;
+        }
+        // Compare shows two photos; a few entries cover both panes and the
+        // photo just left.
+        if chips.len() >= 4 {
+            chips.remove(0);
+        }
+        chips.push(ChipMemory {
+            id: photo.id,
+            decision,
+            changed: None,
+        });
+        None
+    }
 }
 impl Feedback {
     /// Retires notices whose time is up; true when anything visible changed.
@@ -151,7 +210,8 @@ impl Workspace {
     pub(super) fn announce(&mut self, text: impl Into<String>, tone: Tone) {
         let text = text.into();
         self.status.clone_from(&text);
-        self.feedback.flash = Some(Flash::new(text, tone, None, Instant::now()));
+        self.feedback.flash =
+            Some(Flash::new(text, tone, None, Instant::now()).after(self.feedback.flash.as_ref()));
     }
     /// [`Self::announce`] with a button, such as Undo after an auto-advance.
     pub(super) fn announce_action(
@@ -164,12 +224,15 @@ impl Workspace {
     ) {
         let text = text.into();
         self.status.clone_from(&text);
-        self.feedback.flash = Some(Flash::new(
-            text,
-            tone,
-            Some(NoticeAction { label, cmd, keys }),
-            Instant::now(),
-        ));
+        self.feedback.flash = Some(
+            Flash::new(
+                text,
+                tone,
+                Some(NoticeAction { label, cmd, keys }),
+                Instant::now(),
+            )
+            .after(self.feedback.flash.as_ref()),
+        );
     }
     /// Confirms a decision whose frame just left the loupe (auto-advance, or
     /// the decision filtered it out of the view), on the photo and with Undo.
@@ -203,11 +266,18 @@ impl Workspace {
             .get(&first.id)
             .map(|&i| self.photos[i].filename.as_str());
         let subject = copy::subject(after.len(), filename);
+        let now = Instant::now();
+        let since = self
+            .feedback
+            .decision_note
+            .as_ref()
+            .map_or(now, |note| note.since);
         self.feedback.decision_note = Some(DecisionNote {
             flag,
             summary: summary.clone(),
             subject: subject.clone(),
-            until: Instant::now() + DECISION_NOTE_TTL,
+            until: now + DECISION_NOTE_TTL,
+            since,
         });
         self.announce_action(
             format!("{summary} · {subject}"),
@@ -273,37 +343,41 @@ impl Workspace {
             Tone::Warning => Some(("warning", self.c("warning", "#e0b341"))),
         };
         Some(
-            div()
-                .id("status-notice")
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .gap(px(space::SM))
-                .text_color(self.text())
-                .children(glyph.map(|(glyph, color)| icon(glyph, color).size(px(14.))))
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_normal()
-                        .line_clamp(1)
-                        .child(flash.text.clone()),
-                )
-                .children(flash.action.as_ref().map(|action| {
-                    self.compact_button(
-                        "status-notice-action",
-                        action.label,
-                        "",
-                        action.cmd.clone(),
-                        false,
-                        cx,
+            self.fade_in(
+                motion::occurrence("status-notice-in", flash.since),
+                motion::NOTICE,
+                0.,
+                div()
+                    .id("status-notice")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .text_color(self.text())
+                    .children(glyph.map(|(glyph, color)| icon(glyph, color).size(px(14.))))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_normal()
+                            .line_clamp(1)
+                            .child(flash.text.clone()),
                     )
-                    .border_color(self.c("border.variant", "#333333"))
-                    .tooltip(self.tip(action.label, action.keys))
-                }))
-                .into_any_element(),
+                    .children(flash.action.as_ref().map(|action| {
+                        self.compact_button(
+                            "status-notice-action",
+                            action.label,
+                            "",
+                            action.cmd.clone(),
+                            false,
+                            cx,
+                        )
+                        .border_color(self.c("border.variant", "#333333"))
+                        .tooltip(self.tip(action.label, action.keys))
+                    })),
+            ),
         )
     }
 
@@ -364,12 +438,18 @@ impl Workspace {
     }
 
     /// The current photo's decision over the image: flag, stars and label.
+    /// A chip appearing for a first decision on the photo on screen settles in
+    /// over 120 ms from 60% opacity, readable on its first frame; a photo
+    /// arriving by navigation shows its chip at once.
     pub(super) fn decision_chip(&self, photo: &Photo) -> Option<Div> {
+        let appeared = self.feedback.chip_appeared(photo);
         if photo.flag == Flag::None && photo.rating == 0 && photo.label == ColorLabel::None {
             return None;
         }
+        let opacity = appeared.map_or(1., |at| self.entrance_opacity(at, motion::CHIP, 0.6));
         Some(
             self.photo_chip()
+                .opacity(opacity)
                 .when(photo.flag != Flag::None, |s| {
                     s.child(self.flag_glyph(photo.flag))
                 })
@@ -388,6 +468,7 @@ impl Workspace {
         let note = self.feedback.decision_note.as_ref()?;
         Some(
             self.photo_chip()
+                .opacity(self.entrance_opacity(note.since, motion::NOTICE, 0.3))
                 .when(note.flag != Flag::None, |s| {
                     s.child(self.flag_glyph(note.flag))
                 })
@@ -624,15 +705,19 @@ impl Workspace {
                     .tooltip(self.tip("Dismiss", "Esc")),
             );
         Some(
-            div()
-                .absolute()
-                .left(px(left + space::LG))
-                .right(px(right + space::LG))
-                .bottom(px(bottom))
-                .flex()
-                .justify_center()
-                .child(card)
-                .into_any_element(),
+            self.fade_in(
+                motion::occurrence("error-toast-in", &notice.text),
+                motion::NOTICE,
+                0.,
+                div()
+                    .absolute()
+                    .left(px(left + space::LG))
+                    .right(px(right + space::LG))
+                    .bottom(px(bottom))
+                    .flex()
+                    .justify_center()
+                    .child(card),
+            ),
         )
     }
 
@@ -857,6 +942,7 @@ mod tests {
                 summary: "Pick".into(),
                 subject: "a.jpg".into(),
                 until: now + DECISION_NOTE_TTL,
+                since: now,
             }),
             saved_until: Some(now + SAVED_TTL),
             ..Feedback::default()

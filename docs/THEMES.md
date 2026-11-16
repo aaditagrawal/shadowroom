@@ -47,6 +47,24 @@ immediately.
 The selected palette is named in Preferences; the status bar retains the active palette until Apply. Theme source
 can also be changed through the palette's **Theme Source** commands.
 
+### Motion
+
+Menus, dialogs and the command palette fade in over 120 ms, starting at 30%
+opacity so they are readable on the first frame. Status-bar notices, the error
+toast and the trailing decision note fade in over 150 ms; a notice that replaces
+one already showing appears at once, so rapid decisions do not flicker. The
+on-photo decision chip settles in from 60% over 120 ms when a photo on screen
+gets its first decision (with automatic advance off); later changes update it
+at once. Navigation, photo changes, zoom and pan are never animated, and
+everything closes instantly.
+
+**Preferences → Appearance → Reduce motion** turns these fades off. Fades are
+also off when the system asks for reduced motion: on Linux, the desktop portal's
+`reduced-motion` setting or GNOME's **Animations** switch (read through the
+portal, else `gsettings`); on macOS, **Accessibility → Display → Reduce motion**.
+Shadowroom reads the system setting at startup and whenever Preferences opens.
+`SHADOWROOM_REDUCE_MOTION=1` (or `0`) overrides both, for measurements.
+
 ### Built-in palettes
 
 Both palettes are defined as theme roles in `src/theme.rs`; render code reads

@@ -4,10 +4,13 @@ mod deletion_ui;
 mod dialog;
 mod feedback;
 mod folder_picker;
+mod frame_trace;
 mod help;
 mod ingest_ui;
 mod layout;
+mod motion;
 mod preferences;
+mod prefetch;
 mod review_actions;
 mod scrollbar;
 mod text_input;
@@ -231,6 +234,7 @@ enum Cmd {
     SetMinRating(u8),
     AutoAdvance,
     SetAutoAdvance(bool),
+    ReduceMotion(bool),
     SetAutoDrives(bool),
     Font(String),
     Theme(String),
@@ -817,6 +821,18 @@ impl Overlay {
         Self::Preferences,
         Self::AddHost,
     ];
+    fn trace_name(self) -> &'static str {
+        match self {
+            Self::FolderPicker => "folder_picker",
+            Self::Deletion => "deletion",
+            Self::ImageContext => "image_context",
+            Self::GettingStarted => "getting_started",
+            Self::RatingFilter => "rating_filter",
+            Self::Palette => "palette",
+            Self::Preferences => "preferences",
+            Self::AddHost => "add_host",
+        }
+    }
 }
 /// Durability of review decisions, derived from the optimistic `unsaved` map
 /// and the count of unacknowledged writer batches.
@@ -1140,6 +1156,9 @@ pub struct Workspace {
     /// The user reopened a dock that small-window fitting had hidden:
     /// [library, inspector] stay until hidden again.
     dock_override: [bool; 2],
+    /// Opt-in frame/input trace (`SHADOWROOM_FRAME_TRACE`); see `frame_trace`.
+    trace: frame_trace::Trace,
+    _trace_keys: Option<Subscription>,
 }
 
 /// Image placement in one photo pane, measured while painting.
@@ -1386,6 +1405,7 @@ impl Workspace {
             // before asking the actor to flush. Startup replays this synced journal.
             this.flush_navigation();
             this.drain_settings();
+            this.trace.flush();
             if let Some(journal)=this.pending_journal() && let Err(error)=journal.save(&this.recovery_path){eprintln!("CRITICAL: pending decision recovery could not be saved: {error:#}");}
             // Stop decoding now; queued preview-cache writes drain (at most 1 s)
             // while the catalog flushes, and are awaited below.
@@ -1396,6 +1416,18 @@ impl Workspace {
             }
             this.media.shutdown(Duration::from_secs(1));
             async {}
+        });
+        let trace = frame_trace::Trace::from_env();
+        motion::refresh_system_preference();
+        // Interceptors run before any key dispatch; the deferred effect runs
+        // once every handler for the keystroke has returned.
+        let trace_keys = trace.enabled().then(|| {
+            let trace = trace.clone();
+            cx.intercept_keystrokes(move |event, _, cx| {
+                trace.input("key", &event.keystroke.unparse());
+                let trace = trace.clone();
+                cx.defer(move |_| trace.handled());
+            })
         });
         let poll_wake = Rc::new(PollWake::default());
         let wake = poll_wake.clone();
@@ -1576,6 +1608,8 @@ impl Workspace {
             shown_hints: HashSet::new(),
             window_title: String::new(),
             dock_override: [false; 2],
+            trace,
+            _trace_keys: trace_keys,
         };
         if let Some(server) = &workspace.automation {
             match UiInbox::new(server.requests.clone()) {
@@ -2385,6 +2419,8 @@ impl Workspace {
         if dirty {
             self.poll_render = true;
             cx.notify();
+        } else {
+            self.trace.flush();
         }
     }
 
@@ -3885,6 +3921,12 @@ impl Workspace {
                 self.settings.auto_advance = enabled;
                 self.save_settings();
             }
+            Cmd::ReduceMotion(enabled) => {
+                self.settings
+                    .extra
+                    .insert("reduce_motion".into(), json!(enabled));
+                self.save_settings();
+            }
             Cmd::SetAutoDrives(enabled) => {
                 self.settings.auto_discover_drives = enabled;
                 self.save_settings();
@@ -5120,6 +5162,18 @@ fn stars(rating: u8) -> &'static str {
     const STARS: [&str; 6] = ["", "★", "★★", "★★★", "★★★★", "★★★★★"];
     STARS[usize::from(rating.min(5))]
 }
+/// Thumbnail-preview dimensions for a larger preview, or `None` when it is
+/// already no larger (`PreviewKind::Thumbnail` decodes to a 384 px long edge).
+fn thumbnail_size(width: u32, height: u32) -> Option<(u32, u32)> {
+    const EDGE: u32 = 384;
+    let long = width.max(height);
+    (long > EDGE).then(|| {
+        let scale =
+            |side: u32| ((side as u64 * EDGE as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+        (scale(width), scale(height))
+    })
+}
+
 fn preview_mtime(p: &Photo) -> i64 {
     if p.companion_path.is_some() {
         p.companion_modified_at
@@ -7081,7 +7135,16 @@ impl Workspace {
         let Some(preview) = available else {
             return fallback;
         };
+        // A thumbnail slot (grid, filmstrip) whose thumbnail has left the
+        // preview cache falls back to a larger decoded preview. Its texture is
+        // scaled to thumbnail size off the UI thread: converting and uploading
+        // the full preview cost 10–25 ms of paint per newly visible cell
+        // (docs/PERFORMANCE.md, "Human interface responsiveness").
+        let shrink = (wanted == PreviewKind::Thumbnail && preview.kind != PreviewKind::Thumbnail)
+            .then(|| thumbnail_size(preview.width, preview.height))
+            .flatten();
         let k = match preview.kind {
+            _ if shrink.is_some() => 0,
             PreviewKind::Thumbnail => 0,
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
@@ -7103,10 +7166,13 @@ impl Workspace {
         if self.texture_inflight.len() >= 12 || self.texture_inflight.contains(&key) {
             return fallback;
         }
-        let width = preview.width;
-        let height = preview.height;
-        let bytes = preview.rgba.len();
-        let kind = preview.kind;
+        let (width, height) = shrink.unwrap_or((preview.width, preview.height));
+        let bytes = width as usize * height as usize * 4;
+        let kind = if shrink.is_some() {
+            PreviewKind::Thumbnail
+        } else {
+            preview.kind
+        };
         let source = TextureSource {
             embedded_raw: preview.embedded_raw,
             rendered_raw: preview.rendered_raw,
@@ -7136,7 +7202,14 @@ impl Workspace {
         };
         self.texture_inflight.insert(key);
         let task = cx.background_executor().spawn(async move {
-            let mut bgra = preview.rgba.clone();
+            let mut bgra = if shrink.is_some() {
+                let full =
+                    image::RgbaImage::from_raw(preview.width, preview.height, preview.rgba.clone())
+                        .expect("validated preview dimensions");
+                image::imageops::thumbnail(&full, width, height).into_raw()
+            } else {
+                preview.rgba.clone()
+            };
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
@@ -10601,6 +10674,26 @@ impl Workspace {
             window,
             cx,
         );
+        let reduce_motion = s
+            .extra
+            .get("reduce_motion")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let motion = self.pref_choices(
+            "pref-motion",
+            [
+                ("Off".to_string(), Cmd::ReduceMotion(false), !reduce_motion),
+                ("On".to_string(), Cmd::ReduceMotion(true), reduce_motion),
+            ],
+            false,
+            window,
+            cx,
+        );
+        let motion_description = if motion::system_reduces_motion() {
+            "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
+        } else {
+            "Menus, dialogs and notices appear without fading. Also on when the system asks for reduced motion."
+        };
         let drives = self.pref_choices(
             "pref-drives",
             [
@@ -10905,6 +10998,7 @@ impl Workspace {
             .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
             .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Font", "Interface typeface", fonts))
+            .child(self.preference_row("Reduce motion", motion_description, motion))
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
             .child(div().pt(px(space::XS)).text_size(px(11.)).text_color(self.muted()).child(source_description))
@@ -11495,10 +11589,58 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let trace_started = self.trace.begin();
         // Input (or any repaint poll did not cause) returns poll to full speed.
-        if !std::mem::take(&mut self.poll_render) {
+        let poll_render = std::mem::take(&mut self.poll_render);
+        if !poll_render {
             self.poll_wake.kick();
         }
+        let element = self.render_workspace(window, cx);
+        if trace_started.is_some() {
+            let info = frame_trace::FrameInfo {
+                view: if self.import_ui.open {
+                    "import"
+                } else {
+                    match self.mode {
+                        ViewMode::Grid => "grid",
+                        ViewMode::Loupe => "loupe",
+                        ViewMode::Compare => "compare",
+                        ViewMode::Survey => "survey",
+                    }
+                },
+                overlay: self.top_overlay().map_or("none", Overlay::trace_name),
+                textures: self.visible_textures.len(),
+                photo: self.selected_id().map_or("none", |id| {
+                    // Sharpest texture of the current photo this frame drew
+                    // (keys add 4 for focus-peaking copies; a visible key
+                    // without a texture is still being converted).
+                    match self
+                        .visible_textures
+                        .iter()
+                        .filter(|key| key.0 == id && self.textures.contains_key(key))
+                        .map(|key| key.1 % 4)
+                        .max()
+                    {
+                        Some(0) => "thumbnail",
+                        Some(1) => "fit",
+                        Some(_) => "full",
+                        None => "none",
+                    }
+                }),
+                poll: poll_render,
+            };
+            self.trace.end(trace_started, info, cx);
+        }
+        element
+    }
+}
+
+impl Workspace {
+    fn render_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> AnyElement {
         if self._automation_wake.is_none() {
             self.drain_automation(window, cx);
         }
@@ -11660,8 +11802,9 @@ impl Render for Workspace {
                     viewer = viewer.child(self.compare_placeholder(cx));
                 }
             }
+            viewer = viewer.child(self.photo_view(photo, false, window, cx));
             viewer
-                .child(self.photo_view(photo, false, window, cx))
+                .children(self.neighbour_textures(cx))
                 .into_any_element()
         };
         let mut main = div()
@@ -11670,7 +11813,7 @@ impl Render for Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.filters(cx))
+            .child(self.trace.timed("filters", self.filters(cx)))
             .children(self.bulk_bar(cx))
             .child(
                 div()
@@ -11679,17 +11822,18 @@ impl Render for Workspace {
                     .min_h(px(0.))
                     .min_w(px(0.))
                     .overflow_hidden()
-                    .child(center),
+                    .child(self.trace.timed("center", center)),
             );
         if !self.filtered.is_empty() {
-            main = main.child(self.rating_bar(cx));
+            main = main.child(self.trace.timed("rating_bar", self.rating_bar(cx)));
             if self.mode != ViewMode::Grid {
-                main = main.child(self.filmstrip(cx));
+                let strip = self.filmstrip(cx);
+                main = main.child(self.trace.timed("filmstrip", strip));
             }
         }
         let mut body = div().relative().flex().flex_1().min_h(px(0.)).min_w(px(0.));
         if self.docks.library > 0. {
-            body = body.child(self.sidebar(cx));
+            body = body.child(self.trace.timed("sidebar", self.sidebar(cx)));
         }
         if self.import_ui.open {
             body = body.child(self.ingest_view(cx));
@@ -11697,7 +11841,7 @@ impl Render for Workspace {
             body = body.child(main);
         }
         if self.docks.inspector > 0. {
-            body = body.child(self.inspector_view(cx));
+            body = body.child(self.trace.timed("inspector", self.inspector_view(cx)));
         }
         if self.docks.library > 0. {
             body = body.child(self.dock_resize_grip(DockSide::Library, window, cx));
@@ -11710,6 +11854,9 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.trace.enabled() && event.pressed_button.is_some() {
+                    this.trace.input("drag", "");
+                }
                 this.move_scrollbar(event, cx);
                 this.move_dock_resize(event, cx);
             }))
@@ -11737,7 +11884,11 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, _: &QuitApp, _window, cx| this.user_quit(cx)))
             // The pointer took over: hide the keyboard focus ring until Tab or arrows.
-            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if this.trace.enabled() {
+                    this.trace
+                        .input("mouse_down", &format!("{:?}", event.button));
+                }
                 if std::mem::take(&mut this.focus_visible) {
                     cx.notify();
                 }
@@ -11752,43 +11903,52 @@ impl Render for Workspace {
             .line_height(px(ui::TEXT_LINE_HEIGHT))
             .text_color(self.text())
             .bg(self.bg())
-            .child(self.title_bar(window, cx))
+            .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
             .child(body)
-            .child(self.status_bar(window, cx));
+            .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
+        // Overlays fade in over 120 ms (`motion`); closing is instant.
         if self.add_host.is_some() {
-            root = root.child(self.add_host_view(cx));
+            root = root.child(self.overlay_in("add-host-in", self.add_host_view(cx)));
         }
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
-            root = root.child(self.rating_filter_menu(cx));
+            root = root.child(self.overlay_in("rating-filter-in", self.rating_filter_menu(cx)));
         }
         if self.preferences {
-            root = root.child(self.preferences_view(window, cx));
+            root = root.child(self.overlay_in("preferences-in", self.preferences_view(window, cx)));
         }
         if self.palette {
-            root = root.child(self.palette_view(cx));
+            root = root.child(self.overlay_in("palette-in", self.palette_view(cx)));
         }
         if self.getting_started {
-            root = root.child(self.getting_started_view(cx));
+            root = root.child(self.overlay_in("getting-started-in", self.getting_started_view(cx)));
         }
         if self.image_context.is_some() {
-            root = root.child(self.image_context_view(cx));
+            root = root.child(self.overlay_in("image-context-in", self.image_context_view(cx)));
         }
         if self.deletion.open() {
-            root = root.child(self.deletion_view(cx));
+            let deletion = self.deletion_view(cx);
+            root = root.child(self.overlay_in("deletion-in", deletion));
         }
         if self.folder_picker.is_some() {
-            root = root.child(self.picker_view(cx));
+            root = root.child(self.overlay_in("picker-in", self.picker_view(cx)));
         }
         // System feedback paints above every overlay so no scrim dims it.
+        let quit_prompt = self
+            .quit_prompt_view(cx)
+            .map(|prompt| self.overlay_in("quit-prompt-in", prompt));
         root = root
-            .children(self.quit_prompt_view(cx))
-            .children(self.error_toast(cx));
+            .children(quit_prompt)
+            .children(self.error_toast(cx))
+            .children(self.trace.probe());
         // A focused dialog control that is no longer drawn (its dialog closed
         // or its tab changed) hands focus back to the root, which owns `key()`.
         if self.dialog_focus.borrow().focus_is_stale(window) {
             window.focus(&self.focus);
         }
         self.trim_display_cache();
+        if self.feedback.animating.take() {
+            window.request_animation_frame();
+        }
         // Client-side decorations (Wayland, composited X11): transparent resize
         // margin around a 1px framed window. Server/macOS decorations need none.
         let Decorations::Client { tiling } = window.window_decorations() else {
@@ -11998,7 +12158,16 @@ mod ui_tests {
         NoticeKind, Overlay, PaletteCache, PanDrag, PaneGeometry, SelectionSummary, SurveyKey,
         SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
         index_filtered_positions, is_quit_chord, item, label_index, retained_position, text_input,
+        thumbnail_size,
     };
+
+    #[test]
+    fn thumbnail_fallbacks_scale_to_the_thumbnail_edge() {
+        assert_eq!(thumbnail_size(2000, 1333), Some((384, 256)));
+        assert_eq!(thumbnail_size(1333, 2000), Some((256, 384)));
+        assert_eq!(thumbnail_size(384, 200), None);
+        assert_eq!(thumbnail_size(1, 5000), Some((1, 384)));
+    }
     use gpui::Keystroke;
     use gpui::{point, px};
     use serde_json::json;
