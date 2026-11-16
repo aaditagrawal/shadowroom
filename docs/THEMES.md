@@ -151,6 +151,17 @@ filled state with a full-strength icon and a 2 px text-coloured bar along the
 bottom, the same bar as a chosen segment, so every toggle that is on carries the
 same marks.
 
+**One meaning per mark.** A 1 px box around a glyph always means "a key": every
+shortcut listed in a menu, tooltip, dialog footer, bar or the guide is drawn with
+the same keycap (`border.variant` hairline, MICRO text). The decision bar's "P",
+"X" and "1-5" are the one exception: plain muted hints inside the buttons they
+press. A current value is never boxed: the current rating in the image menu takes
+the selected fill, and the current label (in the image menu and the inspector) a
+text-coloured ring with an inset gap around its swatch. Chrome label swatches
+carry their key (6-9) or, for Purple, a dot; letters stay on photo badges. Each
+icon has one meaning: the Culling tab draws the ledger, the histogram toggle the
+histogram, failures a circled ×, warnings and danger actions the triangle.
+
 **Photo-overlay roles** (`shadowroom.scrim`, `shadowroom.scrim.{text,muted,pick,reject,rating,accent}`
 and `shadowroom.scrim.label.*`) are identical in both palettes: thumbnail
 badges and compare captions sit on photographs, which can be white or black in
@@ -162,10 +173,13 @@ flag glyph and label chip share one plate; the chip is filled with
 
 The **cull ledger** draws on chrome, not photographs, and codes each state by
 shape as well as colour: unreviewed frames are a 1 px `shadowroom.ledger.rail`
-hairline, reviewed frames without a flag a 2 px `shadowroom.ledger.reviewed`
-bar on that line, picks a 4 px `shadowroom.pick` bar standing above it and
-rejects a 4 px `shadowroom.reject` bar hanging below it, so pick and reject
-stay apart without hue. `text.accent` marks only the current photo's playhead;
+hairline, reviewed frames without a flag a 3 px `shadowroom.ledger.reviewed`
+bar centred on that line, picks a 4 px `shadowroom.pick` bar standing above it
+and rejects a 4 px `shadowroom.reject` bar hanging below it, so pick and reject
+stay apart without hue. In lights out the ledger's band takes the canvas colour,
+never brighter than the photo's surround; where the rail token would fall below
+1.5:1 on that canvas (Shadowroom Light) the rail uses the first chrome role that
+reaches it and reviewed frames the first that keeps 3:1 from the rail. `text.accent` marks only the current photo's playhead;
 the bracket for the frames the filmstrip shows is a `text.muted` hairline.
 Filmstrip label strips sit on photographs, so they use the photo-overlay label
 inks (`shadowroom.scrim.label.*`), matching the chip on the same frame; Catalog
