@@ -11504,21 +11504,37 @@ impl Workspace {
                     }),
                 )
             })
+            // The workspace description (selection, import or scan progress)
+            // always stays; a notice takes the space after it, behind a rule,
+            // and truncates first (R2-catalog-01).
             .child(
-                self.status_notice(cx)
-                    .filter(|_| self.dock_drag.is_none())
-                    .unwrap_or_else(|| {
-                        div()
-                            .id("workspace-status")
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_normal()
-                            .line_clamp(1)
-                            .child(context)
-                            .into_any_element()
-                    }),
+                div()
+                    .id("workspace-status")
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_normal()
+                    .line_clamp(1)
+                    .child(context),
+            )
+            .child(
+                match self.status_notice(cx).filter(|_| self.dock_drag.is_none()) {
+                    Some(notice) => div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(1.))
+                                .h(px(14.))
+                                .bg(self.c("border.variant", "#333333")),
+                        )
+                        .child(notice),
+                    None => div().flex_1(),
+                },
             )
             .when(
                 self.workspace_size.0 >= 1120.
@@ -11758,14 +11774,26 @@ impl Workspace {
         if self.mode == ViewMode::Grid {
             self.dock_override = [false; 2];
         }
-        if self.sidebar && !self.focus_mode && !library_fits {
+        let library_yields = self.sidebar && !self.focus_mode && !library_fits;
+        if library_yields {
+            let inspector_yields = self.inspector && !inspector_fits && !self.photos.is_empty();
             self.hint_once(
                 "catalog-yields",
-                &format!(
-                    "Sidebar hidden to give the photo room · {} shows it",
-                    shortcut("⌘B")
-                ),
+                &if inspector_yields {
+                    format!(
+                        "Library and inspector hidden to give the photos room · {} and I show them",
+                        shortcut("⌘B")
+                    )
+                } else {
+                    format!(
+                        "Library hidden to give the photo room · {} shows it",
+                        shortcut("⌘B")
+                    )
+                },
             );
+        } else {
+            // The panel is back (Catalog, a wider window): the hint is stale.
+            self.withdraw_notice("catalog-yields");
         }
         self.docks = ui::fit_docks(
             self.workspace_size.0,

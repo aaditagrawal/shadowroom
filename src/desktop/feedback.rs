@@ -45,6 +45,9 @@ pub(super) struct Flash {
     /// When the status bar began showing notices without a gap: a notice that
     /// replaces a visible one keeps it, so it neither fades nor flickers.
     pub since: Instant,
+    /// The condition a hint describes ("catalog-yields"); the notice is
+    /// withdrawn as soon as that condition ends rather than left stale.
+    pub key: Option<&'static str>,
 }
 impl Flash {
     pub(super) fn new(
@@ -64,6 +67,7 @@ impl Flash {
             action,
             until: now + ttl,
             since: now,
+            key: None,
         }
     }
     /// Continues the run of notices that `previous` belonged to.
@@ -212,6 +216,20 @@ impl Workspace {
         self.status.clone_from(&text);
         self.feedback.flash =
             Some(Flash::new(text, tone, None, Instant::now()).after(self.feedback.flash.as_ref()));
+    }
+    /// Withdraws the notice for `key` once the condition it describes ended;
+    /// true when a visible notice went away.
+    pub(super) fn withdraw_notice(&mut self, key: &str) -> bool {
+        if self
+            .feedback
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.key == Some(key))
+        {
+            self.feedback.flash = None;
+            return true;
+        }
+        false
     }
     /// [`Self::announce`] with a button, such as Undo after an auto-advance.
     pub(super) fn announce_action(

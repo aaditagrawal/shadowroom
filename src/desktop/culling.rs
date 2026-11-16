@@ -1030,10 +1030,14 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A short notice the first time something happens in a session.
+    /// A short notice the first time something happens in a session, tagged
+    /// with `key` so [`Self::withdraw_notice`] can retract it early.
     pub(super) fn hint_once(&mut self, key: &'static str, text: &str) {
         if self.shown_hints.insert(key) {
             self.announce(text, Tone::Info);
+            if let Some(flash) = &mut self.feedback.flash {
+                flash.key = Some(key);
+            }
         }
     }
 }
