@@ -103,6 +103,9 @@ pub(super) const TOOLBAR_HEIGHT: f32 = CONTROL_ROW_HEIGHT + HAIRLINE;
 pub(super) const DECISION_HEIGHT: f32 = CONTROL_ROW_HEIGHT + HAIRLINE;
 pub(super) const STATUS_HEIGHT: f32 = COMPACT_CONTROL_HEIGHT + 2. * STATUS_INSET + HAIRLINE;
 pub(super) const FILMSTRIP_HEIGHT: f32 = 96.;
+/// Below this window height the photo views trade the filmstrip for the
+/// ledger's own band.
+pub(super) const FILMSTRIP_MIN_WINDOW_HEIGHT: f32 = 600.;
 pub(super) const LIBRARY_WIDTH: f32 = 224.;
 pub(super) const INFO_WIDTH: f32 = 288.;
 pub(super) const LIBRARY_MIN_WIDTH: f32 = 180.;
@@ -233,6 +236,9 @@ mod tests {
         assert_eq!(culling_docks(true, true, 1200.), (false, true));
         assert_eq!(culling_docks(true, true, 1440.), (true, true));
         assert_eq!(culling_docks(false, false, 1024.), (true, true));
+        // Review at 800 px: the photo gets the whole width.
+        assert_eq!(culling_docks(true, false, 800.), (false, false));
+        assert_eq!(culling_docks(false, false, 800.), (true, true));
         // Compare at 1024 px with both docks requested: two usable panes.
         let (library, inspector) = culling_docks(true, true, 1024.);
         let fit = fit_docks(
@@ -299,11 +305,13 @@ pub(super) fn fit_prefix(available: f32, base: f32, optional: &[f32]) -> usize {
 }
 
 /// Small windows give the photo room: in Review, Compare and Survey the
-/// catalog yields first below 1280 px, and in Compare/Survey the inspector
-/// also yields below 1100 px. Settings are untouched; Catalog restores both.
+/// catalog yields first below 1280 px; the inspector also yields below
+/// 1100 px in Compare/Survey and below 960 px in Review, so the photo keeps
+/// at least 30% of a small window (R4-design-07). Settings are untouched;
+/// Catalog restores both.
 pub(super) fn culling_docks(photo_view: bool, side_by_side: bool, width: f32) -> (bool, bool) {
     let library = !(photo_view && width < 1280.);
-    let inspector = !(side_by_side && width < 1100.);
+    let inspector = !(photo_view && (width < 960. || side_by_side && width < 1100.));
     (library, inspector)
 }
 

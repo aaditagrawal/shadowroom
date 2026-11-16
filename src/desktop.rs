@@ -128,8 +128,10 @@ impl AssetSource for Assets {
             "add" => Some(include_bytes!("../assets/icons/add.svg")),
             "external" => Some(include_bytes!("../assets/icons/link-external.svg")),
             "eject" => Some(include_bytes!("../assets/icons/shadowroom/eject.svg")),
-            "focus" => Some(include_bytes!("../assets/icons/screen-full.svg")),
+            "fullscreen" => Some(include_bytes!("../assets/icons/screen-full.svg")),
             "peaking" => Some(include_bytes!("../assets/icons/shadowroom/peaking.svg")),
+            "clipping" => Some(include_bytes!("../assets/icons/shadowroom/clipping.svg")),
+            "focus-mode" => Some(include_bytes!("../assets/icons/shadowroom/focus-mode.svg")),
             "reset" => Some(include_bytes!(
                 "../assets/icons/shadowroom/reset-decision.svg"
             )),
@@ -243,6 +245,8 @@ enum Cmd {
     RatingFilter,
     Histogram,
     Focus,
+    /// F11: the window fills the screen (GPUI `toggle_fullscreen`).
+    Fullscreen,
     Sidebar,
     ResizeDock(DockSide),
     ResetLayout,
@@ -1216,6 +1220,11 @@ pub struct Workspace {
     zoom_factor: f32,
     fit_scales: std::rc::Rc<std::cell::Cell<[f32; 2]>>,
     focus_peaking: bool,
+    /// An aid switched on whose overlay copy is still being painted: its
+    /// effect bit and the notice to show once it is on the photo.
+    pending_aid: Option<(u8, String)>,
+    /// Effect bits last shown per photo (`loupe_aids::shown_effect`).
+    shown_effects: Vec<(i64, u8)>,
     /// Clipping overlay (J): blown highlights red, crushed shadows blue.
     clipping: bool,
     navigation_direction: isize,
@@ -1237,6 +1246,10 @@ pub struct Workspace {
     /// Logical centre-pane size from the last frame, for fitted overlays.
     center_size: (f32, f32),
     focus_mode: bool,
+    /// Focus mode's second level (`loupe_aids::lights_out`).
+    lights_out: bool,
+    /// The typed confirmation of the last lights-out decision.
+    stamp: Option<loupe_aids::Stamp>,
     sidebar: bool,
     title_drag: bool,
     palette: bool,
@@ -1348,6 +1361,13 @@ pub struct Workspace {
     pane_geometry: Rc<Cell<[PaneGeometry; 2]>>,
     /// The zoom navigator of this pane is being dragged.
     navigator_drag: Option<bool>,
+    /// The zoomed view last changed (pan, zoom, photo) or the pointer moved
+    /// over it; the navigator fades after [`culling::NAVIGATOR_IDLE`].
+    navigator_seen: Instant,
+    /// What the navigator last showed, to notice a change of view.
+    navigator_key: u64,
+    /// A wake-up for the navigator's fade is pending.
+    navigator_wake: Rc<Cell<bool>>,
     /// A batch decision over many photos waiting for Enter (CAT-11).
     pending_bulk: Option<PendingBulk>,
     /// Counts for the current folder scope; `counts` stays library-wide.
@@ -1725,6 +1745,8 @@ impl Workspace {
             zoom_factor: 1.,
             fit_scales: std::rc::Rc::new(std::cell::Cell::new([1.; 2])),
             focus_peaking: false,
+            pending_aid: None,
+            shown_effects: Vec::new(),
             clipping: false,
             navigation_direction: 1,
             preview_foreground: RefCell::new(None),
@@ -1742,6 +1764,8 @@ impl Workspace {
             last_grid_cols: 0,
             center_size: (800., 600.),
             focus_mode: false,
+            lights_out: false,
+            stamp: None,
             sidebar,
             title_drag: false,
             palette: false,
@@ -1830,6 +1854,9 @@ impl Workspace {
             grid_size,
             pane_geometry: Rc::new(Cell::new([PaneGeometry::default(); 2])),
             navigator_drag: None,
+            navigator_seen: Instant::now(),
+            navigator_key: 0,
+            navigator_wake: Rc::new(Cell::new(false)),
             pending_bulk: None,
             scope_counts: None,
             rated_counts: None,
@@ -3260,6 +3287,9 @@ impl Workspace {
             return;
         }
         self.history.push(before, after.clone());
+        if self.lights_out() {
+            self.stamp_decision(rating, flag, label, cx);
+        }
         let old = self.selected_id();
         // Keeps the selected photo when it is still visible (even if earlier
         // batch members left the view and shifted it), else holds the position
@@ -3523,7 +3553,7 @@ impl Workspace {
         };
         self.reconcile_rating_filter();
         if self.quit.closing() && !matches!(cmd, Cmd::Quit | Cmd::DismissError) {
-            self.error = Some("The app is finishing writes and exports before closing.".into());
+            self.error = Some("Shadowroom is finishing writes, exports or an import before closing · Esc keeps it open".into());
             cx.notify();
             return;
         }
@@ -3917,9 +3947,8 @@ impl Workspace {
                     // …then zoom returns to Fit, then Focus mode ends.
                     self.zoom = false;
                     self.read_ahead();
-                } else if self.focus_mode {
-                    self.focus_mode = false;
-                } else {
+                } else if !self.step_back_focus() {
+                    // …then lights-out steps back to Focus mode, which ends.
                     self.cancel_ingest_resize();
                     self.import_ui.active_field = None;
                     self.error = None;
@@ -4048,20 +4077,7 @@ impl Workspace {
                 self.zoom = true;
                 self.read_ahead();
             }
-            Cmd::FocusPeaking => {
-                self.focus_peaking = !self.focus_peaking;
-                self.announce(
-                    if self.focus_peaking {
-                        format!(
-                            "Focus peaking on · {} marks sharp edges · F toggles",
-                            self.peaking_style().color.name().to_lowercase()
-                        )
-                    } else {
-                        "Focus peaking off".into()
-                    },
-                    Tone::Info,
-                );
-            }
+            Cmd::FocusPeaking => self.toggle_peaking(),
             Cmd::Clipping => self.toggle_clipping(),
             // Preferences-only: the open draft takes them before this match.
             Cmd::PeakingColor(_) | Cmd::PeakingSensitivity(_) => {}
@@ -4096,12 +4112,8 @@ impl Workspace {
             }
             Cmd::Histogram => self.histogram = !self.histogram,
             Cmd::PreviewDetails => self.preview_details = !self.preview_details,
-            Cmd::Focus => {
-                self.focus_mode = !self.focus_mode;
-                if self.focus_mode {
-                    self.hint_once("focus-mode", "Focus mode · Esc or Shift+Tab to exit");
-                }
-            }
+            Cmd::Focus => self.cycle_focus(),
+            Cmd::Fullscreen => window.toggle_fullscreen(),
             Cmd::Sidebar => {
                 let hidden = self.docks.library == 0.;
                 self.sidebar = self.focus_mode || !self.sidebar || hidden;
@@ -4719,8 +4731,8 @@ impl Workspace {
             ),
             item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
             item(
-                "Loupe View",
-                "View",
+                "Review View",
+                "View · one photo at a time",
                 "L",
                 "loupe",
                 Cmd::View(ViewMode::Loupe),
@@ -4849,10 +4861,10 @@ impl Workspace {
                 Cmd::RatingFilter,
             ),
             item(
-                "Show Review Panel",
-                "View",
+                "Show Culling Panel",
+                "View · histogram, labels and burst in the inspector",
                 "",
-                "pick",
+                "histogram",
                 Cmd::InspectorTab(false),
             ),
             item(
@@ -4871,9 +4883,9 @@ impl Workspace {
             ),
             item(
                 "Toggle Focus Mode",
-                "View · hide side panels",
+                "View · hide every bar; again for lights out",
                 "Shift Tab",
-                "focus",
+                "focus-mode",
                 Cmd::Focus,
             ),
             item(
@@ -5256,6 +5268,12 @@ impl Workspace {
         if self.deletion_key(event, window, cx) {
             return;
         }
+        // Escape keeps Shadowroom open while a quit waits on writes, exports
+        // or an import, in every view and Focus mode level.
+        if event.keystroke.key == "escape" && self.cancel_quit() {
+            cx.notify();
+            return;
+        }
         self.reconcile_rating_filter();
         let key = event.keystroke.key.as_str();
         if key == "escape" && self.cancel_ingest_resize() {
@@ -5595,6 +5613,7 @@ impl Workspace {
                 "h" | "f22" => Some(Cmd::Histogram),
                 "i" => Some(Cmd::Inspector),
                 "tab" => Some(Cmd::Focus),
+                "f11" => Some(Cmd::Fullscreen),
                 "[" | "f23" => Some(Cmd::PreviousGroup),
                 "]" | "f24" => Some(Cmd::NextGroup),
                 "b" => Some(Cmd::Pin),
@@ -5728,7 +5747,7 @@ fn label_roles(label: ColorLabel) -> Option<(&'static str, &'static str, &'stati
         ColorLabel::Blue => Some((
             "shadowroom.label.blue",
             "shadowroom.scrim.label.blue",
-            "#82abe0",
+            "#a3a6f0",
         )),
         ColorLabel::Purple => Some((
             "shadowroom.label.purple",
@@ -7679,27 +7698,37 @@ impl Workspace {
                     texture.kind,
                     texture.color_status.clone(),
                 ));
+                if desired > 0 {
+                    self.remember_effect(p.id, effect);
+                }
                 if k >= desired {
                     return fallback;
                 }
                 break;
             }
         }
-        // Keep the ordinary image visible while its overlay copy is prepared.
-        if fallback.is_none() && effect != 0 {
-            for k in (0..=search_max).rev() {
-                let key = (p.id, k, mtime, size);
-                if let Some(texture) = self.textures.get(&key) {
-                    self.visible_textures.insert(key);
-                    fallback = Some((
-                        texture.image.clone(),
-                        texture.width,
-                        texture.height,
-                        texture.source.clone(),
-                        texture.kind,
-                        texture.color_status.clone(),
-                    ));
-                    break;
+        // While the overlay copy is painted, keep what was on screen: the
+        // photo's last overlay (toggling the other aid or changing the
+        // peaking style never drops the current one, R4-review-04), else the
+        // ordinary image.
+        let last = self.shown_effect(p.id).filter(|&last| last != effect);
+        if fallback.is_none() && (effect != 0 || last.is_some()) {
+            let previous = last.into_iter().chain((effect != 0).then_some(0));
+            'search: for shown in previous {
+                for k in (0..=search_max).rev() {
+                    let key = (p.id, k + shown, mtime, size);
+                    if let Some(texture) = self.textures.get(&key) {
+                        self.visible_textures.insert(key);
+                        fallback = Some((
+                            texture.image.clone(),
+                            texture.width,
+                            texture.height,
+                            texture.source.clone(),
+                            texture.kind,
+                            texture.color_status.clone(),
+                        ));
+                        break 'search;
+                    }
                 }
             }
         }
@@ -7876,6 +7905,17 @@ impl Workspace {
             self.media.request_photo(photo, kind);
         }
         let texture = self.texture(photo_index, kind, cx);
+        if !reference {
+            // "Clipping shown" only once the overlay is on the photo.
+            let photos = std::mem::take(&mut self.photos);
+            self.settle_aid(&photos[photo_index], kind);
+            self.photos = photos;
+        }
+        let navigator_opacity = if self.zoom {
+            self.navigator_opacity(cx)
+        } else {
+            None
+        };
         let photo = &self.photos[photo_index];
         let context_photo_id = photo.id;
         let requested_error = self.media.photo_error(photo, kind);
@@ -7891,13 +7931,24 @@ impl Workspace {
             });
         let mut quality_note = None;
         let active = self.mode == ViewMode::Compare && self.reference_focused() == reference;
+        // The wanted tier is still on its way (no error): the loading line
+        // stands in for the caption.
+        let loading = requested_error.is_none()
+            && match &texture {
+                None => true,
+                Some((.., actual, _)) => {
+                    *actual == PreviewKind::Thumbnail || (self.zoom && *actual != PreviewKind::Full)
+                }
+            };
         // Peaking at Fit marks a downscaled preview's edges: say so.
         let fit_peaking = self.focus_peaking && !self.zoom;
         let show_quality = self.zoom
             || fit_peaking
+            || (!loading && texture.is_none())
             || requested_error.is_some()
             || matches!(&texture, Some((.., source, _, _)) if source.note.is_some())
-            || !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full);
+            || (!loading
+                && !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full));
         let mut pane = div()
             .id(if reference {
                 "reference-photo"
@@ -8081,12 +8132,14 @@ impl Workspace {
                 let larger = !g.valid()
                     || w as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.width) + 1.
                     || h as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.height) + 1.;
-                if larger {
-                    pane = pane.child(self.navigator(reference, navigator_image, w, h, cx));
+                if larger && let Some(opacity) = navigator_opacity {
+                    pane =
+                        pane.child(self.navigator(reference, navigator_image, w, h, opacity, cx));
                 }
                 let drag_size = pane_size.clone();
                 pane =
                     pane.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        this.touch_navigator(cx);
                         let held = event.dragging() && this.dock_drag.is_none();
                         let was = this.pan_drag;
                         if let Some(delta) = this.pan_drag.motion(reference, event.position, held) {
@@ -8113,8 +8166,7 @@ impl Workspace {
                     },
                 ));
             }
-        } else {
-            let error = self.media.photo_error(photo, kind);
+        } else if let Some(error) = self.media.photo_error(photo, kind) {
             pane = pane.child(
                 div()
                     .absolute()
@@ -8126,11 +8178,34 @@ impl Workspace {
                     .gap(px(space::MD))
                     .text_color(self.muted())
                     .child(icon("camera", self.muted()))
-                    .child(if let Some(error) = error {
-                        error.message
+                    .child(error.message),
+            );
+        }
+        // Loading craft (R18): the plain canvas, or the thumbnail upscaled,
+        // with a 2 px line along the pane's top edge until the wanted preview
+        // arrives, instead of a camera icon and "Loading preview…".
+        if loading {
+            pane = pane.child(
+                div()
+                    .id(if reference {
+                        "reference-loading"
                     } else {
-                        "Loading preview…".into()
-                    }),
+                        "photo-loading"
+                    })
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(space::SM))
+                    .child(div().h(px(2.)).w_full().bg(self.muted().opacity(0.6)))
+                    .tooltip(self.tip(
+                        if self.zoom {
+                            "Loading full size…"
+                        } else {
+                            "Loading preview…"
+                        },
+                        "",
+                    )),
             );
         }
         let compare = self.mode == ViewMode::Compare;
@@ -8198,7 +8273,8 @@ impl Workspace {
         });
         // What the previous frame now carries, briefly, after auto-advance:
         // inside the picture's bottom-left corner, like the chip at its top.
-        let pane = pane.when(!reference, |pane| {
+        // Lights-out confirms with its stamp instead.
+        let pane = pane.when(!reference && !self.lights_out(), |pane| {
             pane.children(self.decision_note_chip().map(|chip| {
                 div()
                     .absolute()
@@ -8368,11 +8444,13 @@ impl Workspace {
                                         .items_center()
                                         .justify_center()
                                         .gap(px(space::SM))
-                                        .child(icon("camera", this.icon_muted()))
+                                        // Loading is the plain well (a camera icon
+                                        // flickered on scroll); the icon marks a
+                                        // preview that failed.
                                         .when_some(
                                             this.media.photo_error(photo, PreviewKind::Thumbnail),
                                             |s, error| {
-                                                s.child(
+                                                s.child(icon("camera", this.icon_muted())).child(
                                                     div()
                                                         .text_size(ui::font(ui::text::LABEL))
                                                         .text_color(this.muted())
@@ -8464,7 +8542,7 @@ impl Workspace {
                                     .overflow_hidden()
                                     .child(frame)
                                     // Same place for every aspect ratio: the well's edge.
-                                    .children(this.label_strip(photo.label, 3., 0.));
+                                    .children(this.label_strip(photo.label, 3., 0., false));
                                 // Adjacent bursts alternate intensity so boundaries read
                                 // at a glance; neutral, since blue means "current".
                                 let burst_bar = burst.map(|(group, ..)| {
@@ -8795,15 +8873,16 @@ impl Workspace {
                         .gap(px(space::SM))
                         .items_center()
                         .justify_center()
-                        .child(icon("camera", self.icon_muted()))
                         .when_some(self.media.photo_error(p, kind), |s, error| {
-                            s.child(div().text_size(ui::font(ui::text::LABEL)).child(
-                                if error.message.contains("Unavailable offline") {
-                                    "Unavailable offline"
-                                } else {
-                                    "Preview unavailable"
-                                },
-                            ))
+                            s.child(icon("camera", self.icon_muted())).child(
+                                div().text_size(ui::font(ui::text::LABEL)).child(
+                                    if error.message.contains("Unavailable offline") {
+                                        "Unavailable offline"
+                                    } else {
+                                        "Preview unavailable"
+                                    },
+                                ),
+                            )
                         }),
                 );
             }
@@ -9091,18 +9170,32 @@ impl Workspace {
             )
     }
     /// Colour-label strip along a thumbnail's bottom edge: colour area for
-    /// scanning a shoot, in the chrome label colour because it sits on the
-    /// well, not the photo.
-    fn label_strip(&self, label: ColorLabel, height: f32, inset: f32) -> Option<Div> {
-        self.label_color(label).map(|color| {
+    /// scanning a shoot. On the well (Catalog) it takes the chrome label
+    /// colour; `on_photo` (the filmstrip, where landscape frames fill the
+    /// cell) takes the photo-overlay ink of the chip on the same frame, over a
+    /// 1 px scrim line so it holds up on any picture (R4-design-08).
+    fn label_strip(
+        &self,
+        label: ColorLabel,
+        height: f32,
+        inset: f32,
+        on_photo: bool,
+    ) -> Option<Div> {
+        let color = if on_photo {
+            self.photo_label_color(label)
+        } else {
+            self.label_color(label)
+        }?;
+        Some(
             div()
                 .absolute()
                 .left(px(inset))
                 .right(px(inset))
                 .bottom(px(inset))
-                .h(px(height))
+                .h(px(height + if on_photo { 1. } else { 0. }))
                 .bg(color)
-        })
+                .when(on_photo, |s| s.border_t_1().border_color(self.scrim())),
+        )
     }
     /// (group index, frame position, frame count) for photos in a burst or
     /// duplicate set of two or more.
@@ -9206,9 +9299,10 @@ impl Workspace {
             .overflow_hidden();
         if self.ledger_visible() {
             // When every frame fits, each ledger cell sits exactly over its
-            // frame; otherwise the track is a minimap of the whole view.
+            // frame; otherwise the track is a minimap of the whole view and a
+            // bracket marks the frames the strip shows (R4-review-01).
             let all = start == 0 && end == self.filtered.len();
-            let (left, track) = if all {
+            let (left, track, window) = if all {
                 let width = used - ui::FILM_GAP;
                 (
                     ui::PANEL_INSET + ((available - width) / 2.).max(0.),
@@ -9216,23 +9310,22 @@ impl Workspace {
                         width,
                         gap: ui::FILM_GAP,
                     },
+                    None,
                 )
             } else {
                 (
                     ui::PANEL_INSET,
-                    ledger::Track {
-                        width: self.ledger_width(),
-                        gap: 1.,
-                    },
+                    ledger::Track::free(self.ledger_width(), self.filtered.len()),
+                    Some((start, end)),
                 )
             };
-            strip = strip.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(left))
-                    .child(self.ledger(track, cx)),
-            );
+            strip = strip.child(div().absolute().top_0().left(px(left)).child(self.ledger(
+                track,
+                window,
+                ledger::TRACK_TOP,
+                ledger::BAND,
+                cx,
+            )));
         }
         // Consecutive frames of one burst share a tinted run so group
         // boundaries are visible without opening the inspector.
@@ -9257,12 +9350,15 @@ impl Workspace {
                         .child(img(texture).size_full().object_fit(ObjectFit::Contain)),
                 );
             } else {
+                // The slot's plain well while the thumbnail loads; the icon
+                // only for a preview that failed.
+                let failed = self.media.photo_error(p, PreviewKind::Thumbnail).is_some();
                 frame = frame
                     .size_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("camera", self.icon_muted()));
+                    .when(failed, |s| s.child(icon("camera", self.icon_muted())));
             }
             if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 frame = frame.child(badges);
@@ -9290,7 +9386,7 @@ impl Workspace {
                 .justify_center()
                 .child(frame)
                 // 2 px label strip inside the 2 px selection inset.
-                .children(self.label_strip(p.label, 2., 2.));
+                .children(self.label_strip(p.label, 2., 2., true));
             let photo_id = p.id;
             // Selection is an inset overlay, so selected and unselected cells
             // have identical boxes and the strip keeps one constant gap.
@@ -9617,7 +9713,16 @@ impl Workspace {
                     "R",
                 )),
             )
-            .child(div().flex_1().min_w(px(0.)))
+            // Focus mode docks its notices (or the culling line) here.
+            .child(
+                match (!self.chrome_visible())
+                    .then(|| self.focus_slot(cx))
+                    .flatten()
+                {
+                    Some(slot) => slot,
+                    None => div().flex_1().min_w(px(0.)).into_any_element(),
+                },
+            )
             .child(
                 div()
                     .id("review-progress")
@@ -9764,7 +9869,13 @@ impl Workspace {
                         self.focus_peaking,
                         cx,
                     )
-                    .tooltip(self.tip("Focus peaking · cyan fine-detail highlights", "F")),
+                    .tooltip(self.tip(
+                        &format!(
+                            "Focus peaking · {} marks sharp edges",
+                            self.peaking_style().color.name().to_lowercase()
+                        ),
+                        "F",
+                    )),
                 )
             })
             // Destructive action sits apart from rating, at the far edge.
@@ -10039,6 +10150,20 @@ impl Workspace {
             }
             if self.histogram && !self.inspector_info {
                 let preview = self.media.best_photo(p);
+                // The clipping readout follows the tier the overlay paints
+                // (Fit, or Full when only that is decoded), never the thumbnail,
+                // so its figures don't change as sharper previews arrive.
+                let clip = match self
+                    .media
+                    .get_photo(p, PreviewKind::Fit)
+                    .or_else(|| self.media.get_photo(p, PreviewKind::Full))
+                {
+                    Some(steady) => crate::histogram::ClipSource::Stable(steady.histogram.clip),
+                    None if self.media.photo_error(p, PreviewKind::Fit).is_some() => {
+                        crate::histogram::ClipSource::Plotted
+                    }
+                    None => crate::histogram::ClipSource::Measuring,
+                };
                 let scale = div()
                     .id("histogram-scale")
                     .flex()
@@ -10073,13 +10198,13 @@ impl Workspace {
                     .compact_toggle(
                         "histogram-clipping",
                         "",
-                        "warning",
+                        "clipping",
                         Cmd::Clipping,
                         self.clipping,
                         cx,
                     )
                     .tooltip(self.tip(
-                        "Show clipping on the photo · blown highlights red, crushed shadows blue",
+                        "Show clipping on the photo · blown highlights in magenta stripes, crushed shadows blue",
                         "J",
                     ));
                 body = body
@@ -10119,6 +10244,7 @@ impl Workspace {
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
                             text_scale: ui::text_scale(),
+                            clip,
                             ..Default::default()
                         },
                     ));
@@ -10309,10 +10435,12 @@ impl Workspace {
                     .px(px(ui::BAR_INSET))
                     .border_b_1()
                     .border_color(self.border())
+                    // "Culling", not a second "Review": that name and the
+                    // loupe glyph belong to the view.
                     .child(self.panel_tab(
                         "panel-review",
-                        "Review",
-                        "loupe",
+                        "Culling",
+                        "histogram",
                         Cmd::InspectorTab(false),
                         !self.inspector_info,
                         cx,
@@ -10459,6 +10587,7 @@ impl Workspace {
         state["clipping"] = json!(self.clipping);
         state["peaking_style"] = json!({"color": self.peaking_style().color.key(), "sensitivity": self.peaking_style().sensitivity.key()});
         state["focus_mode"] = json!(self.focus_mode);
+        state["lights_out"] = json!(self.lights_out());
         state["grid_size"] = json!(["s", "m", "l"][self.grid_size.min(2)]);
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
         state["label_filter"] = json!(self.label_filter.map(ColorLabel::as_str));
@@ -12740,14 +12869,33 @@ impl Workspace {
             }
         }
         self.compact = self.docks.center < 600.;
-        let decision_height = if self.filtered.is_empty() || self.import_ui.open {
+        // Lights-out folds the decision bar and filmstrip into an 8 px ledger.
+        let lights_out = self.lights_out();
+        if !lights_out {
+            self.withdraw_notice("lights-out");
+        }
+        let decision_height = if self.filtered.is_empty() || self.import_ui.open || lights_out {
             0.
         } else {
             DECISION_HEIGHT
         };
+        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
+        // height: the ledger keeps its own band, as in the Catalog, and still
+        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
+        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
+        if strip_yields && !lights_out {
+            self.hint_once(
+                "filmstrip-yields",
+                "Filmstrip hidden to give the photo room · the ledger still jumps to any frame",
+            );
+        } else {
+            self.withdraw_notice("filmstrip-yields");
+        }
         let strip_height = if self.filtered.is_empty() || self.import_ui.open {
             0.
-        } else if self.mode == ViewMode::Grid {
+        } else if lights_out {
+            ledger::LIGHTS_OUT_BAND
+        } else if self.mode == ViewMode::Grid || strip_yields {
             // The Catalog has no filmstrip; the ledger gets its own band.
             if self.ledger_visible() {
                 ledger::ROW_HEIGHT
@@ -12758,7 +12906,7 @@ impl Workspace {
             FILMSTRIP_HEIGHT
         };
         // Focus mode hides every bar but the decision bar and filmstrip
-        // (REV-25); notices move onto the canvas (`focus_notices`).
+        // (REV-25); notices dock in the decision bar (`focus_slot`).
         let chrome = self.chrome_visible();
         if !self.focus_mode {
             // Its exit hint is stale once Focus mode ends, however it ended.
@@ -12844,9 +12992,12 @@ impl Workspace {
                     .overflow_hidden()
                     .child(self.trace.timed("center", center)),
             );
-        if !self.filtered.is_empty() {
+        if lights_out {
+            let band = self.lights_out_band(cx);
+            main = main.child(self.trace.timed("ledger", band));
+        } else if !self.filtered.is_empty() {
             main = main.child(self.trace.timed("rating_bar", self.rating_bar(cx)));
-            if self.mode != ViewMode::Grid {
+            if self.mode != ViewMode::Grid && !strip_yields {
                 let strip = self.filmstrip(cx);
                 main = main.child(self.trace.timed("filmstrip", strip));
             } else if self.ledger_visible() {
@@ -12873,6 +13024,13 @@ impl Workspace {
             body = body.child(self.dock_resize_grip(DockSide::Inspector, window, cx));
         }
         body = body.children(self.pane_ring_view());
+        // Lights-out's stamp and urgent notices; with no decision bar to dock
+        // in (an empty view), Focus mode uses the same plate.
+        let focus_overlay = if lights_out || (!chrome && self.filtered.is_empty()) {
+            self.lights_out_overlay(cx)
+        } else {
+            None
+        };
         let mut root = div()
             .id("shadowroom")
             .track_focus(&self.focus)
@@ -12935,7 +13093,7 @@ impl Workspace {
             .when(chrome, |root| {
                 root.child(self.trace.timed("status_bar", self.status_bar(window, cx)))
             })
-            .children((!chrome).then(|| self.focus_notices(cx)).flatten());
+            .children(focus_overlay);
         // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
         // tagged with its overlay (None: the system-modal quit prompt) so the
         // one scrim goes directly beneath the topmost modal.
@@ -13982,6 +14140,10 @@ mod ui_tests {
             "\"b\" => Some(Cmd::SwapPanes)",
             "\"c\" => Some(Cmd::CompareSync)",
             "\"tab\" => Some(Cmd::Focus)",
+            // F11 full screen, and Escape keeping the app open while a quit
+            // waits (every Focus mode level, lights-out included).
+            "\"f11\" => Some(Cmd::Fullscreen)",
+            "if event.keystroke.key == \"escape\" && self.cancel_quit()",
             // Inspection aids: the clipping overlay and Alt+digit zoom presets.
             "\"j\" => Some(Cmd::Clipping)",
             // Photo search (Ctrl/Cmd+F) opens the palette, after quit.

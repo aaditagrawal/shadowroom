@@ -156,6 +156,18 @@ def _():
              rrect(1, 7.5, 3.5, 8.5), rrect(12.5, 7.5, 15, 8.5)]
     return ring + ticks + [circle(8, 8, 1.25)]
 
+@icon("clipping", "Clipping overlay")
+def _():
+    # an exposure frame whose upper-right corner is filled: the clipping
+    # triangles of a histogram, not the warning triangle (errors only)
+    return [frame(2, 2, 14, 14, 1), poly([(6, 3), (13, 3), (13, 10)])]
+
+@icon("focus-mode", "Focus mode")
+def _():
+    # one photograph on an emptied screen: the outer frame stays, the chrome
+    # inside it is gone (not the four-corner full-screen glyph)
+    return [frame(1, 2, 15, 14, 1.5), rrect(4.5, 5.5, 11.5, 10.5, 0.5)]
+
 @icon("auto-advance", "Auto-advance after a decision")
 def _():
     # decide (check) then move (arrow)

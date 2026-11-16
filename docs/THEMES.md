@@ -111,7 +111,9 @@ roles, not hex values. The high-contrast variants' values are listed after this 
 | `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and the empty label swatch: inputs with no other boundary, 3:1 against every surface |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
 | `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#765612` | decisions on chrome |
-| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#82abe0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#2560b0` `#8a3fa6` | inspector label swatches and thumbnail label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9) |
+| `success` / `error` / `warning` | `#7fbf7f` / `#d46a6a` / `#e8893a` | `#39734f` / `#a53e42` / `#9a4d10` | status; `warning` is orange, at least 25° (OKLCH) from rating amber |
+| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#a3a6f0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#4c49b8` `#8a3fa6` | inspector label swatches and Catalog label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9). Blue is periwinkle, at least 25° from the accent, so a blue strip never reads as the "current" underline |
+| `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#3a3a3a` / `#8a8a8a` | `#c4c9d1` / `#626c7c` | cull ledger: the unreviewed hairline and reviewed cells (3:1 apart; the rail 1.5:1 on the panel) |
 | `shadowroom.histogram.background` / `shadowroom.histogram.grid` | `#0f0f0f` / `#1c1c1c` | `#ffffff` / `#00000014` | histogram plot plate and quarter-tone guides; a light plate switches the curves to darker inks |
 
 State ladder: hover is a fill only and always weaker than selection, on panels,
@@ -145,10 +147,16 @@ flag glyph and label chip share one plate; the chip is filled with
 `shadowroom.scrim.label.*` and carries the label's initial (R, Y, G, B, P) in
 `shadowroom.scrim.label.text` (`#0f0f0f`, at least 7:1 on every fill).
 
-The **cull ledger** draws on chrome, not photographs: `shadowroom.pick` and
-`shadowroom.reject` ticks, `icon.muted` for reviewed photos without a flag,
-`border` as the unreviewed rail, and `text.accent` only for the current
-photo's playhead.
+The **cull ledger** draws on chrome, not photographs, and codes each state by
+shape as well as colour: unreviewed frames are a 1 px `shadowroom.ledger.rail`
+hairline, reviewed frames without a flag a 2 px `shadowroom.ledger.reviewed`
+bar on that line, picks a 4 px `shadowroom.pick` bar standing above it and
+rejects a 4 px `shadowroom.reject` bar hanging below it, so pick and reject
+stay apart without hue. `text.accent` marks only the current photo's playhead;
+the bracket for the frames the filmstrip shows is a `text.muted` hairline.
+Filmstrip label strips sit on photographs, so they use the photo-overlay label
+inks (`shadowroom.scrim.label.*`), matching the chip on the same frame; Catalog
+strips sit on the well and use the chrome label colours.
 
 High-contrast palette values:
 
@@ -161,8 +169,10 @@ High-contrast palette values:
 | `text.accent`, `shadowroom.focus_ring` | `#8cc4ff` | `#0a4a85` |
 | `border` / `border.variant` / `shadowroom.control_border` | `#8a8a8a` / `#9a9a9a` / `#b0b0b0` | `#5c6470` / `#6e7682` / `#3d4450` |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff14` / `#ffffff2e` | `#00000012` / `#0a4a8529` |
-| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#6b4c00` |
+| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ffa05a` | `#1f5c36` / `#8f1d22` / `#8a3a00` |
 | `shadowroom.pick` / `reject` / `rating` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#5c4200` |
+| `shadowroom.label.blue` | `#b4b6ff` | `#4038a8` |
+| `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#4a4a4a` / `#c4c4c4` | `#a0a6b0` / `#3a4452` |
 
 Imported Zed themes never define Shadowroom roles. `shadowroom.well` and
 `shadowroom.control_border` are derived from the theme's own background, panel

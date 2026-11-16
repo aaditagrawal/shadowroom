@@ -1,13 +1,17 @@
 //! Cull ledger: one thin track for every frame in the view, not just the
-//! filmstrip's window. Pick and reject ticks use the decision colours, reviewed
-//! frames without a flag a quiet grey, unreviewed frames leave the rail empty,
-//! and a short accent playhead marks the current frame (the accent's only use
-//! here). Clicking or dragging along the track jumps to that frame.
+//! filmstrip's window, read like an account book. Unreviewed frames are a
+//! hairline rail; reviewed frames without a flag a short grey bar on it; picks
+//! stand above the line and rejects hang below it, so the two read apart by
+//! shape as well as colour. A short accent playhead marks the current frame
+//! (the accent's only use here). When the track is not laid out over the
+//! filmstrip's cells, a hairline bracket shows which frames the strip holds.
+//! Clicking or dragging along the track jumps to that frame.
 //!
 //! Cost is bounded by the track's width, not the catalog: frames fold into at
 //! most one cell per [`BUCKET`] pixels (majority vote, ties to the decided
-//! state), the cells are cached per decision epoch, and one canvas paints them
-//! as run-length quads, so 50k photos add no layout nodes.
+//! state; a cell still holding an unreviewed frame keeps a 1 px notch), the
+//! cells are cached per decision epoch, and one canvas paints them as
+//! run-length quads, so 50k photos add no layout nodes.
 
 use super::*;
 
@@ -16,15 +20,26 @@ pub(super) const BUCKET: f32 = 2.;
 /// A frame keeps its own cell, separated by a 1 px gap, while each frame gets
 /// at least this many pixels.
 pub(super) const FRAME_MIN: f32 = 4.;
-/// Track thickness and the playhead's overshoot above and below it.
-pub(super) const TRACK: f32 = 4.;
-const OVERSHOOT: f32 = 3.;
+/// The track's full extent: a pick's 4 px bar above the rail line through a
+/// reject's 4 px bar below it (they share the rail's row).
+pub(super) const TRACK: f32 = 7.;
+/// Rows from the track's top edge to the rail line.
+const RAIL: f32 = 3.;
+/// The playhead's overshoot above and below the track.
+const OVERSHOOT: f32 = 2.;
 /// Height of the ledger's hit area: track plus breathing room. The Catalog
 /// draws it as its own band under the decision bar; the filmstrip hosts it in
 /// its top padding.
 pub(super) const BAND: f32 = 16.;
 /// Track's top edge inside the band.
-pub(super) const TRACK_TOP: f32 = 6.;
+pub(super) const TRACK_TOP: f32 = 4.;
+/// Lights-out: the decision bar and filmstrip fold into this band along the
+/// window's bottom edge.
+pub(super) const LIGHTS_OUT_BAND: f32 = 8.;
+/// A free-standing track keeps 1 px gaps between frames only while cells are
+/// narrower than this; wider cells run together, so they never read as labels
+/// for the thumbnails below (R4-review-01).
+const GAP_BELOW: f32 = 12.;
 /// The Catalog's band under the decision bar, hairline included.
 pub(super) const ROW_HEIGHT: f32 = ui::HAIRLINE + BAND;
 
@@ -41,6 +56,15 @@ pub(super) enum Mark {
 }
 
 impl Mark {
+    /// Rows of the track this mark fills: (top offset, height).
+    fn rows(self) -> (f32, f32) {
+        match self {
+            Self::Unreviewed => (RAIL, 1.),
+            Self::Reviewed => (RAIL - 1., 3.),
+            Self::Pick => (0., RAIL + 1.),
+            Self::Reject => (RAIL, TRACK - RAIL),
+        }
+    }
     pub(super) fn of(photo: &Photo) -> Self {
         match photo.flag {
             Flag::Reject => Self::Reject,
@@ -138,6 +162,27 @@ pub(super) struct Track {
 }
 
 impl Track {
+    /// A track that is not laid out over the filmstrip's cells.
+    pub(super) fn free(width: f32, frames: usize) -> Self {
+        let pitch = width / frames.max(1) as f32;
+        Self {
+            width,
+            gap: if pitch < GAP_BELOW { 1. } else { 0. },
+        }
+    }
+    /// x-range of frames `start..end` on this track, for the window bracket.
+    pub(super) fn span(self, start: usize, end: usize, frames: usize, cells: usize) -> (f32, f32) {
+        if self.per_frame(frames, cells) {
+            let pitch = self.pitch(frames);
+            (
+                (start as f32 * pitch).round(),
+                (end as f32 * pitch - self.gap).round(),
+            )
+        } else {
+            let edge = |frame: usize| (self.width * frame as f32 / frames.max(1) as f32).round();
+            (edge(start), edge(end))
+        }
+    }
     /// Whether `frames` frames keep their own cells (and gaps) at this width.
     fn per_frame(self, frames: usize, cells: usize) -> bool {
         cells == frames && frames > 0 && self.width / frames as f32 >= FRAME_MIN
@@ -231,6 +276,24 @@ fn majority<T: PartialOrd + Copy>(counts: [T; 4]) -> Mark {
     best
 }
 
+/// x of a 1 px notch for every bucketed cell that still holds an unreviewed
+/// frame under a decided majority (R4-review-05): one skipped frame in a run
+/// of picks never disappears from the rail. Per-frame cells need none.
+pub(super) fn notches(ledger: &Ledger, track: Track) -> Vec<f32> {
+    let cells = ledger.cells.len();
+    if ledger.counts.is_empty() || cells == 0 || track.width < 1. {
+        return Vec::new();
+    }
+    ledger
+        .cells
+        .iter()
+        .zip(&ledger.counts)
+        .enumerate()
+        .filter(|(_, (mark, counts))| **mark != Mark::Unreviewed && counts[0] > 0)
+        .map(|(i, _)| (track.width * i as f32 / cells as f32).round())
+        .collect()
+}
+
 /// Painted rectangles as (x, width, mark) from the track's left edge.
 /// Per-frame cells keep their gaps (3 px where a burst starts or ends on a
 /// free-standing track); bucketed cells merge into edge-to-edge runs with
@@ -320,6 +383,7 @@ impl Workspace {
     /// Catalog band: the ledger on the panel under the decision bar, where the
     /// filmstrip's top edge carries it in the other views.
     pub(super) fn ledger_band(&self, cx: &mut Context<Self>) -> AnyElement {
+        let width = self.ledger_width();
         div()
             .h(px(ROW_HEIGHT))
             .flex_shrink_0()
@@ -328,18 +392,47 @@ impl Workspace {
             .border_color(self.border())
             .bg(self.panel())
             .child(self.ledger(
-                Track {
-                    width: self.ledger_width(),
-                    gap: 1.,
-                },
+                Track::free(width, self.filtered.len()),
+                None,
+                TRACK_TOP,
+                BAND,
                 cx,
             ))
             .into_any_element()
     }
 
-    /// The track, [`BAND`] tall and transparent so it sits on whatever band
-    /// hosts it.
-    pub(super) fn ledger(&self, track: Track, cx: &mut Context<Self>) -> AnyElement {
+    /// Lights-out (a second Focus press): the decision bar and filmstrip fold
+    /// into an 8 px ledger along the window's bottom edge.
+    pub(super) fn lights_out_band(&self, cx: &mut Context<Self>) -> AnyElement {
+        let width = (self.center_size.0 - 2. * ui::PANEL_INSET).floor().max(0.);
+        div()
+            .id("lights-out-ledger")
+            .h(px(LIGHTS_OUT_BAND))
+            .flex_shrink_0()
+            .px(px(ui::PANEL_INSET))
+            .bg(self.panel())
+            .child(self.ledger(
+                Track::free(width, self.filtered.len()),
+                None,
+                ((LIGHTS_OUT_BAND - TRACK) / 2.).floor(),
+                LIGHTS_OUT_BAND,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// The track, `height` tall and transparent so it sits on whatever band
+    /// hosts it (always a panel), with its extent `top` px down. `window`
+    /// (first frame, end) brackets the frames the filmstrip shows when the
+    /// track is not laid out over them.
+    pub(super) fn ledger(
+        &self,
+        track: Track,
+        window: Option<(usize, usize)>,
+        top: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let frames = self.filtered.len();
         let width = track.width;
         let ledger = self.ledger_data(cell_count(frames, width));
@@ -351,49 +444,61 @@ impl Workspace {
         };
         let current = self.selected.min(frames.saturating_sub(1));
         let colors = [
-            self.border(),
-            self.icon_muted(),
+            self.c("shadowroom.ledger.rail", "#3a3a3a"),
+            self.c("shadowroom.ledger.reviewed", "#8a8a8a"),
             self.pick_color(),
             self.reject_color(),
         ];
         let accent = self.accent();
-        // The band's surface (filmstrip and Catalog band are both panels).
+        let bracket_color = self.muted();
+        // Filmstrip, Catalog band and lights-out band are all panels.
         let surface = self.panel();
         let geometry = self.ledger_track.clone();
         let painted = ledger.clone();
+        let bracket = window.map(|(start, end)| track.span(start, end, frames, ledger.cells.len()));
         let track = canvas(
             move |bounds, _, _| {
                 geometry.set((f32::from(bounds.left()), track));
             },
             move |bounds, (), window, _| {
                 let left = f32::from(bounds.left()).round();
-                let top = (f32::from(bounds.top()) + TRACK_TOP).round();
-                // Unreviewed runs are the rail itself, so the track always
-                // spans the view and progress reads as the rail filling up.
-                for (x, w, mark) in quads(&painted, track) {
+                let top = (f32::from(bounds.top()) + top).round();
+                let quad = |window: &mut Window, x: f32, y: f32, w: f32, h: f32, color| {
                     window.paint_quad(fill(
-                        Bounds::new(point(px(left + x), px(top)), size(px(w), px(TRACK))),
-                        colors[mark as usize],
+                        Bounds::new(point(px(left + x), px(top + y)), size(px(w), px(h))),
+                        color,
                     ));
+                };
+                // The rail runs the whole view, so progress reads as the line
+                // filling up; decided frames stand on it or hang from it.
+                quad(window, 0., RAIL, width, 1., colors[0]);
+                for (x, w, mark) in quads(&painted, track) {
+                    let (y, h) = mark.rows();
+                    quad(window, x, y, w, h, colors[mark as usize]);
+                }
+                for x in notches(&painted, track) {
+                    quad(window, x, 0., 1., TRACK, surface);
+                    quad(window, x, RAIL, 1., 1., colors[0]);
+                }
+                // The strip's frames on a minimap: a hairline bracket.
+                if let Some((x0, x1)) = bracket
+                    && x1 - x0 >= 3.
+                {
+                    let (y, h) = (-2., TRACK + 4.);
+                    for x in [x0, x1 - 1.] {
+                        quad(window, x, y, 1., h, bracket_color);
+                    }
+                    for (x, serif) in [(x0 + 1., 2.), (x1 - 3., 2.)] {
+                        quad(window, x, y, serif, 1., bracket_color);
+                        quad(window, x, y + h - 1., serif, 1., bracket_color);
+                    }
                 }
                 if painted.frames > 0 {
                     let (x, w) = track.playhead(current, painted.frames);
                     // A 1 px knockout keeps the playhead distinct from the
                     // tick under it (accent on pick green is ~1:1 in light).
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(px(left + x - 1.), px(top)),
-                            size(px(w + 2.), px(TRACK)),
-                        ),
-                        surface,
-                    ));
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(px(left + x), px(top - OVERSHOOT)),
-                            size(px(w), px(TRACK + 2. * OVERSHOOT)),
-                        ),
-                        accent,
-                    ));
+                    quad(window, x - 1., 0., w + 2., TRACK, surface);
+                    quad(window, x, -OVERSHOOT, w, TRACK + 2. * OVERSHOOT, accent);
                 }
             },
         )
@@ -408,7 +513,7 @@ impl Workspace {
         div()
             .id("cull-ledger")
             .w(px(width))
-            .h(px(BAND))
+            .h(px(height))
             .flex_shrink_0()
             .cursor_pointer()
             .child(track)
@@ -432,7 +537,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that glob brings in gpui's `test` attribute.
-    use super::{Mark, Track, build, cell_count, cell_of, cell_start, majority, quads};
+    use super::{Mark, Track, build, cell_count, cell_of, cell_start, majority, notches, quads};
     use shadowroom::model::{Flag, Photo};
     use std::time::Instant;
 
@@ -539,6 +644,76 @@ mod tests {
                 assert_eq!(ledger, build(frames, cells, |i| marks[i], |_| None));
             }
         }
+    }
+
+    #[test]
+    fn a_skipped_frame_inside_a_bucket_leaves_a_notch() {
+        let (frames, cells) = (2_000, 450);
+        let mark = |i: usize| {
+            if i == 1_234 {
+                Mark::Unreviewed
+            } else {
+                Mark::Pick
+            }
+        };
+        let ledger = build(frames, cells, mark, |_| None);
+        let track = Track {
+            width: 900.,
+            gap: 0.,
+        };
+        // The majority stays Pick, so the run is one quad...
+        assert_eq!(quads(&ledger, track).len(), 1);
+        // ...but the cell holding frame 1,234 keeps a notch, and clicking it
+        // lands within 4 frames of the skipped one.
+        let notches = notches(&ledger, track);
+        assert_eq!(notches.len(), 1);
+        let frame = track.frame_at(notches[0] + 0.5, frames);
+        assert!(frame.abs_diff(1_234) <= 4, "{frame}");
+        // Reviewing it removes the notch; per-frame ledgers never notch.
+        let mut ledger = ledger;
+        ledger.update(1_234, Mark::Unreviewed, Mark::Pick);
+        assert!(super::notches(&ledger, track).is_empty());
+        let small = build(7, 7, |i| [Mark::Pick, Mark::Unreviewed][i % 2], |_| None);
+        assert!(
+            super::notches(
+                &small,
+                Track {
+                    width: 900.,
+                    gap: 1.
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn picks_stand_above_the_rail_and_rejects_hang_below() {
+        let (pick_top, pick_h) = Mark::Pick.rows();
+        let (reject_top, reject_h) = Mark::Reject.rows();
+        let (rail, rail_h) = Mark::Unreviewed.rows();
+        let (reviewed, reviewed_h) = Mark::Reviewed.rows();
+        // Shape, not only hue: 3 px apart vertically, all on the rail row.
+        assert_eq!(reject_top - pick_top, 3.);
+        assert_eq!((pick_h, reject_h, rail_h), (4., 4., 1.));
+        assert!(pick_top + pick_h > rail && reject_top <= rail);
+        assert!(reviewed < rail && reviewed + reviewed_h > rail + rail_h);
+        assert_eq!(reject_top + reject_h, super::TRACK);
+    }
+
+    #[test]
+    fn free_tracks_drop_gaps_once_cells_are_wide_and_bracket_the_window() {
+        // 7 frames on a 704 px free-standing track: 100 px cells, no gaps.
+        assert_eq!(Track::free(704., 7).gap, 0.);
+        assert_eq!(Track::free(704., 200).gap, 1.);
+        let track = Track::free(700., 7);
+        assert_eq!(track.span(1, 6, 7, 7), (100., 600.));
+        // Bucketed: the bracket covers the window's share of the width.
+        let wide = Track {
+            width: 1_000.,
+            gap: 0.,
+        };
+        assert_eq!(wide.span(0, 10, 50_000, 500), (0., 0.));
+        assert_eq!(wide.span(25_000, 30_000, 50_000, 500), (500., 600.));
     }
 
     #[test]

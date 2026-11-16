@@ -96,6 +96,10 @@ pub struct Histogram {
     pub blue: Vec<u64>,
     pub luminance: Vec<u64>,
     pub samples: u64,
+    /// Clipped samples by the overlay's rule (`peaking::classify`), so the
+    /// clipping readout and the overlay never disagree.
+    #[serde(default)]
+    pub clip: crate::peaking::ClipCounts,
 }
 
 #[derive(Clone, Debug)]
@@ -2825,6 +2829,7 @@ fn sampled_histogram(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4
         blue: vec![0; 256],
         luminance: vec![0; 256],
         samples: 0,
+        clip: Default::default(),
     };
     if width == 0 || height == 0 {
         return h;
@@ -2833,6 +2838,7 @@ fn sampled_histogram(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4
         if p[3] == 0 {
             return;
         }
+        h.clip.add(p);
         h.samples += 1;
         h.red[p[0] as usize] += 1;
         h.green[p[1] as usize] += 1;
@@ -4201,6 +4207,7 @@ mod tests {
                 blue: vec![0; 256],
                 luminance: vec![0; 256],
                 samples: u64::from(small.width()) * u64::from(small.height()),
+                clip: Default::default(),
             };
             for p in small.pixels() {
                 histogram.red[p[0] as usize] += 1;

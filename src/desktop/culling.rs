@@ -5,6 +5,9 @@ use super::*;
 
 /// Long edge of the zoom navigator inset, logical px.
 const NAVIGATOR_EDGE: f32 = 120.;
+/// The navigator steps aside once the zoomed view has been still this long.
+pub(super) const NAVIGATOR_IDLE: Duration = Duration::from_millis(1500);
+const NAVIGATOR_FADE: Duration = Duration::from_millis(200);
 /// A press that moves less than this is a click, not a pan.
 const CLICK_SLOP: f32 = 4.;
 /// Widest line of empty-state copy at 100% text (~70 characters).
@@ -190,12 +193,65 @@ impl Workspace {
     /// Where the zoomed view sits in the frame: a small copy of the photo with
     /// the visible rectangle, at the pane's bottom-right. Click or drag it to
     /// move the view.
+    /// The navigator's opacity this frame, or `None` once it has faded: full
+    /// while the zoomed view moves or the pointer is over it, then a 200 ms
+    /// fade after 1.5 s idle (gone at once with reduced motion).
+    pub(super) fn navigator_opacity(&mut self, cx: &gpui::Context<Self>) -> Option<f32> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            self.zoom_factor.to_bits(),
+            self.pans.map(|p| p.map(f32::to_bits)),
+            self.selected,
+            self.reference,
+            self.mode == ViewMode::Compare,
+        )
+            .hash(&mut hasher);
+        let key = hasher.finish();
+        if key != self.navigator_key {
+            self.navigator_key = key;
+            self.navigator_seen = Instant::now();
+        }
+        let idle = self.navigator_seen.elapsed();
+        if let Some(left) = NAVIGATOR_IDLE.checked_sub(idle) {
+            if !self.navigator_wake.replace(true) {
+                let wake = self.navigator_wake.clone();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(left).await;
+                    wake.set(false);
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+            return Some(1.);
+        }
+        if self.reduce_motion() || self.navigator_drag.is_some() {
+            return self.navigator_drag.is_some().then_some(1.);
+        }
+        let t = (idle - NAVIGATOR_IDLE).as_secs_f32() / NAVIGATOR_FADE.as_secs_f32();
+        if t >= 1. {
+            return None;
+        }
+        self.feedback.animating.set(true);
+        Some(1. - t)
+    }
+
+    /// The pointer moved over a zoomed photo: bring the navigator back.
+    pub(super) fn touch_navigator(&mut self, cx: &mut gpui::Context<Self>) {
+        let hidden = self.navigator_seen.elapsed() >= NAVIGATOR_IDLE;
+        self.navigator_seen = Instant::now();
+        if hidden {
+            cx.notify();
+        }
+    }
+
     pub(super) fn navigator(
         &self,
         reference: bool,
         image: Arc<RenderImage>,
         width: u32,
         height: u32,
+        opacity: f32,
         cx: &gpui::Context<Self>,
     ) -> AnyElement {
         let long = width.max(height).max(1) as f32;
@@ -234,6 +290,7 @@ impl Workspace {
             .w(px(w + 2.))
             .h(px(h + 2.))
             .p(px(1.))
+            .opacity(opacity)
             .bg(self.scrim())
             .cursor(CursorStyle::PointingHand)
             .child(
