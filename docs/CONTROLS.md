@@ -69,8 +69,9 @@ zoom and pan. In Compare, arrows skip the reference frame, so the two panes neve
 show the same photo, and each pane is labelled on the picture with its role, file
 and decision; the active pane's label is underlined, the only active-pane mark. The pinned reference carries a pin badge on its thumbnail in the filmstrip, Catalog grid and Survey. Small windows give the photo
 room: below 1280 px wide, Review, Compare and Survey hide the sidebar (and below
-1100 px, Compare and Survey also hide the inspector) without changing your panel
-settings; Ctrl/Cmd+B brings the sidebar back. Survey (`S`) shows a frozen Catalog
+1100 px, Compare and Survey also hide the inspector, as Review does below 960 px)
+without changing your panel settings; Ctrl/Cmd+B brings the sidebar back and `I`
+the inspector. Survey (`S`) shows a frozen Catalog
 selection of two or more photos (**Selection · 4 photos**), otherwise the current
 burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column count that
 gives the largest frames; its header's

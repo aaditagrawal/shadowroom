@@ -1273,6 +1273,13 @@ pub struct Workspace {
     pane_geometry: Rc<Cell<[PaneGeometry; 2]>>,
     /// The zoom navigator of this pane is being dragged.
     navigator_drag: Option<bool>,
+    /// The zoomed view last changed (pan, zoom, photo) or the pointer moved
+    /// over it; the navigator fades after [`culling::NAVIGATOR_IDLE`].
+    navigator_seen: Instant,
+    /// What the navigator last showed, to notice a change of view.
+    navigator_key: u64,
+    /// A wake-up for the navigator's fade is pending.
+    navigator_wake: Rc<Cell<bool>>,
     /// A batch decision over many photos waiting for Enter (CAT-11).
     pending_bulk: Option<PendingBulk>,
     /// Counts for the current folder scope; `counts` stays library-wide.
@@ -1757,6 +1764,9 @@ impl Workspace {
             grid_size,
             pane_geometry: Rc::new(Cell::new([PaneGeometry::default(); 2])),
             navigator_drag: None,
+            navigator_seen: Instant::now(),
+            navigator_key: 0,
+            navigator_wake: Rc::new(Cell::new(false)),
             pending_bulk: None,
             scope_counts: None,
             rated_counts: None,
@@ -4623,8 +4633,8 @@ impl Workspace {
             ),
             item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
             item(
-                "Loupe View",
-                "View",
+                "Review View",
+                "View · one photo at a time",
                 "L",
                 "loupe",
                 Cmd::View(ViewMode::Loupe),
@@ -4750,10 +4760,10 @@ impl Workspace {
                 Cmd::RatingFilter,
             ),
             item(
-                "Show Review Panel",
-                "View",
+                "Show Culling Panel",
+                "View · histogram, labels and burst in the inspector",
                 "",
-                "pick",
+                "histogram",
                 Cmd::InspectorTab(false),
             ),
             item(
@@ -7752,6 +7762,11 @@ impl Workspace {
             self.settle_aid(&photos[photo_index], kind);
             self.photos = photos;
         }
+        let navigator_opacity = if self.zoom {
+            self.navigator_opacity(cx)
+        } else {
+            None
+        };
         let photo = &self.photos[photo_index];
         let context_photo_id = photo.id;
         let requested_error = self.media.photo_error(photo, kind);
@@ -7767,13 +7782,24 @@ impl Workspace {
             });
         let mut quality_note = None;
         let active = self.mode == ViewMode::Compare && self.reference_focused() == reference;
+        // The wanted tier is still on its way (no error): the loading line
+        // stands in for the caption.
+        let loading = requested_error.is_none()
+            && match &texture {
+                None => true,
+                Some((.., actual, _)) => {
+                    *actual == PreviewKind::Thumbnail || (self.zoom && *actual != PreviewKind::Full)
+                }
+            };
         // Peaking at Fit marks a downscaled preview's edges: say so.
         let fit_peaking = self.focus_peaking && !self.zoom;
         let show_quality = self.zoom
             || fit_peaking
+            || (!loading && texture.is_none())
             || requested_error.is_some()
             || matches!(&texture, Some((.., source, _, _)) if source.note.is_some())
-            || !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full);
+            || (!loading
+                && !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full));
         let mut pane = div()
             .id(if reference {
                 "reference-photo"
@@ -7957,12 +7983,14 @@ impl Workspace {
                 let larger = !g.valid()
                     || w as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.width) + 1.
                     || h as f32 * g.zoom_scale(zoom_factor) > f32::from(g.bounds.size.height) + 1.;
-                if larger {
-                    pane = pane.child(self.navigator(reference, navigator_image, w, h, cx));
+                if larger && let Some(opacity) = navigator_opacity {
+                    pane =
+                        pane.child(self.navigator(reference, navigator_image, w, h, opacity, cx));
                 }
                 let drag_size = pane_size.clone();
                 pane =
                     pane.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        this.touch_navigator(cx);
                         let held = event.dragging() && this.dock_drag.is_none();
                         let was = this.pan_drag;
                         if let Some(delta) = this.pan_drag.motion(reference, event.position, held) {
@@ -7989,8 +8017,7 @@ impl Workspace {
                     },
                 ));
             }
-        } else {
-            let error = self.media.photo_error(photo, kind);
+        } else if let Some(error) = self.media.photo_error(photo, kind) {
             pane = pane.child(
                 div()
                     .absolute()
@@ -8002,11 +8029,34 @@ impl Workspace {
                     .gap(px(space::MD))
                     .text_color(self.muted())
                     .child(icon("camera", self.muted()))
-                    .child(if let Some(error) = error {
-                        error.message
+                    .child(error.message),
+            );
+        }
+        // Loading craft (R18): the plain canvas, or the thumbnail upscaled,
+        // with a 2 px line along the pane's top edge until the wanted preview
+        // arrives, instead of a camera icon and "Loading preview…".
+        if loading {
+            pane = pane.child(
+                div()
+                    .id(if reference {
+                        "reference-loading"
                     } else {
-                        "Loading preview…".into()
-                    }),
+                        "photo-loading"
+                    })
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(space::SM))
+                    .child(div().h(px(2.)).w_full().bg(self.muted().opacity(0.6)))
+                    .tooltip(self.tip(
+                        if self.zoom {
+                            "Loading full size…"
+                        } else {
+                            "Loading preview…"
+                        },
+                        "",
+                    )),
             );
         }
         let compare = self.mode == ViewMode::Compare;
@@ -8245,11 +8295,13 @@ impl Workspace {
                                         .items_center()
                                         .justify_center()
                                         .gap(px(space::SM))
-                                        .child(icon("camera", this.icon_muted()))
+                                        // Loading is the plain well (a camera icon
+                                        // flickered on scroll); the icon marks a
+                                        // preview that failed.
                                         .when_some(
                                             this.media.photo_error(photo, PreviewKind::Thumbnail),
                                             |s, error| {
-                                                s.child(
+                                                s.child(icon("camera", this.icon_muted())).child(
                                                     div()
                                                         .text_size(ui::font(ui::text::LABEL))
                                                         .text_color(this.muted())
@@ -8672,15 +8724,16 @@ impl Workspace {
                         .gap(px(space::SM))
                         .items_center()
                         .justify_center()
-                        .child(icon("camera", self.icon_muted()))
                         .when_some(self.media.photo_error(p, kind), |s, error| {
-                            s.child(div().text_size(ui::font(ui::text::LABEL)).child(
-                                if error.message.contains("Unavailable offline") {
-                                    "Unavailable offline"
-                                } else {
-                                    "Preview unavailable"
-                                },
-                            ))
+                            s.child(icon("camera", self.icon_muted())).child(
+                                div().text_size(ui::font(ui::text::LABEL)).child(
+                                    if error.message.contains("Unavailable offline") {
+                                        "Unavailable offline"
+                                    } else {
+                                        "Preview unavailable"
+                                    },
+                                ),
+                            )
                         }),
                 );
             }
@@ -9147,12 +9200,15 @@ impl Workspace {
                         .child(img(texture).size_full().object_fit(ObjectFit::Contain)),
                 );
             } else {
+                // The slot's plain well while the thumbnail loads; the icon
+                // only for a preview that failed.
+                let failed = self.media.photo_error(p, PreviewKind::Thumbnail).is_some();
                 frame = frame
                     .size_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("camera", self.icon_muted()));
+                    .when(failed, |s| s.child(icon("camera", self.icon_muted())));
             }
             if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 frame = frame.child(badges);
@@ -10224,10 +10280,12 @@ impl Workspace {
                     .px(px(ui::BAR_INSET))
                     .border_b_1()
                     .border_color(self.border())
+                    // "Culling", not a second "Review": that name and the
+                    // loupe glyph belong to the view.
                     .child(self.panel_tab(
                         "panel-review",
-                        "Review",
-                        "loupe",
+                        "Culling",
+                        "histogram",
                         Cmd::InspectorTab(false),
                         !self.inspector_info,
                         cx,

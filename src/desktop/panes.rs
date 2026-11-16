@@ -5,7 +5,7 @@
 //!
 //! In the library, Up/Down/Home/End move a cursor over the collections, smart
 //! filters, labels and folders, and Return or Space opens the row. In the
-//! inspector, Left/Right switch between Review and Info. Escape returns to the
+//! inspector, Left/Right switch between Culling and Info. Escape returns to the
 //! photo area. Decision keys keep working from any pane. `Workspace::key`
 //! routes here only after the quit chord, so Ctrl+Q still quits first.
 use super::*;
