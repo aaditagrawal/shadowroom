@@ -400,6 +400,7 @@ impl Draft {
                 "auto_eject:on" | "auto_eject:off" => {
                     s.eject_after_ingest = action == "auto_eject:on";
                 }
+                "notify:on" | "notify:off" => s.ingest_notify = action == "notify:on",
                 mode if mode.starts_with("insert:") => s.ingest_on_insert = mode[7..].into(),
                 hour if hour.starts_with("day:") => match hour[4..].parse::<u8>() {
                     Ok(hour) => s.ingest_day_start_hour = hour % 24,

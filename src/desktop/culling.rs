@@ -699,8 +699,8 @@ impl Workspace {
         };
         let (title, body): (String, String) = if library_empty {
             (
-                "Add photos to start culling".into(),
-                "Open a folder or a card. Originals are never modified.".into(),
+                "Insert a card or open a folder".into(),
+                "Import from Card copies and verifies into your library · Open Folder culls where the files are, nothing is copied. Originals are never modified.".into(),
             )
         } else if self.duplicates_only {
             let (title, body, _) = copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
@@ -767,17 +767,29 @@ impl Workspace {
             .justify_center()
             .gap(px(space::SM));
         if library_empty {
-            actions = actions.child(
-                self.action_button(
-                    "empty-open",
-                    "Add Photos…",
-                    Cmd::Import,
-                    ButtonKind::Primary,
-                    false,
-                    cx,
+            actions = actions
+                .child(
+                    self.action_button(
+                        "empty-import",
+                        "Import from Card…",
+                        Cmd::Import,
+                        ButtonKind::Primary,
+                        false,
+                        cx,
+                    )
+                    .tooltip(self.tip("Copy and verify into your library", "⌘⇧I")),
                 )
-                .tooltip(self.tip("Open a folder or card", "⌘O")),
-            );
+                .child(
+                    self.action_button(
+                        "empty-open",
+                        "Open Folder…",
+                        Cmd::OpenFolder,
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    )
+                    .tooltip(self.tip("Cull where the files are; nothing is copied", "⌘O")),
+                );
             for (n, drive) in self.drives.iter().enumerate() {
                 let path = drive.path.clone();
                 actions = actions.child(
@@ -788,7 +800,7 @@ impl Workspace {
                         false,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_ingest(path.clone());
+                        this.scan_for_import(path.clone());
                         cx.notify();
                     })),
                 );
@@ -888,7 +900,8 @@ impl Workspace {
                         .gap(px(space::LG))
                         .text_size(px(ui::text::LABEL))
                         .text_color(self.muted())
-                        .child(hint(&shortcut("⌘O"), "add photos"))
+                        .child(hint(&shortcut("⌘⇧I"), "import from card"))
+                        .child(hint(&shortcut("⌘O"), "open folder"))
                         .child(hint("F1", "guide"))
                         .child(hint(&shortcut("⌘K"), "commands")),
                 )

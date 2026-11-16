@@ -308,6 +308,7 @@ impl Workspace {
     /// "Exported 4 files to Client-Picks" with a Reveal button.
     pub(super) fn announce_export(&mut self, job: &ExportJob) {
         let Some((destination, picks)) = job.target.clone() else {
+            self.notify_desktop("Export finished", &plural(job.completed, "file", "files"));
             self.announce(
                 format!(
                     "Export finished · {}",
@@ -332,6 +333,7 @@ impl Workspace {
                 plural(job.completed, "XMP sidecar", "XMP sidecars")
             )
         };
+        self.notify_desktop("Export finished", &text);
         self.announce_action(
             text,
             Tone::Success,

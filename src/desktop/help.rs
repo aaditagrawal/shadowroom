@@ -108,7 +108,7 @@ impl Workspace {
             "enter" => {
                 self.execute(Cmd::Close, window, cx);
                 if self.photos.is_empty() {
-                    self.execute(Cmd::Import, window, cx);
+                    self.execute(Cmd::OpenFolder, window, cx);
                 }
                 return;
             }
@@ -208,14 +208,14 @@ impl Workspace {
                                 // An empty library's next step is adding photos.
                                 self.dialog_button(
                                     "guide-done",
-                                    "Add Photos…",
+                                    "Open Folder…",
                                     ButtonKind::Primary,
                                     false,
                                 )
-                                .tooltip(self.tip("Add Photos…", "Enter"))
+                                .tooltip(self.tip("Open Folder… · cull in place", "Enter"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.execute(Cmd::Close, window, cx);
-                                    this.execute(Cmd::Import, window, cx);
+                                    this.execute(Cmd::OpenFolder, window, cx);
                                 }))
                             } else {
                                 self.action_button(
