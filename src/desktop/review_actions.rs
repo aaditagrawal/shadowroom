@@ -573,7 +573,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .flex()
                     .justify_end()
-                    .child(self.keycap(action.keys())),
+                    .child(self.keycaps(action.keys())),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.run_image_action(action, window, cx);
@@ -632,14 +632,14 @@ impl Workspace {
                 ImageAction::Label(label) => (
                     10 + label as usize,
                     current == Some(label as u8),
-                    if label == ColorLabel::None {
-                        "No label".to_string()
-                    } else {
-                        format!("{label:?}")
-                    },
+                    Self::label_tip(label),
                 ),
                 _ => continue,
             };
+            // A box means "a key" everywhere, so the current rating takes
+            // the selected fill (as choice-group segments do) and the current
+            // label the inspector swatch's ring with an inset gap.
+            let ring = on && matches!(value, ImageAction::Label(_));
             let mut chip = div()
                 .id(("image-menu-chip", id))
                 .size(px(MENU_CHIP))
@@ -647,18 +647,21 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .border_1()
-                .border_color(if on { self.text() } else { transparent_black() })
+                .border_color(if ring { self.text() } else { transparent_black() })
                 .cursor_pointer()
-                .hover(|s| s.bg(self.hover_bg()))
+                .when(on && !ring, |s| s.bg(self.selected_bg()))
+                .when(!on, |s| s.hover(|s| s.bg(self.hover_bg())))
                 .tooltip(self.tip(&tip, ""));
             chip = match value {
-                ImageAction::Rating(0) => chip.text_color(self.muted()).child("–"),
+                ImageAction::Rating(0) => chip
+                    .text_color(if on { self.text() } else { self.muted() })
+                    .child("–"),
                 ImageAction::Rating(stars) => chip
                     .text_size(ui::font(ui::text::LABEL))
                     .text_color(if on { self.text() } else { self.muted() })
                     .child(stars.to_string()),
-                // Each label chip carries its initial, so no label is told
-                // apart by hue alone, Purple included (R4-a11y-06).
+                // The same mark as the inspector's swatch: the key, or
+                // Purple's dot (R5-design-01).
                 ImageAction::Label(label) => match self.label_color(label) {
                     Some(color) => chip.child(
                         div()
@@ -671,7 +674,7 @@ impl Workspace {
                             .line_height(ui::font(ui::text::MICRO))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                            .child(label_initial(label)),
+                            .child(self.label_mark(label)),
                     ),
                     None => chip.child(
                         div()
@@ -702,7 +705,7 @@ impl Workspace {
                     .child(action.label(false)),
             )
             .child(div().flex_1().flex().child(chips))
-            .child(self.keycap(action.keys()))
+            .child(self.keycaps(action.keys()))
     }
 
     pub(super) fn image_context_view(&self, cx: &mut gpui::Context<Self>) -> AnyElement {

@@ -5876,14 +5876,6 @@ fn contained(well_w: f32, well_h: f32, width: u32, height: u32) -> (f32, f32) {
     )
 }
 
-/// What a chrome label swatch shows: its key, or Purple's initial (no key).
-fn label_glyph(label: ColorLabel) -> &'static str {
-    match label_key(label) {
-        "" => label_initial(label),
-        key => key,
-    }
-}
-
 fn label_key(label: ColorLabel) -> &'static str {
     match label {
         ColorLabel::Red => "6",
@@ -5920,6 +5912,49 @@ fn survey_layout(n: usize, aspect: f32, width: f32, height: f32) -> (usize, f32,
     }
     best
 }
+/// The caps of a shortcut as drawn: "Ctrl+Shift+E" -> Ctrl, Shift, E;
+/// "⌘⇧E" -> ⌘, ⇧, E; "⇧Delete" -> ⇧, Delete; "Shift →" -> Shift, →.
+fn keycap_parts(keys: &str) -> Vec<String> {
+    let text = shortcut(keys);
+    let mut caps = Vec::new();
+    for word in text.split([' ', '+']).filter(|k| !k.is_empty()) {
+        // macOS modifier glyphs are caps of their own, the rest one key.
+        let mut rest = word;
+        while let Some(glyph) = rest.chars().next().filter(|c| "⌘⇧⌥⌃".contains(*c)) {
+            caps.push(glyph.to_string());
+            rest = &rest[glyph.len_utf8()..];
+        }
+        if !rest.is_empty() {
+            caps.push(rest.to_owned());
+        }
+    }
+    caps
+}
+
+/// Boxed keycaps on a hairline, shared by the workspace and tooltips.
+fn keycap_row(keys: &str, border: Hsla, bg: Hsla, fg: Hsla) -> Div {
+    let mut row = div().flex().flex_shrink_0().gap(px(space::TINY));
+    for cap in keycap_parts(keys) {
+        row = row.child(
+            div()
+                .min_w(px(ui::scaled(18.)))
+                .h(px(ui::scaled(18.)))
+                .px(px(space::XS))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(border)
+                .bg(bg)
+                .text_size(ui::font(ui::text::MICRO))
+                .line_height(ui::font(ui::text::MICRO))
+                .text_color(fg)
+                .child(cap),
+        );
+    }
+    row
+}
+
 fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
@@ -5991,7 +6026,13 @@ impl Render for Tip {
             .gap(px(space::MD))
             .child(self.label.clone())
             .when(!self.keys.is_empty(), |d| {
-                d.child(div().text_color(self.muted).child(self.keys.clone()))
+                // The shared keycap on the tooltip's own hairline.
+                d.child(keycap_row(
+                    &self.keys,
+                    self.border,
+                    transparent_black(),
+                    self.muted,
+                ))
             })
     }
 }
@@ -6291,7 +6332,7 @@ impl Workspace {
     fn tip(&self, label: &str, keys: &str) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         let tip = Tip {
             label: label.to_owned().into(),
-            keys: shortcut(keys).into(),
+            keys: keys.to_owned().into(),
             font: self.settings.interface_font.clone().into(),
             fg: self.text(),
             muted: self.muted(),
@@ -6300,47 +6341,24 @@ impl Workspace {
         };
         move |_, cx| cx.new(|_| tip.clone()).into()
     }
+    /// Plain muted key text, for in-control hints only (the decision bar's
+    /// "P", "X", "1-5" inside the buttons they press). Anywhere else a
+    /// shortcut is drawn with [`Self::keycaps`]; see docs/THEMES.md.
     fn keycap(&self, keys: &str) -> Div {
         div()
             .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
-    /// Boxed keys, one cap per key, as Zed's palette draws bindings.
+    /// Boxed keys, one cap per key, as Zed's palette draws bindings. The one
+    /// keycap component: menus, tooltips, dialog footers, bars and the guide.
     fn keycaps(&self, keys: &str) -> Div {
-        let text = shortcut(keys);
-        let caps: Vec<String> = if cfg!(target_os = "macos") {
-            // ⌘⇧E → ⌘ ⇧ E; "Shift →" → Shift →
-            if text.contains(' ') {
-                text.split(' ').map(str::to_owned).collect()
-            } else {
-                text.chars().map(String::from).collect()
-            }
-        } else {
-            text.split(['+', ' '])
-                .filter(|k| !k.is_empty())
-                .map(str::to_owned)
-                .collect()
-        };
-        let mut row = div().flex().flex_shrink_0().gap(px(space::TINY));
-        for cap in caps {
-            row = row.child(
-                div()
-                    .min_w(px(ui::scaled(18.)))
-                    .h(px(ui::scaled(18.)))
-                    .px(px(space::XS))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .border_1()
-                    .border_color(self.group_border())
-                    .bg(self.canvas_bg())
-                    .text_size(ui::font(ui::text::MICRO))
-                    .text_color(self.muted())
-                    .child(cap),
-            );
-        }
-        row
+        keycap_row(
+            keys,
+            self.group_border(),
+            self.canvas_bg(),
+            self.muted(),
+        )
     }
     /// Shared 28 px control, with an 8 px icon/label gap.
     fn button(
@@ -9216,11 +9234,32 @@ impl Workspace {
                 .child(thumb_rating(rating))
         })
     }
-    /// Inspector label swatch: the chrome label colour carrying its key
-    /// (6-9), a text-coloured ring with an inset gap when chosen. Purple has
-    /// no key, so it carries its initial instead: no swatch relies on hue
-    /// alone (R4-a11y-06). The other initials stay on photo badges, where they
-    /// are the colour-blind shape code; here they would read as keycaps.
+    /// What a chrome label swatch carries (inspector and image menu alike):
+    /// its key digit (6-9), or for Purple, which has no key, a small dot. A
+    /// shape, never a letter, so no swatch relies on hue alone (R4-a11y-06)
+    /// and none reads as the key of another command ("P" is Pick). Initials
+    /// stay on photo badges, where no key hint sits beside them.
+    fn label_mark(&self, label: ColorLabel) -> AnyElement {
+        match label_key(label) {
+            "" => div()
+                .size(px(4.))
+                .rounded_full()
+                .bg(self.c("shadowroom.label.text", "#0f0f0f"))
+                .into_any_element(),
+            key => key.into_any_element(),
+        }
+    }
+    /// Tooltip naming a label and its key ("Purple · no key").
+    fn label_tip(label: ColorLabel) -> String {
+        match label {
+            ColorLabel::None => "No label".to_owned(),
+            ColorLabel::Purple => "Purple · no key".to_owned(),
+            label => format!("{label:?}"),
+        }
+    }
+    /// Inspector label swatch: the chrome label colour carrying its mark
+    /// ([`Self::label_mark`]), a text-coloured ring with an inset gap when
+    /// chosen, the one "current value" mark of every value picker.
     fn label_swatch(
         &self,
         id: impl Into<ElementId>,
@@ -9251,7 +9290,7 @@ impl Workspace {
                     .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                    .when_some(color, |s, c| s.bg(c).child(label_glyph(label)))
+                    .when_some(color, |s, c| s.bg(c).child(self.label_mark(label)))
                     // The empty choice is an input with no fill of its own.
                     .when(color.is_none(), |s| {
                         s.border_1().border_color(self.control_border())
@@ -10367,11 +10406,7 @@ impl Workspace {
                         ("label", n),
                         label,
                         p.label == label,
-                        if label == ColorLabel::None {
-                            "No label".to_owned()
-                        } else {
-                            format!("{label:?}")
-                        },
+                        Self::label_tip(label),
                         cx,
                     ));
                 }
@@ -13472,10 +13507,27 @@ mod ui_tests {
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
         SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, copy,
-        grip_owns_key, index_filtered_positions, is_quit_chord, item, label_index, match_tier,
-        palette_category_rank, palette_step, retained_position, survey_layout, text_input,
-        thumbnail_size, title_match, ui::space,
+        grip_owns_key, index_filtered_positions, is_quit_chord, item, keycap_parts, label_index,
+        match_tier, palette_category_rank, palette_step, retained_position, survey_layout,
+        text_input, thumbnail_size, title_match, ui::space,
     };
+
+    #[test]
+    fn keycaps_split_modifiers_from_the_key() {
+        let caps = |keys: &str| keycap_parts(keys).join(" ");
+        if cfg!(target_os = "macos") {
+            assert_eq!(caps("⌘⇧E"), "⌘ ⇧ E");
+            assert_eq!(caps("⇧Delete"), "⇧ Delete");
+            assert_eq!(caps("⌘Z"), "⌘ Z");
+        } else {
+            assert_eq!(caps("⌘⇧E"), "Ctrl Shift E");
+            assert_eq!(caps("⇧Delete"), "Shift Delete");
+            assert_eq!(caps("⌘Z"), "Ctrl Z");
+        }
+        assert_eq!(caps("Shift Tab"), "Shift Tab");
+        assert_eq!(caps("0–5"), "0–5");
+        assert_eq!(caps("Enter"), "Enter");
+    }
 
     #[test]
     fn thumbnail_fallbacks_scale_to_the_thumbnail_edge() {
