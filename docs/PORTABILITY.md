@@ -12,9 +12,13 @@ JPEG/PNG/WebP/BMP, dedicated TIFF and JPEG XL decoding are also Rust. SQLite is
 compiled into the executable; rewriting it would not remove a runtime package.
 
 Folder, ingest-destination, export and theme choices open the desktop's own
-file chooser first (the XDG portal on Linux, NSOpenPanel on macOS). The portal
-dialog's title is GPUI's "Open Folder"/"Open File"; its accept button names the
-action. When the session has no file-chooser portal (or no session bus), when an
+file chooser first (the XDG portal on Linux, NSOpenPanel on macOS). On Linux
+Shadowroom sends the portal's FileChooser.OpenFile itself (through `ashpd`, the
+version GPUI already locks), off the UI thread, so the dialog carries a real
+title ("Export 3 picks in this view", "Open folder to cull in place"), an accept
+button that names the action, and a start folder (exports: the last export
+folder, else Pictures, never the import library). The dialog is not parented to
+the Shadowroom window. When the session has no file-chooser portal (or no session bus), when an
 automation client drives the app, or when `SHADOWROOM_FILE_CHOOSER=builtin` is set,
 Shadowroom uses its built-in picker instead (`=native` forces the portal). A native
 choice that breaks an in-app rule (an export folder inside the photo folders, a

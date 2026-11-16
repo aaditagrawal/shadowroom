@@ -3524,15 +3524,20 @@ impl Workspace {
         }
     }
 
-    /// Where the next export picker starts: the last export folder, else the library.
+    /// Where the next export chooser starts: the last export folder, else
+    /// Pictures, else home. Never the import library: exporting into the
+    /// photo folders being exported is refused, and the library holds them.
     fn export_start(&self) -> PathBuf {
-        self.settings
-            .extra
-            .get("last_export_dir")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .filter(|path| path.is_dir())
-            .unwrap_or_else(|| self.settings.ingest_library_root.clone())
+        folder_picker::export_start_folder(
+            self.settings
+                .extra
+                .get("last_export_dir")
+                .and_then(Value::as_str)
+                .map(PathBuf::from),
+            directories::UserDirs::new().and_then(|dirs| dirs.picture_dir().map(Path::to_path_buf)),
+            directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
+            &self.settings.ingest_library_root,
+        )
     }
 
     /// Where Open Folder (cull in place) starts: the folder opened last, else

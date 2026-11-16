@@ -1,5 +1,7 @@
-//! Path choosing: the platform file chooser first (XDG portal on Linux), the
-//! built-in picker as fallback. Directory and theme reads stay off the UI thread.
+//! Path choosing: the platform file chooser first (the XDG file-chooser
+//! portal on Linux, called directly so it carries a real title, accept label
+//! and start folder; NSOpenPanel on macOS), the built-in picker as fallback.
+//! Directory and theme reads and the portal call stay off the UI thread.
 use super::*;
 use anyhow::Context as _;
 use shadowroom::path_picker::{Entry, address, list};
@@ -90,18 +92,12 @@ fn chooser_override() -> Option<Chooser> {
     }
 }
 
-/// Which chooser asks for `purpose`: a forced one, else the built-in picker
-/// for exports (their header and start folder matter) or when the native
-/// one is unavailable, else the platform's.
-fn chooser_for(purpose: &Purpose, forced: Option<Chooser>, native_unavailable: bool) -> Chooser {
-    let export = matches!(
-        purpose,
-        Purpose::Workspace {
-            export: Some(_),
-            ..
-        }
-    );
-    forced.unwrap_or(if native_unavailable || export {
+/// Which chooser asks: a forced one, else the built-in picker when the
+/// native one is unavailable (no portal, automation), else the platform's.
+/// Exports go native too: the portal request carries their title (count),
+/// accept label and start folder.
+fn chooser_for(forced: Option<Chooser>, native_unavailable: bool) -> Chooser {
+    forced.unwrap_or(if native_unavailable {
         Chooser::Builtin
     } else {
         Chooser::Native
@@ -113,9 +109,87 @@ impl Purpose {
     fn accept_label(&self) -> &'static str {
         match self {
             Self::Workspace { export: None, .. } => "Open",
-            Self::Workspace { .. } => "Export Here",
+            Self::Workspace {
+                export: Some(true), ..
+            } => "Export Here",
+            Self::Workspace { .. } => "Write XMP Here",
             Self::Ingest(_) => "Choose",
             Self::Theme(_) => "Import",
+        }
+    }
+}
+
+/// What the platform chooser is asked: built (and tested) without a session
+/// bus, sent by `portal::choose` on Linux. (macOS asks NSOpenPanel through
+/// GPUI, which takes only the accept label.)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ChooserRequest {
+    pub title: String,
+    pub accept_label: String,
+    pub directory: bool,
+    /// Where the chooser opens (only an existing folder is sent).
+    pub current_folder: Option<PathBuf>,
+    /// File filters for a file choice: label and glob patterns.
+    pub filters: Vec<(String, Vec<String>)>,
+}
+
+/// The platform chooser's answer.
+#[derive(Debug)]
+enum NativeAnswer {
+    Chosen(PathBuf),
+    Cancelled,
+    /// No portal, no session bus, or the request failed: the built-in picker
+    /// takes over.
+    Unavailable(String),
+}
+
+/// The XDG desktop portal's FileChooser.OpenFile, called directly: GPUI's
+/// prompt_for_paths titles every folder request "Open Folder" and sends no
+/// start folder, which an export needs.
+#[cfg(target_os = "linux")]
+mod portal {
+    use super::{ChooserRequest, NativeAnswer};
+    use ashpd::desktop::file_chooser::{FileFilter, OpenFileRequest, SelectedFiles};
+
+    /// The portal request for `request`, ready to send.
+    pub(super) fn open_file(request: &ChooserRequest) -> ashpd::Result<OpenFileRequest> {
+        let mut open = SelectedFiles::open_file()
+            .title(request.title.as_str())
+            .accept_label(request.accept_label.as_str())
+            .modal(true)
+            .multiple(false)
+            .directory(request.directory);
+        for (label, globs) in &request.filters {
+            open = open.filter(
+                globs
+                    .iter()
+                    .fold(FileFilter::new(label), |filter, glob| filter.glob(glob)),
+            );
+        }
+        open.current_folder::<&std::path::Path>(request.current_folder.as_deref())
+    }
+
+    /// Asks the portal. The caller runs it on the background executor, never
+    /// the UI thread; zbus answers through async-io's own reactor.
+    pub(super) async fn choose(request: ChooserRequest) -> NativeAnswer {
+        let open = match open_file(&request) {
+            Ok(open) => open,
+            Err(error) => return NativeAnswer::Unavailable(error.to_string()),
+        };
+        let response = match open.send().await {
+            Ok(request) => request.response(),
+            Err(error) => return NativeAnswer::Unavailable(error.to_string()),
+        };
+        match response {
+            Ok(files) => files
+                .uris()
+                .iter()
+                .find_map(|uri| uri.to_file_path().ok())
+                .map_or(NativeAnswer::Cancelled, NativeAnswer::Chosen),
+            // The user dismissed the dialog.
+            Err(ashpd::Error::Response(_)) => NativeAnswer::Cancelled,
+            Err(error) => NativeAnswer::Unavailable(error.to_string()),
         }
     }
 }
@@ -134,16 +208,13 @@ impl Workspace {
         }
     }
     /// Asks for a folder (or a theme file) for `purpose`. The platform's own
-    /// chooser opens first; the built-in picker is the fallback when the
-    /// desktop has no file-chooser portal, when the app is driven by
-    /// automation (whose state must stay inspectable), and when a native
-    /// choice breaks an in-app rule (an export inside a photo folder, a file
-    /// that is not a theme): it then opens at that choice with the reason.
-    /// Exports always use the built-in picker: its header says what will be
-    /// written (count, files, size, verification) and it opens at the last
-    /// export folder, none of which the portal chooser can show through GPUI
-    /// (every directory request is titled "Open Folder" and has no start
-    /// folder).
+    /// chooser opens first, titled with what will happen ("Export 3 picks in
+    /// this view"), with the verb on its accept button and opening at
+    /// `initial`; the built-in picker is the fallback when the desktop has no
+    /// file-chooser portal, when the app is driven by automation (whose state
+    /// must stay inspectable), and when a native choice breaks an in-app rule
+    /// (an export inside a photo folder, a file that is not a theme): it then
+    /// opens at that choice with the reason.
     pub(super) fn show_path_picker(
         &mut self,
         purpose: Purpose,
@@ -151,7 +222,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let chooser = chooser_for(
-            &purpose,
             chooser_override(),
             self.native_chooser_failed || self.automation_driven,
         );
@@ -162,22 +232,58 @@ impl Workspace {
         }
     }
 
+    /// The platform chooser's request for `purpose`, opening at `initial`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(super) fn chooser_request(&self, purpose: &Purpose, initial: &Path) -> ChooserRequest {
+        ChooserRequest {
+            title: self.picker_copy(purpose).0,
+            accept_label: self.accept_label(purpose).into(),
+            directory: !purpose.files(),
+            current_folder: (!initial.as_os_str().is_empty() && initial.is_dir())
+                .then(|| initial.to_path_buf()),
+            filters: if purpose.files() {
+                vec![("Zed theme (JSON)".into(), vec!["*.json".into()])]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
     fn prompt_native_path(&mut self, purpose: Purpose, initial: PathBuf, cx: &mut Context<Self>) {
         self.palette = false;
         self.image_context = None;
         self.rating_filter_open = false;
-        let files = purpose.files();
-        let prompt = cx.prompt_for_paths(PathPromptOptions {
-            files,
-            directories: !files,
-            multiple: false,
-            prompt: Some(self.accept_label(&purpose).into()),
-        });
+        #[cfg(target_os = "linux")]
+        let answer = cx
+            .background_executor()
+            .spawn(portal::choose(self.chooser_request(&purpose, &initial)));
+        #[cfg(not(target_os = "linux"))]
+        let answer = {
+            let files = purpose.files();
+            cx.prompt_for_paths(PathPromptOptions {
+                files,
+                directories: !files,
+                multiple: false,
+                prompt: Some(self.accept_label(&purpose).into()),
+            })
+        };
         let photo_folders = self.export_photo_folders(&purpose);
         cx.spawn(async move |this, cx| {
-            let chosen = match prompt.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                Ok(Ok(None)) => {
+            #[cfg(target_os = "linux")]
+            let answer = answer.await;
+            #[cfg(not(target_os = "linux"))]
+            let answer = match answer.await {
+                Ok(Ok(Some(paths))) => paths
+                    .into_iter()
+                    .next()
+                    .map_or(NativeAnswer::Cancelled, NativeAnswer::Chosen),
+                Ok(Ok(None)) => NativeAnswer::Cancelled,
+                Ok(Err(error)) => NativeAnswer::Unavailable(format!("{error:#}")),
+                Err(error) => NativeAnswer::Unavailable(error.to_string()),
+            };
+            let path = match answer {
+                NativeAnswer::Chosen(path) => path,
+                NativeAnswer::Cancelled => {
                     let _ = this.update(cx, |this, cx| {
                         this.refocus_ingest_field();
                         cx.notify();
@@ -186,16 +292,16 @@ impl Workspace {
                 }
                 // No portal (or no session bus): use the built-in picker
                 // from now on, starting where the caller asked.
-                Ok(Err(_)) | Err(_) => {
+                NativeAnswer::Unavailable(error) => {
+                    eprintln!(
+                        "Native file chooser unavailable, using the built-in picker: {error}"
+                    );
                     let _ = this.update(cx, |this, cx| {
                         this.native_chooser_failed = true;
                         this.show_builtin_picker(purpose, initial, cx);
                     });
                     return;
                 }
-            };
-            let Some(path) = chosen else {
-                return;
             };
             let checked = path.clone();
             let check = purpose.clone();
@@ -965,6 +1071,8 @@ impl Workspace {
             self.modal_footer()
                 // Enter goes into the highlighted folder; the primary button's
                 // own verb names what Ctrl+Enter does (R4-overlays-05, R4-io-02).
+                // The visible Cancel button already says Esc's job, and three
+                // hints stay on one line beside a long "Export to “…”".
                 .child(self.key_hints(&[
                     ("⌘L", "Path"),
                     ("Enter", "Go into"),
@@ -972,7 +1080,6 @@ impl Workspace {
                         "⌘Enter",
                         confirm.split_whitespace().next().unwrap_or("Choose"),
                     ),
-                    ("Esc", "Cancel"),
                 ]))
                 .child(
                     div()
@@ -1001,6 +1108,25 @@ impl Workspace {
             .child(body)
             .into_any_element()
     }
+}
+
+/// Where an export chooser opens: the last export folder while it exists,
+/// else Pictures, else home, skipping the import library and anything in it
+/// (the first export never starts there).
+pub(super) fn export_start_folder(
+    last: Option<PathBuf>,
+    pictures: Option<PathBuf>,
+    home: Option<PathBuf>,
+    library: &Path,
+) -> PathBuf {
+    let outside_library =
+        |path: &PathBuf| library.as_os_str().is_empty() || !path.starts_with(library);
+    last.filter(|path| path.is_dir())
+        .into_iter()
+        .chain(pictures.filter(|path| path.is_dir() && outside_library(path)))
+        .chain(home.filter(outside_library))
+        .next()
+        .unwrap_or_default()
 }
 
 /// The in-app rules for a chosen path, off the UI thread: themes must be JSON
@@ -1038,10 +1164,18 @@ fn validate_choice(
 
 #[cfg(test)]
 mod chooser_tests {
-    use super::{Chooser, Purpose, chooser_for};
+    use super::{Chooser, ChooserRequest, Purpose, chooser_for};
+    use std::path::PathBuf;
 
     #[test]
-    fn exports_keep_the_built_in_picker_and_entry_verbs_go_native() {
+    fn every_purpose_goes_native_unless_unavailable_or_forced() {
+        // Exports too: the portal request carries their context now.
+        assert_eq!(chooser_for(None, false), Chooser::Native);
+        // No portal, or automation: the built-in picker.
+        assert_eq!(chooser_for(None, true), Chooser::Builtin);
+        // SHADOWROOM_FILE_CHOOSER wins either way.
+        assert_eq!(chooser_for(Some(Chooser::Native), true), Chooser::Native);
+        assert_eq!(chooser_for(Some(Chooser::Builtin), false), Chooser::Builtin);
         let picks = Purpose::Workspace {
             export: Some(true),
             ids: vec![1, 2],
@@ -1050,27 +1184,90 @@ mod chooser_tests {
             export: Some(false),
             ids: vec![1],
         };
-        let open = Purpose::Workspace {
-            export: None,
-            ids: Vec::new(),
+        assert_eq!(picks.accept_label(), "Export Here");
+        assert_eq!(xmp.accept_label(), "Write XMP Here");
+        assert_eq!(Purpose::Theme(1).accept_label(), "Import");
+    }
+
+    #[test]
+    fn the_first_export_never_starts_in_the_import_library() {
+        let root = tempfile::tempdir().unwrap();
+        let pictures = root.path().join("Pictures");
+        let library = pictures.join("Shadowroom");
+        let exports = root.path().join("Exports");
+        for dir in [&library, &exports] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let home = Some(root.path().to_path_buf());
+        // No export yet: Pictures, not the library inside it.
+        assert_eq!(
+            super::export_start_folder(None, Some(pictures.clone()), home.clone(), &library),
+            pictures
+        );
+        // The library is Pictures itself: home instead.
+        assert_eq!(
+            super::export_start_folder(None, Some(pictures.clone()), home.clone(), &pictures),
+            root.path()
+        );
+        // The last export folder wins while it exists.
+        assert_eq!(
+            super::export_start_folder(
+                Some(exports.clone()),
+                Some(pictures.clone()),
+                home.clone(),
+                &library
+            ),
+            exports
+        );
+        let gone = root.path().join("gone");
+        assert_eq!(
+            super::export_start_folder(Some(gone), Some(pictures.clone()), home, &library),
+            pictures
+        );
+    }
+
+    /// The OpenFile call the portal receives, without a session bus: title,
+    /// accept label, directory mode, modality and the start folder.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_portal_request_carries_title_accept_label_and_start_folder() {
+        let folder = tempfile::tempdir().unwrap();
+        let request = ChooserRequest {
+            title: "Export 3 picks in this view".into(),
+            accept_label: "Export Here".into(),
+            directory: true,
+            current_folder: Some(folder.path().to_path_buf()),
+            filters: Vec::new(),
         };
-        assert_eq!(chooser_for(&picks, None, false), Chooser::Builtin);
-        assert_eq!(chooser_for(&xmp, None, false), Chooser::Builtin);
-        assert_eq!(chooser_for(&open, None, false), Chooser::Native);
-        assert_eq!(
-            chooser_for(&Purpose::Ingest(0), None, false),
-            Chooser::Native
+        let open = super::portal::open_file(&request).unwrap();
+        let sent = format!("{open:?}");
+        assert!(
+            sent.contains("title: \"Export 3 picks in this view\""),
+            "{sent}"
         );
-        // No portal: everything falls back to the built-in picker.
-        assert_eq!(chooser_for(&open, None, true), Chooser::Builtin);
-        // SHADOWROOM_FILE_CHOOSER wins either way.
-        assert_eq!(
-            chooser_for(&picks, Some(Chooser::Native), false),
-            Chooser::Native
+        assert!(
+            sent.contains("accept_label: Some(\"Export Here\")"),
+            "{sent}"
         );
-        assert_eq!(
-            chooser_for(&open, Some(Chooser::Builtin), false),
-            Chooser::Builtin
+        assert!(sent.contains("directory: Some(true)"), "{sent}");
+        assert!(sent.contains("modal: Some(true)"), "{sent}");
+        assert!(sent.contains("multiple: Some(false)"), "{sent}");
+        let folder_name = folder.path().file_name().unwrap().to_string_lossy();
+        assert!(
+            sent.contains("current_folder: Some(") && sent.contains(folder_name.as_ref()),
+            "{sent}"
         );
+        // A theme file: a JSON filter, not a folder, no start folder.
+        let theme = ChooserRequest {
+            title: "Import Zed Theme".into(),
+            accept_label: "Import".into(),
+            directory: false,
+            current_folder: None::<PathBuf>,
+            filters: vec![("Zed theme (JSON)".into(), vec!["*.json".into()])],
+        };
+        let sent = format!("{:?}", super::portal::open_file(&theme).unwrap());
+        assert!(sent.contains("directory: Some(false)"), "{sent}");
+        assert!(sent.contains("current_folder: None"), "{sent}");
+        assert!(sent.contains("*.json"), "{sent}");
     }
 }
