@@ -82,8 +82,10 @@ On macOS, the default build needs Xcode's Metal tools. Command Line Tools users
 can add `--features runtime-shaders`. Linux needs a desktop session and Vulkan
 drivers. Native package and AppImage instructions are in the [build guide](docs/BUILD.md).
 
-Open a folder with **Cmd/Ctrl+O** or **Add photos** to plan a copy import. Passing a
-folder on the command line indexes it in place. Pick or rate frames as you review,
+Two verbs get photos in. **Open Folder…** (**Cmd/Ctrl+O**) culls a folder where it
+is; nothing is copied. **Import from Card…** (**Cmd/Ctrl+Shift+I**) copies a card or
+folder into your library and verifies every copy. Passing a folder on the command
+line opens it in place. Pick or rate frames as you review,
 then use **Export** to copy picks. Export XMP sidecars and other commands are in
 the command palette (**Cmd/Ctrl+K**).
 
