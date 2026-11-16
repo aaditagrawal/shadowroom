@@ -3344,6 +3344,18 @@ impl Workspace {
             self.announce("Batch decision cancelled", Tone::Info);
         }
         match cmd {
+            Cmd::GridSize(size) if size > 0 && self.grid_size_forced() => {
+                // Nothing would change: say why instead of storing a size
+                // that can't show.
+                self.announce(
+                    format!(
+                        "Larger thumbnails need a wider catalog · hide a panel ({} or {})",
+                        shortcut("⌘B"),
+                        shortcut("I")
+                    ),
+                    Tone::Info,
+                );
+            }
             Cmd::GridSize(size) => {
                 self.grid_size = size.min(ui::GRID_SIZES.len() - 1);
                 self.settings
@@ -6997,7 +7009,9 @@ impl Workspace {
                             } else {
                                 ""
                             },
-                            "group",
+                            // Grouping wears the thumbnails' burst glyph; the
+                            // layers glyph means Survey.
+                            "group-badge",
                             Cmd::Group(if grouped {
                                 "off".into()
                             } else {
@@ -7828,11 +7842,15 @@ impl Workspace {
     /// The Catalog thumbnail size in effect: the chosen S / M / L, or S when
     /// the centre pane is too narrow for more than two larger columns.
     fn grid_size_index(&self) -> usize {
-        if self.center_size.0 < ui::GRID_SMALL_CENTER {
+        if self.grid_size_forced() {
             0
         } else {
             self.grid_size.min(ui::GRID_SIZES.len() - 1)
         }
+    }
+    /// The centre pane is too narrow for M or L: S is the only size.
+    fn grid_size_forced(&self) -> bool {
+        self.center_size.0 < ui::GRID_SMALL_CENTER
     }
     /// (minimum cell width, image height, row height) for the Catalog grid.
     fn grid_metrics(&self) -> (f32, f32, f32) {
@@ -8878,9 +8896,7 @@ impl Workspace {
         } else if !zoomable {
             0.
         } else {
-            let zoom = 2. * space::SM
-                + zoom_label.len() as f32 * CHAR
-                + if tight { 0. } else { 16. + space::SM };
+            let zoom = 2. * space::SM + zoom_label.len() as f32 * CHAR;
             zoom + gap + control + if compare { control } else { 0. }
         };
         let base = 2. * if tight { space::XS } else { ui::BAR_INSET }
@@ -8901,8 +8917,8 @@ impl Workspace {
             2. * (space::SM + SMALL_CHAR + space::XS),
             // "Pick" / "Reject" words.
             10. * CHAR + 2. * space::SM,
-            // Pin and Survey (Survey only in Catalog).
-            if grid { control } else { 2. * control },
+            // Pin and Survey (Review modes only; Catalog has S and the tab).
+            if grid { 0. } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
             // Progress bar and "N reviewed".
@@ -9083,6 +9099,20 @@ impl Workspace {
                     self.settings.auto_advance,
                     cx,
                 )
+                // On is marked by shape as well as tint: the segment's 2 px
+                // text-colour bar (a state, not a location).
+                .relative()
+                .when(self.settings.auto_advance, |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left(px(space::XS))
+                            .right(px(space::XS))
+                            .h(px(2.))
+                            .bg(self.text()),
+                    )
+                })
                 .tooltip(self.tip(
                     if self.settings.auto_advance {
                         "Auto-advance on · a decision moves to the next photo"
@@ -9105,7 +9135,7 @@ impl Workspace {
                         )),
                 )
             })
-            .when(pin_survey, |bar| {
+            .when(pin_survey && !grid, |bar| {
                 bar.child(
                     self.toggle_button(
                         "survey-burst",
@@ -9132,22 +9162,16 @@ impl Workspace {
             .when(grid, |bar| bar.child(self.grid_size_control(cx)))
             .when(zoomable, |bar| {
                 bar.child(
-                    self.toggle_button(
-                        "zoom-photo",
-                        &zoom_label,
-                        if tight { "" } else { "zoom" },
-                        Cmd::Zoom,
-                        self.zoom,
-                        cx,
-                    )
-                    .tooltip(self.tip(
-                        if self.zoom {
-                            "Fit to window"
-                        } else {
-                            "View at 100% · or click the photo where you want to look"
-                        },
-                        "Z",
-                    )),
+                    // Text only: the lens glyph belongs to the Zoom-in step.
+                    self.toggle_button("zoom-photo", &zoom_label, "", Cmd::Zoom, self.zoom, cx)
+                        .tooltip(self.tip(
+                            if self.zoom {
+                                "Fit to window"
+                            } else {
+                                "View at 100% · or click the photo where you want to look"
+                            },
+                            "Z",
+                        )),
                 )
                 .when(zoom_steps, |bar| {
                     bar.child(
@@ -9219,8 +9243,25 @@ impl Workspace {
             .flex_shrink_0()
             .border_1()
             .border_color(self.control_border());
+        let forced = self.grid_size_forced();
         for (i, label) in ui::GRID_SIZE_LABELS.into_iter().enumerate() {
-            segments = segments.child(
+            segments = segments.child(if forced && i > 0 {
+                // M and L can't apply while the catalog is narrow: shown
+                // disabled, inert to hover and click.
+                div()
+                    .id(("grid-size", i))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .h(px(ui::CONTROL_HEIGHT - 2.))
+                    .px(px(space::SM))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .border_b_2()
+                    .border_color(transparent_black())
+                    .text_color(self.c("text.disabled", "#666666"))
+                    .child(label)
+            } else {
                 self.segment(
                     ("grid-size", i),
                     label,
@@ -9228,13 +9269,13 @@ impl Workspace {
                     effective == i,
                     cx,
                 )
-                .h(px(ui::CONTROL_HEIGHT - 2.)),
-            );
+                .h(px(ui::CONTROL_HEIGHT - 2.))
+            });
         }
         segments
             .tooltip(self.tip(
-                if effective != self.grid_size {
-                    "Thumbnail size · small while the catalog is narrow"
+                if forced {
+                    "Thumbnail size · M and L need a wider catalog · hide a panel"
                 } else {
                     "Thumbnail size"
                 },
@@ -9796,6 +9837,7 @@ impl Workspace {
             "recovery":{"pending":self.recovery_pending,"needs_repair":self.recovery_broken},"persistence":self.persistence_state(),"indexing":self.busy,"status":self.status,"error":self.error,"export_jobs":self.export_jobs,
             "closing":self.quit.closing(),"settings_writable":self.settings_writable,"settings_persistence":{"state":if self.settings_failure.is_some(){"failed"}else if self.prefs_sync.dirty(){"pending"}else{"durable"},"error":self.settings_failure}});
         state["notice"] = json!(self.feedback.flash.as_ref().map(|flash| &flash.text));
+        state["auto_advance"] = json!(self.settings.auto_advance);
         state["quit_prompt"] = json!(self.feedback.quit_prompt.as_ref().map(|p| p.title()));
         state["inspector_tab"] = json!(if self.inspector_info {
             "info"
