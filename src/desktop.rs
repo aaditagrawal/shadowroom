@@ -244,6 +244,9 @@ enum Cmd {
     InspectorTab(bool),
     RatingFilter,
     Histogram,
+    /// The status bar's half-filled circle: the current theme's light or
+    /// dark counterpart.
+    ToggleLightDark,
     Focus,
     /// F11: the window fills the screen (GPUI `toggle_fullscreen`).
     Fullscreen,
@@ -4436,6 +4439,15 @@ impl Workspace {
                 self.settings.extra.insert("theme_mode".into(), json!(mode));
                 self.save_settings();
             }
+            Cmd::ToggleLightDark => {
+                if let Some(name) = self.light_dark_counterpart() {
+                    self.execute(Cmd::Theme(name.clone()), window, cx);
+                    self.announce(
+                        format!("{name} · {} for more themes", shortcut("⌘,")),
+                        Tone::Info,
+                    );
+                }
+            }
             Cmd::SystemTheme(name) => {
                 if let Some(theme) = self.themes.iter().find(|theme| theme.name == name) {
                     let slot = if theme.appearance == "light" {
@@ -5103,6 +5115,13 @@ impl Workspace {
                 "",
                 "color-mode",
                 Cmd::Appearance,
+            ),
+            item(
+                "Switch Light / Dark Theme",
+                "Appearance · the current theme's other variant",
+                "",
+                "color-mode",
+                Cmd::ToggleLightDark,
             ),
             item(
                 copy::IMPORT_ZED_THEME_ELLIPSIS,
@@ -12755,17 +12774,8 @@ impl Workspace {
             .bg(self.c("status_bar.background", "#141414"))
             .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
-            .child(
-                self.compact_toggle(
-                    "toggle-sidebar",
-                    "",
-                    "panel-left",
-                    Cmd::Sidebar,
-                    self.docks.library > 0.,
-                    cx,
-                )
-                .tooltip(self.tip("Toggle sidebar", "⌘B")),
-            )
+            // The sidebar and inspector toggles live once each, in the title
+            // bar and the view toolbar (CAT-28).
             .when(self.import_ui.active(), |s| {
                 // Byte-weighted, so one large video never stalls the bar.
                 s.child(
@@ -12893,8 +12903,10 @@ impl Workspace {
             )
             .children(self.save_state_view(cx))
             .child(
-                // The theme's name lives in the tooltip: in the bar it cost
-                // ~130 px and truncated long names (R4-design-10).
+                // The half-filled circle does what it looks like: switch to
+                // the theme's light or dark variant (R5-catalog-05); the gear
+                // is the one control that opens Preferences. The theme's name
+                // lives in the tooltip (R4-design-10).
                 div()
                     .id("appearance")
                     .size(px(ui::COMPACT_CONTROL_HEIGHT))
@@ -12910,14 +12922,15 @@ impl Workspace {
                     })
                     .child(icon("color-mode", self.icon_muted()))
                     .tooltip(self.tip(
-                        &format!("{} · Appearance, themes and fonts", self.theme.name),
+                        &match self.light_dark_counterpart() {
+                            Some(other) => format!("{} · switch to {other}", self.theme.name),
+                            None => self.theme.name.clone(),
+                        },
                         "",
                     ))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.execute(Cmd::Appearance, window, cx)
-                        }),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.execute(Cmd::ToggleLightDark, window, cx)
+                    })),
             )
             // Memory is only worth attention when previews approach their budget.
             .when(
@@ -12951,17 +12964,6 @@ impl Workspace {
             )
             .child(
                 self.compact_toggle(
-                    "header-inspector",
-                    "",
-                    "panel-right",
-                    Cmd::Inspector,
-                    self.docks.inspector > 0.,
-                    cx,
-                )
-                .tooltip(self.tip("Toggle inspector", "I")),
-            )
-            .child(
-                self.compact_toggle(
                     "preferences",
                     "",
                     "settings",
@@ -12969,9 +12971,39 @@ impl Workspace {
                     self.preferences,
                     cx,
                 )
-                .tooltip(self.tip(settings_noun(), "⌘,")),
+                .tooltip(self.tip(
+                    &format!("{} · themes, fonts, culling and import", settings_noun()),
+                    "⌘,",
+                )),
             )
             .into_any_element()
+    }
+    /// The current theme's other variant: "… Dark" ↔ "… Light" when both are
+    /// installed, else the System light/dark choice, else Shadowroom's own.
+    fn light_dark_counterpart(&self) -> Option<String> {
+        let name = &self.theme.name;
+        let swapped = if let Some(base) = name.strip_suffix(" Dark") {
+            Some(format!("{base} Light"))
+        } else {
+            name.strip_suffix(" Light")
+                .map(|base| format!("{base} Dark"))
+        };
+        let light = self.theme.appearance == "light";
+        let slot = self
+            .settings
+            .extra
+            .get(if light { "theme_dark" } else { "theme_light" })
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let default = if light {
+            "Shadowroom Dark"
+        } else {
+            "Shadowroom Light"
+        };
+        [swapped, slot, Some(default.to_owned())]
+            .into_iter()
+            .flatten()
+            .find(|candidate| candidate != name && self.themes.iter().any(|t| &t.name == candidate))
     }
 }
 

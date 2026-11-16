@@ -4,8 +4,13 @@ Shadowroom includes restrained **Shadowroom Dark** and **Shadowroom Light** pale
 
 ## Appearance controls
 
-Click the theme icon in the status bar (its tooltip names the active theme), open **Preferences → Appearance**
-with **Cmd/Ctrl+,**, or search **Appearance & Themes** in **Cmd/Ctrl+K**. Appearance
+The half-filled circle in the status bar switches to the current theme's light or
+dark variant (Shadowroom Dark ↔ Shadowroom Light, any "… Dark" ↔ "… Light" pair,
+else the System light and dark choices) and sets the theme source to Manual; its
+tooltip names the active theme and the one it switches to (**Switch Light / Dark
+Theme** in the palette does the same). For everything else open **Preferences →
+Appearance** with **Cmd/Ctrl+,** (the status bar's gear), or search **Appearance &
+Themes** in **Cmd/Ctrl+K**. Appearance
 is the first preferences section. Culling, Performance, Controller and Help have their
 own sections so a large theme collection does not bury other settings.
 
