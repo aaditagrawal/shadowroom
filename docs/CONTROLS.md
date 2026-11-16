@@ -77,7 +77,7 @@ Decisions in Review/Compare affect the current frame. Double-click and the
 **Show full folder** leaves a subset. Returning to Catalog restores its selection.
 
 Right-click a Catalog photo, Review image, or filmstrip thumbnail for **Show in
-folder**, **Show in review**, **Survey burst**, **Compare**, Pick, Reject, Reset,
+folder**, **Show in review**, **Survey**, **Compare**, Pick, Reject, Reset,
 and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
 right-clicking a different photo makes it the action target. The menu names the
 photo or selected count. Up/Down and Enter activate a menu action; Escape closes

@@ -92,7 +92,7 @@ through the OS file manager, and physical deletion cannot be undone by MCP
 `undo`.
 
 Preferences **Apply** commits and keeps the pane open; **Apply & Close** commits
-and closes it. Cancel/Escape only discards unapplied changes. These UI semantics
+and closes it. Cancel discards unapplied changes; Escape asks first. These UI semantics
 do not change the explicit, immediate `settings_set` behavior or XMP export
 policy.
 

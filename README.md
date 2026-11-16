@@ -183,12 +183,12 @@ The startup **Getting Started** guide explains the workflow, shortcuts, color
 labels, time groups and caching. Reopen it with **F1** or **?**; Preferences → Help
 controls whether it appears at startup. In Catalog, double-click a photo to review
 the full folder at that image. **Enter/L** also opens the full folder for zero or
-one selected photo, using the hovered photo when available; select multiple
+one selected photo, at the outlined photo; select multiple
 photos first to review only that set. **Show full folder** leaves a subset, and
 **G** returns to Catalog. Right-click a photo for Show in folder, Show in review,
-Survey burst, Compare, decisions, and deletion actions. Preferences **Apply**
-commits and stays open; **Apply & Close** also closes the pane. Cancel/Escape
-discards only changes made since the last Apply.
+Survey, Compare, decisions, and deletion actions. Preferences **Apply**
+commits and stays open; **Apply & Close** also closes the pane. Cancel
+discards only changes made since the last Apply; Escape asks before discarding.
 
 ## Documentation and development
 

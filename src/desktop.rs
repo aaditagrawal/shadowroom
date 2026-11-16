@@ -1115,6 +1115,8 @@ pub struct Workspace {
     /// Keyboard focus handles for dialog controls (`dialog.rs`).
     dialog_focus: RefCell<dialog::DialogFocus>,
     theme_list_scroll: ScrollHandle,
+    /// Getting Started body: the scrollbar and keyboard scrolling share it.
+    guide_scroll: ScrollHandle,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     deletion: deletion_ui::State,
@@ -1584,6 +1586,7 @@ impl Workspace {
             preferences_section: PreferencesSection::default(),
             dialog_focus: RefCell::default(),
             theme_list_scroll: ScrollHandle::new(),
+            guide_scroll: ScrollHandle::new(),
             focus_visible: false,
             deletion: deletion_ui::State::default(),
             folder_picker: None,
@@ -4935,6 +4938,8 @@ impl Workspace {
             return;
         }
         if self.getting_started {
+            // Scrolling keys and Return; nothing reaches the views beneath.
+            self.getting_started_key(event, window, cx);
             return;
         }
         if self.rating_filter_open {
