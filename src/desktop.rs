@@ -5381,6 +5381,24 @@ fn icon(name: &'static str, color: Hsla) -> Svg {
         .flex_shrink_0()
 }
 /// Platform spelling for shortcut hints: ⌘/⇧ glyphs on macOS, words elsewhere.
+/// Survey grid for `n` frames of a typical `aspect` in a `width` × `height`
+/// area: the column count whose cells fit the largest frame, and the cell
+/// size, so small windows and short bursts get the biggest frames that fit.
+fn survey_layout(n: usize, aspect: f32, width: f32, height: f32) -> (usize, f32, f32) {
+    let n = n.max(1);
+    let mut best = (1, 1., 1.);
+    for cols in 1..=n {
+        let rows = n.div_ceil(cols);
+        let cell_w = ((width - space::SM * (cols - 1) as f32) / cols as f32).max(1.);
+        let cell_h = ((height - space::SM * (rows - 1) as f32) / rows as f32).max(1.);
+        let frame_w = cell_w.min(cell_h * aspect);
+        // Fewer columns win ties, keeping rows full.
+        if frame_w > best.1 + 0.5 {
+            best = (cols, frame_w, frame_w / aspect);
+        }
+    }
+    best
+}
 fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
@@ -8208,30 +8226,47 @@ impl Workspace {
             .min(all.len().saturating_sub(MAX));
         let frames = &all[first..(first + MAX).min(all.len())];
         let n = frames.len();
-        let cols = match n {
-            0..=2 => n.max(1),
-            3..=4 => 2,
-            5..=9 => 3,
-            _ => 4,
-        };
         let span = &summary.span;
+        // The frames' typical shape (median), so a portrait burst gets
+        // portrait cells.
+        let mut aspects: Vec<f32> = frames
+            .iter()
+            .map(|&position| {
+                let p = &self.photos[self.filtered[position]];
+                let (w, h) = if (5..=8).contains(&p.orientation) {
+                    (p.height, p.width)
+                } else {
+                    (p.width, p.height)
+                };
+                if w > 0 && h > 0 {
+                    w as f32 / h as f32
+                } else {
+                    1.5
+                }
+            })
+            .collect();
+        aspects.sort_by(f32::total_cmp);
+        let aspect = aspects
+            .get(aspects.len() / 2)
+            .copied()
+            .unwrap_or(1.5)
+            .clamp(0.4, 2.5);
+        let (cols, cell_w, cell_h) = survey_layout(
+            n,
+            aspect,
+            self.center_size.0 - 2. * ui::PANEL_INSET,
+            self.center_size.1 - 2. * ui::PANEL_INSET - ui::SURVEY_HEADER_HEIGHT,
+        );
         let rows = n.div_ceil(cols);
-        let cell_w = ((self.center_size.0 - 2. * ui::PANEL_INSET - space::SM * (cols - 1) as f32)
-            / cols as f32)
-            .max(1.);
-        let cell_h = ((self.center_size.1
-            - 2. * ui::PANEL_INSET
-            - ui::SURVEY_HEADER_HEIGHT
-            - space::SM * (rows - 1) as f32)
-            / rows as f32)
-            .max(1.);
+        // The block hugs its cells and sits centred, so spare width becomes
+        // margin around the frames instead of wide gaps between them.
         let mut grid = div()
-            .flex_1()
-            .min_h(px(0.))
+            .w(px(cols as f32 * cell_w + space::SM * (cols - 1) as f32))
+            .h(px(rows as f32 * cell_h + space::SM * (rows - 1) as f32))
             .flex()
             .flex_col()
             .gap(px(space::SM));
-        let mut row = div().flex_1().min_h(px(0.)).flex().gap(px(space::SM));
+        let mut row = div().h(px(cell_h)).flex().gap(px(space::SM));
         for (i, &position) in frames.iter().enumerate() {
             let index = self.filtered[position];
             let p = &self.photos[index];
@@ -8338,9 +8373,8 @@ impl Workspace {
             }
             let cell = div()
                 .id(("survey", position))
-                .flex_1()
-                .min_w(px(0.))
-                .min_h(px(0.))
+                .w(px(cell_w))
+                .h_full()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -8367,10 +8401,10 @@ impl Workspace {
             if (i + 1) % cols == 0 || i + 1 == n {
                 // Pad the last row so frames keep a uniform size.
                 for _ in 0..(cols - 1 - i % cols) {
-                    row = row.child(div().flex_1().min_w(px(0.)));
+                    row = row.child(div().w(px(cell_w)).flex_shrink_0());
                 }
                 grid = grid.child(row);
-                row = div().flex_1().min_h(px(0.)).flex().gap(px(space::SM));
+                row = div().h(px(cell_h)).flex().gap(px(space::SM));
             }
         }
         let decided = summary.decided;
@@ -8444,7 +8478,15 @@ impl Workspace {
                             }))
                     }),
             )
-            .child(grid)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(grid),
+            )
             .into_any_element()
     }
     /// 18 px scrim plate with the pick/reject glyph, in photo-overlay colours.
@@ -12331,7 +12373,7 @@ mod ui_tests {
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
         SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
         index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
-        palette_step, retained_position, text_input, thumbnail_size,
+        palette_step, retained_position, survey_layout, text_input, thumbnail_size, ui::space,
     };
 
     #[test]
@@ -13094,6 +13136,24 @@ mod ui_tests {
             Some("Neighbours · 9 photos")
         );
         assert_eq!(SurveyKey::Group(false, 2).label(7), None);
+    }
+    #[test]
+    fn survey_layout_picks_the_columns_with_the_largest_frames() {
+        // Seven landscape frames in a 1024 px window with both docks hidden:
+        // four columns of ≥ 230 px cells, not three of ~166 px.
+        let (cols, w, h) = survey_layout(7, 1.5, 992., 356.);
+        assert_eq!(cols, 4);
+        assert!(w >= 230., "{w}");
+        assert!((w / h - 1.5).abs() < 0.01);
+        // The cells and gaps never exceed the area.
+        let rows = 7usize.div_ceil(cols) as f32;
+        assert!(cols as f32 * w + 3. * space::SM <= 992. + 0.5);
+        assert!(rows * h + (rows - 1.) * space::SM <= 356. + 0.5);
+        // A pair side by side in a wide pane; a portrait burst gets tall cells.
+        assert_eq!(survey_layout(2, 1.5, 1200., 600.).0, 2);
+        let (_, w, h) = survey_layout(6, 2. / 3., 1200., 600.);
+        assert!(h > w && h >= 290., "{w} × {h}");
+        assert_eq!(survey_layout(0, 1.5, 100., 100.).0, 1);
     }
 
     #[test]
