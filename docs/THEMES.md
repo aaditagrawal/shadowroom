@@ -141,8 +141,10 @@ boundary.
 The accent means "you are here": the active view tab and inspector tab
 underline, the current collection's bar, the current photo's outline, the
 command palette's selected row, and keyboard focus. Toggles (panels,
-histogram, zoom, focus peaking, grouping) show "on" as a quiet filled state with
-a full-strength icon instead.
+histogram, zoom, focus peaking, grouping, auto-advance, pin) show "on" as a quiet
+filled state with a full-strength icon and a 2 px text-coloured bar along the
+bottom, the same bar as a chosen segment, so every toggle that is on carries the
+same marks.
 
 **Photo-overlay roles** (`shadowroom.scrim`, `shadowroom.scrim.{text,muted,pick,reject,rating,accent}`
 and `shadowroom.scrim.label.*`) are identical in both palettes: thumbnail

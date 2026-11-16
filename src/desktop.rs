@@ -6425,8 +6425,11 @@ impl Workspace {
     }
     /// Two-state control (panels, histogram, zoom, peaking, grouping, …).
     /// On is a quiet filled state with a full-strength icon, as Zed draws dock
-    /// toggles; the accent stays reserved for "where you are" (view tab,
-    /// collection, current photo) and keyboard focus. Same box as `button`.
+    /// toggles, plus the chosen segment's 2 px text-coloured bar, so every
+    /// toggle that is on carries the same two marks and on/off differ by
+    /// shape, not only by a fill (R4-design-09). The accent stays reserved
+    /// for "where you are" (view tab, collection, current photo) and keyboard
+    /// focus. Same box as `button`.
     fn toggle_button(
         &self,
         id: impl Into<ElementId>,
@@ -6434,6 +6437,32 @@ impl Workspace {
         glyph: &'static str,
         cmd: Cmd,
         on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.toggle_control(id, label, glyph, cmd, on, true, cx)
+    }
+    /// A menu's current choice: the toggle's fill and full-strength icon
+    /// without the bar (the row's check marks it, as in every menu).
+    fn menu_choice(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        self.toggle_control(id, label, glyph, cmd, on, false, cx)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn toggle_control(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        glyph: &'static str,
+        cmd: Cmd,
+        on: bool,
+        bar: bool,
         cx: &gpui::Context<Self>,
     ) -> Stateful<Div> {
         let hover = self.hover_bg();
@@ -6452,7 +6481,19 @@ impl Workspace {
             .occlude()
             .border_1()
             .border_color(transparent_black())
+            .relative()
             .when(on, |s| s.bg(self.selected_bg()).text_color(self.text()))
+            .when(on && bar, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(space::XS))
+                        .right(px(space::XS))
+                        .h(px(2.))
+                        .bg(self.text()),
+                )
+            })
             .when(!on, |s| s.hover(move |s| s.bg(hover)))
             .when(!glyph.is_empty(), |s| {
                 s.child(icon(
@@ -7665,7 +7706,7 @@ impl Workspace {
         for r in 0..=5u8 {
             let active = self.min_rating == r;
             options = options.child(
-                self.toggle_button(
+                self.menu_choice(
                     ("filter-option", r as usize),
                     &copy::rating_threshold(r),
                     if active { "check" } else { "star" },
@@ -9894,20 +9935,6 @@ impl Workspace {
                     self.settings.auto_advance,
                     cx,
                 )
-                // On is marked by shape as well as tint: the segment's 2 px
-                // text-colour bar (a state, not a location).
-                .relative()
-                .when(self.settings.auto_advance, |s| {
-                    s.child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left(px(space::XS))
-                            .right(px(space::XS))
-                            .h(px(2.))
-                            .bg(self.text()),
-                    )
-                })
                 .tooltip(self.tip(
                     if self.settings.auto_advance {
                         "Auto-advance on · a decision moves to the next photo"
