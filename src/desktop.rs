@@ -12883,7 +12883,22 @@ mod ui_tests {
             ),
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
+            ("motion.rs", include_str!("desktop/motion.rs")),
+            ("prefetch.rs", include_str!("desktop/prefetch.rs")),
+            ("frame_trace.rs", include_str!("desktop/frame_trace.rs")),
         ];
+        // Every desktop module is checked: a new file must join the list.
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/desktop");
+        for entry in std::fs::read_dir(&directory).expect("src/desktop") {
+            let path = entry.expect("desktop module").path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                assert!(
+                    sources.iter().any(|(listed, _)| *listed == name),
+                    "src/desktop/{name} is missing from the quit-chord guard's sources"
+                );
+            }
+        }
         let root = sources[0].1;
         let body = &root[root
             .find("    fn key(&mut self, event: &KeyDownEvent")
@@ -12986,6 +13001,24 @@ mod ui_tests {
                 "{handler} must not claim the quit key"
             );
         }
+        // The quit prompt's Tab/arrow/Return handling and the guide's
+        // scrolling keys route after the chord and never claim Q.
+        for (file, handler) in [
+            ("feedback.rs", "fn quit_prompt_key("),
+            ("help.rs", "fn getting_started_key("),
+        ] {
+            let source = sources.iter().find(|(name, _)| *name == file).unwrap().1;
+            let start = source.find(handler).expect(handler);
+            let end = start + source[start..].find("\n    }\n").unwrap();
+            assert!(
+                !source[start..end].contains("\"q\""),
+                "{handler} must not claim the quit key"
+            );
+        }
+        let guide = body
+            .find("self.getting_started_key(event, window, cx)")
+            .expect("guide keyboard routing");
+        assert!(quit < guide, "guide keys route after quit");
     }
 
     #[test]
