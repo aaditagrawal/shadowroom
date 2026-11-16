@@ -606,7 +606,7 @@ impl Workspace {
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
-                                .text_size(px(11.))
+                                .text_size(ui::font(11.))
                                 .text_color(self.muted())
                                 .child("Cancel is the default. Tab switches; Enter activates."),
                         )

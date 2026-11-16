@@ -8,6 +8,8 @@
 //! hairline. Bar height is control + twice its inset + the separator stroke;
 //! text gutters are separate from the inset around a highlighted rectangle.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 pub(super) mod space {
     pub const TINY: f32 = 2.;
     pub const XS: f32 = 4.;
@@ -21,10 +23,12 @@ pub(super) mod space {
 /// Five-step mono type scale. Roles, not sizes: hierarchy also comes from
 /// weight (MEDIUM never reflows in Geist Mono) and colour.
 /// MICRO is for glyph-like text only (thumbnail badges, keycaps, axis ticks);
-/// readable copy never goes below LABEL.
+/// readable copy never goes below LABEL. Nothing is drawn below 11 px at
+/// 100%; every size passes through [`font`], so the Text size preference
+/// scales the whole scale.
 pub(super) mod text {
     /// Thumbnail badges, keycaps, histogram axis ticks.
-    pub const MICRO: f32 = 10.;
+    pub const MICRO: f32 = 11.;
     /// Section headers, captions, secondary rows, status bar.
     pub const LABEL: f32 = 11.;
     /// UI default: rows, buttons, tabs.
@@ -33,6 +37,40 @@ pub(super) mod text {
     pub const TITLE: f32 = 13.;
     /// Dialog and empty-state titles.
     pub const DISPLAY: f32 = 16.;
+}
+
+/// Text size, as a factor of the type scale (1.0 = 100%). One value for the
+/// window, set from the Text size preference (or the desktop's text-scaling
+/// factor) before each frame; see `Workspace::apply_ui_scale`.
+static TEXT_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Text size choices offered in Preferences, in percent.
+pub(super) const TEXT_SCALES: [u32; 5] = [90, 100, 110, 125, 150];
+
+pub(super) fn text_scale() -> f32 {
+    f32::from_bits(TEXT_SCALE.load(Ordering::Relaxed))
+}
+
+/// Sets the factor (clamped to the offered 90-150% range); true if it changed.
+pub(super) fn set_text_scale(factor: f32) -> bool {
+    let factor = if factor.is_finite() {
+        factor.clamp(0.9, 1.5)
+    } else {
+        1.
+    };
+    TEXT_SCALE.swap(factor.to_bits(), Ordering::Relaxed) != factor.to_bits()
+}
+
+/// A type-scale size (or any font size) at the current text size.
+pub(super) fn font(size: f32) -> gpui::Pixels {
+    gpui::px(size * text_scale())
+}
+
+/// A text-bearing length (line box, field or section height) at the current
+/// text size, on whole pixels so 1 px rules stay crisp. Controls keep their
+/// 24/28 px boxes: a 150% line (24 px) still fits inside them.
+pub(super) fn scaled(length: f32) -> f32 {
+    (length * text_scale()).round()
 }
 
 pub(super) const CONTROL_HEIGHT: f32 = 28.;

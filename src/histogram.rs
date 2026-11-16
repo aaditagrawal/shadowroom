@@ -197,7 +197,7 @@ pub fn histogram_with(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(10.))
+                .text_size(px(11.))
                 .text_color(empty_label)
                 .child("No histogram data"),
         );
@@ -222,7 +222,7 @@ pub fn histogram_with(
             .relative()
             .w(px(width))
             .h(px(AXIS_ROW))
-            .text_size(px(10.))
+            .text_size(px(11.))
             .text_color(options.label);
         for (value, text) in ticks {
             let x = value as f32 / 255. * width;
@@ -240,7 +240,7 @@ pub fn histogram_with(
                 .flex()
                 .justify_between()
                 .gap(px(6.))
-                .text_size(px(10.))
+                .text_size(px(11.))
                 .text_color(options.label)
                 .child(
                     div()

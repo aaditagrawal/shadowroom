@@ -1,3 +1,4 @@
+mod appearance;
 mod copy;
 mod culling;
 mod deletion_ui;
@@ -10,6 +11,7 @@ mod ingest_ui;
 mod layout;
 mod ledger;
 mod motion;
+mod platform_prefs;
 mod preferences;
 mod prefetch;
 mod review_actions;
@@ -236,6 +238,8 @@ enum Cmd {
     AutoAdvance,
     SetAutoAdvance(bool),
     ReduceMotion(bool),
+    /// Text size in percent; 0 follows the desktop's text scaling.
+    TextSize(u32),
     SetAutoDrives(bool),
     Font(String),
     Theme(String),
@@ -1046,6 +1050,10 @@ pub struct Workspace {
     theme_colors: RefCell<HashMap<(&'static str, &'static str), Hsla>>,
     /// Settings or theme files changed since `apply_theme_mode` last resolved.
     theme_stale: bool,
+    /// Last seen `platform_prefs::revision()`.
+    platform_revision: u64,
+    #[cfg(target_os = "macos")]
+    platform_polled: Instant,
     /// The window appearance `apply_theme_mode` last resolved against.
     theme_appearance: Option<WindowAppearance>,
     photos: Vec<Photo>,
@@ -1427,7 +1435,7 @@ impl Workspace {
             .get("histogram_log")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let themes = vec![Theme::dark(), Theme::light()];
+        let themes = Theme::builtins();
         let (theme_watcher, theme_updates) = start_theme_watch();
         let theme = themes
             .iter()
@@ -1526,6 +1534,9 @@ impl Workspace {
             fallback_theme,
             theme_colors: RefCell::default(),
             theme_stale: true,
+            platform_revision: u64::MAX,
+            #[cfg(target_os = "macos")]
+            platform_polled: Instant::now(),
             theme_appearance: None,
             photos: Vec::new(),
             photo_index: HashMap::new(),
@@ -1901,6 +1912,10 @@ impl Workspace {
                 .unwrap_or(&self.settings.theme),
             _ => &self.settings.theme,
         };
+        // The system asks for more contrast: the standard Shadowroom palettes
+        // become their high-contrast variants (imported themes are kept).
+        let desired = self.contrast_theme(desired).to_owned();
+        let desired = desired.as_str();
         if self.theme.name != desired {
             if let Some(theme) = self.themes.iter().find(|t| t.name == desired) {
                 self.theme = theme.clone();
@@ -2071,6 +2086,20 @@ impl Workspace {
         let mut dirty = std::mem::take(&mut self.texture_retry);
         if let Some(edit) = self.focused_edit() {
             dirty |= edit.blink();
+        }
+        // System contrast, text scaling and reduced motion changed (live,
+        // `platform_prefs`): re-resolve the theme and the interface scale.
+        #[cfg(target_os = "macos")]
+        if self.platform_polled.elapsed() >= Duration::from_secs(2) {
+            self.platform_polled = Instant::now();
+            platform_prefs::poll_macos();
+        }
+        let platform = platform_prefs::revision();
+        if platform != self.platform_revision {
+            self.platform_revision = platform;
+            self.theme_stale = true;
+            self.apply_ui_scale();
+            dirty = true;
         }
         while let Ok(update) = self.theme_updates.try_recv() {
             self.theme_stale = true;
@@ -4037,6 +4066,13 @@ impl Workspace {
                     .insert("reduce_motion".into(), json!(enabled));
                 self.save_settings();
             }
+            Cmd::TextSize(percent) => {
+                self.settings
+                    .extra
+                    .insert("text_size".into(), appearance::text_size_value(percent));
+                self.save_settings();
+                self.apply_ui_scale();
+            }
             Cmd::SetAutoDrives(enabled) => {
                 self.settings.auto_discover_drives = enabled;
                 self.save_settings();
@@ -5523,7 +5559,7 @@ impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
             .font_family(self.font.clone())
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.fg)
             .bg(self.bg)
             .border_1()
@@ -5853,7 +5889,7 @@ impl Workspace {
     }
     fn keycap(&self, keys: &str) -> Div {
         div()
-            .text_size(px(ui::text::LABEL))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
@@ -5886,7 +5922,7 @@ impl Workspace {
                     .border_1()
                     .border_color(self.group_border())
                     .bg(self.canvas_bg())
-                    .text_size(px(ui::text::MICRO))
+                    .text_size(ui::font(ui::text::MICRO))
                     .text_color(self.muted())
                     .child(cap),
             );
@@ -6078,8 +6114,8 @@ impl Workspace {
             .h(px(ui::CONTROL_HEIGHT))
             .px(px(space::SM))
             // Explicit metrics keep the label vertically centred at every scale factor.
-            .text_size(px(12.))
-            .line_height(px(16.))
+            .text_size(ui::font(12.))
+            .line_height(px(ui::scaled(16.)))
             .overflow_hidden()
             .cursor_pointer()
             .occlude()
@@ -6130,13 +6166,13 @@ impl Workspace {
     }
     fn section(&self, label: &str) -> Div {
         div()
-            .h(px(ui::SECTION_HEIGHT))
+            .h(px(ui::scaled(ui::SECTION_HEIGHT)))
             .mt(px(space::LG))
             .px(px(ui::PANEL_INSET))
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.muted())
             .child(label.to_owned())
@@ -6302,7 +6338,7 @@ impl Workspace {
                     .when(!narrow, |s| {
                         s.child(
                             div()
-                                .text_size(px(13.))
+                                .text_size(ui::font(13.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Shadowroom"),
                         )
@@ -6480,7 +6516,7 @@ impl Workspace {
                 .when_some(count, |s, n| {
                     s.child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(copy::count(n)),
                     )
@@ -6561,7 +6597,7 @@ impl Workspace {
                 .when_some(rated.filter(|_| count > 0 || active), |s, rated| {
                     s.child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(format!("{} of {}", copy::count(rated), copy::count(count))),
                     )
@@ -6681,7 +6717,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(copy::count(count)),
                     )
@@ -7801,7 +7837,7 @@ impl Workspace {
                                 .flex()
                                 .gap(px(space::SM))
                                 .bg(self.scrim())
-                                .text_size(px(ui::text::LABEL))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(if active {
                                     self.scrim_text()
                                 } else {
@@ -7866,7 +7902,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(space::SM))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(if requested_error.is_some() {
                             self.c("warning", "#e0b341")
                         } else {
@@ -8005,7 +8041,7 @@ impl Workspace {
                                             |s, error| {
                                                 s.child(
                                                     div()
-                                                        .text_size(px(ui::text::LABEL))
+                                                        .text_size(ui::font(ui::text::LABEL))
                                                         .text_color(this.muted())
                                                         .child(
                                                             if error
@@ -8066,7 +8102,7 @@ impl Workspace {
                                             .gap(px(space::XS))
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
-                                            .text_size(px(ui::text::MICRO))
+                                            .text_size(ui::font(ui::text::MICRO))
                                             .child(
                                                 svg()
                                                     .path(if this.duplicates_only {
@@ -8137,7 +8173,7 @@ impl Workspace {
                                                 .items_center()
                                                 .justify_between()
                                                 .gap(px(space::SM))
-                                                .text_size(px(ui::text::LABEL))
+                                                .text_size(ui::font(ui::text::LABEL))
                                                 .child(
                                                     div()
                                                         .flex_1()
@@ -8428,7 +8464,7 @@ impl Workspace {
                         .justify_center()
                         .child(icon("camera", self.icon_muted()))
                         .when_some(self.media.photo_error(p, kind), |s, error| {
-                            s.child(div().text_size(px(ui::text::LABEL)).child(
+                            s.child(div().text_size(ui::font(ui::text::LABEL)).child(
                                 if error.message.contains("Unavailable offline") {
                                     "Unavailable offline"
                                 } else {
@@ -8454,7 +8490,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .bg(self.scrim())
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(if active {
                         self.scrim_text()
                     } else {
@@ -8517,7 +8553,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::MD))
                     .px(px(space::TINY))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .when_some(key.label(all.len()), |s, label| {
                         s.child(div().flex_shrink_0().text_color(self.text()).child(label))
@@ -8593,8 +8629,8 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .bg(color)
-                .text_size(px(ui::text::MICRO))
-                .line_height(px(ui::text::MICRO))
+                .text_size(ui::font(ui::text::MICRO))
+                .line_height(ui::font(ui::text::MICRO))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(self.c("shadowroom.scrim.label.text", "#0f0f0f"))
                 .child(label_initial(label))
@@ -8670,7 +8706,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .bg(self.scrim())
-                .text_size(px(ui::text::MICRO))
+                .text_size(ui::font(ui::text::MICRO))
                 .text_color(self.scrim_rating())
                 .child(thumb_rating(rating))
         })
@@ -8705,8 +8741,8 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(ui::text::MICRO))
-                    .line_height(px(ui::text::MICRO))
+                    .text_size(ui::font(ui::text::MICRO))
+                    .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
                     .when_some(color, |s, c| s.bg(c).child(label_key(label)))
@@ -8777,7 +8813,7 @@ impl Workspace {
             .gap(px(space::TINY))
             .bg(self.scrim())
             .text_color(self.scrim_text())
-            .text_size(px(ui::text::MICRO))
+            .text_size(ui::font(ui::text::MICRO))
             .child(
                 svg()
                     .path(if self.duplicates_only {
@@ -9020,7 +9056,7 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(px(11.)).text_color(self.muted()).child(
+                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(11.)).text_color(self.muted()).child(
                     "Originals stay in their source folders. Ratings and flags are preserved.",
                 ))
                 .into_any_element();
@@ -9047,8 +9083,9 @@ impl Workspace {
         // Responsive priority: the essentials always stay (flags, stars,
         // position, auto-advance, zoom or thumbnail size, Trash); optional
         // items drop lowest value first as the bar narrows.
-        const CHAR: f32 = 7.2;
-        const SMALL_CHAR: f32 = 6.6;
+        // Geist Mono advances at 12 and 11 px, at the current text size.
+        let char_w = 7.2 * ui::text_scale();
+        let small_char = 6.6 * ui::text_scale();
         let width = self.center_size.0;
         let tight = width < 760.;
         let gap = if tight { space::TINY } else { space::XS };
@@ -9071,11 +9108,11 @@ impl Workspace {
         let reviewed_text = format!("{} reviewed", copy::count(reviewed));
         let stars_width = 5. * if tight { 20. } else { ui::CONTROL_HEIGHT };
         let view_controls = if grid {
-            3. * (2. * space::SM + CHAR) + 2. + gap
+            3. * (2. * space::SM + char_w) + 2. + gap
         } else if !zoomable {
             0.
         } else {
-            let zoom = 2. * space::SM + zoom_label.len() as f32 * CHAR;
+            let zoom = 2. * space::SM + zoom_label.len() as f32 * char_w;
             zoom + gap + control + if compare { control } else { 0. }
         };
         // Groups: decide | rate … position | workflow | view | delete.
@@ -9086,9 +9123,9 @@ impl Workspace {
             + dividers * (1. + 2. * space::XS + gap)
             + stars_width
             + gap
-            + if mixed_rating { 5. * SMALL_CHAR + gap } else { 0. }
+            + if mixed_rating { 5. * small_char + gap } else { 0. }
             + control // reset icon
-            + position.chars().count() as f32 * SMALL_CHAR
+            + position.chars().count() as f32 * small_char
             + 2. * space::SM
             + gap
             + control // auto-advance
@@ -9096,17 +9133,17 @@ impl Workspace {
             + control; // trash
         let optional = [
             // P / X keycaps beside the flag icons, and "1-5" after the stars.
-            2. * (space::SM + SMALL_CHAR + space::XS) + 3. * SMALL_CHAR + gap,
+            2. * (space::SM + small_char + space::XS) + 3. * small_char + gap,
             // "Pick" / "Reject" words.
-            10. * CHAR + 2. * space::SM,
+            10. * char_w + 2. * space::SM,
             // Pin and Survey (Review modes only; Catalog has S and the tab).
             if grid { 0. } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
             // "N reviewed" (the cull ledger under the bar draws the progress).
-            reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
+            reviewed_text.len() as f32 * small_char + space::SM,
             // "Reset" text.
-            space::SM + 5. * CHAR,
+            space::SM + 5. * char_w,
         ];
         let kept = ui::fit_prefix(width, base, &optional);
         let (flag_keys, flag_labels, pin_survey, zoom_steps, progress, reset_label) =
@@ -9223,7 +9260,7 @@ impl Workspace {
                     div()
                         .id("rating-mixed")
                         .flex_shrink_0()
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child("mixed")
                         .tooltip(self.tip("Selected photos have different ratings", "")),
@@ -9252,7 +9289,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::SM))
                     .px(px(space::SM))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(div().text_color(self.text()).child(position))
                     .when(progress && self.multi.len() < 2, |s| s.child(reviewed_text))
@@ -9433,8 +9470,8 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT - 2.))
                     .px(px(space::SM))
-                    .text_size(px(12.))
-                    .line_height(px(16.))
+                    .text_size(ui::font(12.))
+                    .line_height(px(ui::scaled(16.)))
                     .border_b_2()
                     .border_color(transparent_black())
                     .text_color(self.c("text.disabled", "#666666"))
@@ -9495,7 +9532,7 @@ impl Workspace {
     }
     fn inspector_section(&self, label: &str) -> Div {
         div()
-            .h(px(ui::INSPECTOR_SECTION_HEIGHT))
+            .h(px(ui::scaled(ui::INSPECTOR_SECTION_HEIGHT)))
             .flex_shrink_0()
             .mt(px(space::LG))
             .pt(px(space::LG))
@@ -9505,7 +9542,7 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.muted())
             .child(label.to_owned())
@@ -9564,7 +9601,7 @@ impl Workspace {
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(px(ui::text::TITLE))
+                        .text_size(ui::font(ui::text::TITLE))
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_normal()
@@ -9587,7 +9624,7 @@ impl Workspace {
                                     .flex()
                                     .items_center()
                                     .bg(self.selected_bg())
-                                    .text_size(px(ui::text::BODY))
+                                    .text_size(ui::font(ui::text::BODY))
                                     .child(fact)
                             })),
                     )
@@ -9595,7 +9632,7 @@ impl Workspace {
                 .child(
                     div()
                         .pt(px(space::SM))
-                        .text_size(px(11.))
+                        .text_size(ui::font(11.))
                         .text_color(self.muted())
                         .child(facts.join(" · ")),
                 );
@@ -9655,7 +9692,7 @@ impl Workspace {
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(ui::text::LABEL)),
+                        .text_size(ui::font(ui::text::LABEL)),
                     )
                     .child(
                         self.segment(
@@ -9667,7 +9704,7 @@ impl Workspace {
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(ui::text::LABEL)),
+                        .text_size(ui::font(ui::text::LABEL)),
                     )
                     .tooltip(self.tip("Histogram scale · log lifts shadows and highlights", ""));
                 body = body
@@ -9799,7 +9836,7 @@ impl Workspace {
                     if let Some(note) = &preview.rendering_note {
                         body = body.child(self.inspector_section("Rendering")).child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(ui::font(11.))
                                 .text_color(self.muted())
                                 .child(note.clone()),
                         );
@@ -10777,7 +10814,7 @@ impl Workspace {
                             .child(item.title.clone())
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(ui::font(11.))
                                     .text_color(self.muted())
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -10787,7 +10824,7 @@ impl Workspace {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             // Blue marks only where you are; "Recent" is a
                             // plain tag (and full text on the active row).
                             .text_color(if active { self.text() } else { self.muted() })
@@ -10816,7 +10853,7 @@ impl Workspace {
                     .child(format!("No commands match “{}”", self.palette_query.trim()))
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child("Try export, zoom, trash or theme · Esc closes"),
                     ),
@@ -10849,7 +10886,7 @@ impl Workspace {
                             .gap(px(space::SM))
                             .border_b_1()
                             .border_color(self.border())
-                            .text_size(px(13.))
+                            .text_size(ui::font(13.))
                             .child(icon("search", self.icon_muted()))
                             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(
                                 self.input_field(
@@ -10885,7 +10922,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_color(self.muted())
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .child(description.to_owned()),
                     ),
             )
@@ -10948,8 +10985,8 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT))
                     .px(px(space::SM))
-                    .text_size(px(12.))
-                    .line_height(px(16.))
+                    .text_size(ui::font(12.))
+                    .line_height(px(ui::scaled(16.)))
                     .text_color(if active { self.text() } else { self.muted() })
                     .when(active, |s| s.bg(self.selected_bg()))
                     .child(label)
@@ -11077,6 +11114,8 @@ impl Workspace {
             window,
             cx,
         );
+        let (text_sizes, text_size_description) = self.text_size_choices(&s);
+        let text_sizes = self.pref_choices("pref-text-size", text_sizes, false, window, cx);
         let motion_description = if motion::system_reduces_motion() {
             "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
         } else {
@@ -11249,7 +11288,7 @@ impl Workspace {
                         .px(px(space::MD))
                         .pt(px(space::SM))
                         .pb(px(space::XS))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(self.muted())
                         .child(if light { "LIGHT" } else { "DARK" }),
@@ -11386,10 +11425,12 @@ impl Workspace {
             .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
             .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Font", "Interface typeface", fonts))
+            .child(self.preference_row("Text size", &text_size_description, text_sizes))
             .child(self.preference_row("Reduce motion", motion_description, motion))
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
-            .child(div().pt(px(space::XS)).text_size(px(11.)).text_color(self.muted()).child(source_description))
+            .child(div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(source_description))
+            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(note)))
             .child(
                 div()
                     .pt(px(space::MD))
@@ -11408,7 +11449,7 @@ impl Workspace {
                     )),
             )
             .child(theme_list)
-            .child(div().pt(px(space::SM)).text_size(px(11.)).text_color(self.muted()).child(match mode {
+            .child(div().pt(px(space::SM)).text_size(ui::font(11.)).text_color(self.muted()).child(match mode {
                 "system" => "Choose a light or dark theme to update its system appearance slot.",
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
@@ -11421,7 +11462,7 @@ impl Workspace {
                 div()
                     .pt(px(space::MD))
                     .text_color(self.muted())
-                    .text_size(px(11.))
+                    .text_size(ui::font(11.))
                     .child(format!(
                         "Memory {:.1} of {} MB · textures {:.1} MB · disk {:.1} MB · {} reads · {} cache hits · {} queued",
                         stats.memory_bytes as f64 / 1048576.,
@@ -11453,7 +11494,7 @@ impl Workspace {
                 div()
                     .pt(px(space::LG))
                     .pb(px(space::SM))
-                    .text_size(px(13.))
+                    .text_size(ui::font(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.text())
                     .child("Creator Micro"),
@@ -11461,7 +11502,7 @@ impl Workspace {
             .child(
                 div()
                     .text_color(self.muted())
-                    .text_size(px(11.))
+                    .text_size(ui::font(11.))
                     .child("Arrows navigate · F13–F15 flag · F16/F17 rating · F18–F20 views · F21 zoom · F22 histogram · F23/F24 bursts. Profiles: docs/CONTROLS.md"),
             ));
         let changed: HashSet<PreferencesSection> = self
@@ -11546,7 +11587,7 @@ impl Workspace {
             div().child("Applying changes…").into_any_element()
         } else if prompt {
             div()
-                .text_size(px(12.))
+                .text_size(ui::font(12.))
                 .text_color(self.text())
                 .child(format!(
                     "Discard {changes} {}?",
@@ -11683,7 +11724,7 @@ impl Workspace {
                     .child(body)
                     .child(
                         self.modal_footer()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(div().flex_1().min_w(px(0.)).child(status))
                             .child(buttons),
@@ -11762,7 +11803,7 @@ impl Workspace {
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.muted())
             .child(
                 self.compact_toggle(
@@ -12052,6 +12093,7 @@ impl Workspace {
         }
         self.reconcile_rating_filter();
         self.apply_theme_mode(window);
+        self.apply_ui_scale();
         self.dialog_focus.borrow_mut().begin_frame();
         for texture in self.retired.drain(..) {
             let _ = window.drop_image(texture.image);
@@ -12326,8 +12368,8 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .font_family(self.settings.interface_font.clone())
-            .text_size(px(12.))
-            .line_height(px(ui::TEXT_LINE_HEIGHT))
+            .text_size(ui::font(12.))
+            .line_height(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
             .text_color(self.text())
             .bg(self.bg())
             .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
@@ -13152,6 +13194,7 @@ mod ui_tests {
         );
         let sources = [
             ("desktop.rs", include_str!("desktop.rs")),
+            ("appearance.rs", include_str!("desktop/appearance.rs")),
             ("copy.rs", include_str!("desktop/copy.rs")),
             ("culling.rs", include_str!("desktop/culling.rs")),
             ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
@@ -13170,6 +13213,10 @@ mod ui_tests {
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
             ("motion.rs", include_str!("desktop/motion.rs")),
+            (
+                "platform_prefs.rs",
+                include_str!("desktop/platform_prefs.rs"),
+            ),
             ("prefetch.rs", include_str!("desktop/prefetch.rs")),
             ("frame_trace.rs", include_str!("desktop/frame_trace.rs")),
         ];

@@ -640,7 +640,7 @@ impl Workspace {
                 div()
                     .px(px(ui::DIALOG_INSET))
                     .pt(px(space::MD))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .whitespace_normal()
                     .child(subtitle)

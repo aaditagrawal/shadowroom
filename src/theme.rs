@@ -84,6 +84,9 @@ impl Default for Theme {
     }
 }
 
+pub const HIGH_CONTRAST_DARK: &str = "Shadowroom High Contrast Dark";
+pub const HIGH_CONTRAST_LIGHT: &str = "Shadowroom High Contrast Light";
+
 /// Photo-overlay roles, identical in both built-in palettes. Thumbnail badges
 /// and on-photo captions sit on image content, which can be white or black in
 /// either appearance, so their colours are tuned for the dark scrim plate
@@ -220,6 +223,147 @@ impl Theme {
                 ("shadowroom.scrim.modal", "#1f2a3a59"),
             ],
         )
+    }
+
+    /// Shadowroom Dark with every role pushed to high contrast: the same
+    /// neutral near-black chrome and single blue accent, black canvas, white
+    /// text, AAA (7:1) body and secondary text, and outlines strong enough
+    /// (3:1+) that hairlines, fields and choice groups stay visible.
+    pub fn high_contrast_dark() -> Self {
+        Self::builtin(
+            HIGH_CONTRAST_DARK,
+            "dark",
+            &[
+                ("background", "#000000"),
+                ("surface.background", "#0d0d0d"),
+                ("elevated_surface.background", "#161616"),
+                ("panel.background", "#0d0d0d"),
+                ("editor.background", "#000000"),
+                ("title_bar.background", "#0d0d0d"),
+                ("status_bar.background", "#0d0d0d"),
+                ("toolbar.background", "#0d0d0d"),
+                ("text", "#ffffff"),
+                ("text.muted", "#dadada"),
+                ("text.disabled", "#8f8f8f"),
+                ("text.accent", "#8cc4ff"),
+                ("icon", "#f2f2f2"),
+                ("icon.muted", "#c4c4c4"),
+                ("border", "#8a8a8a"),
+                ("border.variant", "#9a9a9a"),
+                ("border.focused", "#8cc4ff"),
+                ("element.background", "#1a1a1a"),
+                ("element.hover", "#333333"),
+                ("element.active", "#2b2b2b"),
+                ("element.selected", "#2a2a2a"),
+                ("ghost_element.hover", "#ffffff14"),
+                ("ghost_element.selected", "#ffffff2e"),
+                ("success", "#8fe08f"),
+                ("error", "#ff8a8a"),
+                ("warning", "#ffd166"),
+                ("info", "#8cc4ff"),
+                ("scrollbar.thumb.background", "#cfcfcf80"),
+                ("scrollbar.thumb.hover_background", "#cfcfcfc0"),
+                ("editor.selection.background", "#8cc4ff40"),
+                ("editor.foreground", "#ffffff"),
+                ("shadowroom.canvas", "#000000"),
+                ("shadowroom.well", "#121212"),
+                ("shadowroom.histogram.background", "#000000"),
+                ("shadowroom.histogram.grid", "#333333"),
+                ("shadowroom.control_border", "#b0b0b0"),
+                ("shadowroom.pick", "#8fe08f"),
+                ("shadowroom.reject", "#ff8a8a"),
+                ("shadowroom.rating", "#ffd166"),
+                ("shadowroom.label.red", "#ffa59e"),
+                ("shadowroom.label.yellow", "#f0d58a"),
+                ("shadowroom.label.green", "#9fe0c4"),
+                ("shadowroom.label.blue", "#9cc4ff"),
+                ("shadowroom.label.purple", "#dcaee8"),
+                ("shadowroom.label.text", "#000000"),
+                ("shadowroom.focus_ring", "#8cc4ff"),
+                ("shadowroom.scrim.modal", "#000000b3"),
+            ],
+        )
+    }
+
+    /// Shadowroom Light at high contrast: white surfaces, black text, a
+    /// darker accent, and dark outlines; the photo canvas stays neutral grey.
+    pub fn high_contrast_light() -> Self {
+        Self::builtin(
+            HIGH_CONTRAST_LIGHT,
+            "light",
+            &[
+                ("background", "#ffffff"),
+                ("surface.background", "#f5f5f5"),
+                ("elevated_surface.background", "#ffffff"),
+                ("panel.background", "#f5f5f5"),
+                ("editor.background", "#ececec"),
+                ("title_bar.background", "#f5f5f5"),
+                ("status_bar.background", "#f5f5f5"),
+                ("toolbar.background", "#f5f5f5"),
+                ("text", "#000000"),
+                ("text.muted", "#2a303a"),
+                ("text.disabled", "#6b7280"),
+                ("text.accent", "#0a4a85"),
+                ("icon", "#1d2530"),
+                ("icon.muted", "#3a4452"),
+                ("border", "#5c6470"),
+                ("border.variant", "#6e7682"),
+                ("border.focused", "#0a4a85"),
+                ("element.background", "#e6e9ee"),
+                ("element.hover", "#d5dae2"),
+                ("element.active", "#c4ccd8"),
+                ("element.selected", "#0a4a8533"),
+                ("ghost_element.hover", "#00000012"),
+                ("ghost_element.selected", "#0a4a8529"),
+                ("success", "#1f5c36"),
+                ("error", "#8f1d22"),
+                ("warning", "#6b4c00"),
+                ("info", "#0a4a85"),
+                ("scrollbar.thumb.background", "#3a445280"),
+                ("scrollbar.thumb.hover_background", "#3a4452c0"),
+                ("editor.selection.background", "#0a4a8540"),
+                ("editor.foreground", "#000000"),
+                // Neutral (R=G=B) so the photo's white balance is not tinted.
+                ("shadowroom.canvas", "#d6d6d6"),
+                ("shadowroom.well", "#e0e0e0"),
+                ("shadowroom.histogram.background", "#ffffff"),
+                ("shadowroom.histogram.grid", "#00000026"),
+                ("shadowroom.control_border", "#3d4450"),
+                ("shadowroom.pick", "#1f5c36"),
+                ("shadowroom.reject", "#8f1d22"),
+                ("shadowroom.rating", "#5c4200"),
+                ("shadowroom.label.red", "#9c2a22"),
+                ("shadowroom.label.yellow", "#5f4a00"),
+                ("shadowroom.label.green", "#1d5c4a"),
+                ("shadowroom.label.blue", "#1b4f99"),
+                ("shadowroom.label.purple", "#6f2f88"),
+                ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.focus_ring", "#0a4a85"),
+                ("shadowroom.scrim.modal", "#0000008c"),
+            ],
+        )
+    }
+
+    /// Every built-in palette: Shadowroom Dark/Light and their high-contrast
+    /// variants.
+    pub fn builtins() -> Vec<Self> {
+        vec![
+            Self::dark(),
+            Self::light(),
+            Self::high_contrast_dark(),
+            Self::high_contrast_light(),
+        ]
+    }
+
+    /// The high-contrast variant used for `name` when the system asks for more
+    /// contrast: only the two standard Shadowroom palettes have one; imported
+    /// and already high-contrast themes are used as chosen.
+    pub fn high_contrast_variant(name: &str) -> Option<&'static str> {
+        match name {
+            "Shadowroom Dark" => Some(HIGH_CONTRAST_DARK),
+            "Shadowroom Light" => Some(HIGH_CONTRAST_LIGHT),
+            _ => None,
+        }
     }
 
     fn builtin(name: &str, appearance: &str, pairs: &[(&str, &str)]) -> Self {
@@ -647,7 +791,7 @@ pub fn theme_search_paths() -> Vec<PathBuf> {
 
 pub fn discover_themes_in(roots: &[PathBuf]) -> ThemeDiscovery {
     let mut result = ThemeDiscovery {
-        themes: vec![Theme::dark(), Theme::light()],
+        themes: Theme::builtins(),
         diagnostics: Vec::new(),
     };
     let mut seen = HashSet::new();
@@ -785,7 +929,7 @@ mod tests {
     #[test]
     fn built_in_states_overlays_and_labels_hold_contrast() {
         let white = Rgba::parse("#ffffff").unwrap();
-        for theme in [Theme::dark(), Theme::light()] {
+        for theme in Theme::builtins() {
             let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
             let name = &theme.name;
             for surface in ["panel.background", "elevated_surface.background"] {
@@ -949,6 +1093,71 @@ mod tests {
                 assert!(Rgba::parse(&base.resolved_color(key)).is_some());
             }
             assert!(base.contrast_ratio("text", "panel.background").unwrap() >= 4.5);
+        }
+    }
+    #[test]
+    fn high_contrast_variants_reach_aaa_text_and_strong_outlines() {
+        for (theme, base) in [
+            (Theme::high_contrast_dark(), Theme::dark()),
+            (Theme::high_contrast_light(), Theme::light()),
+        ] {
+            let name = &theme.name;
+            assert_eq!(theme.appearance, base.appearance);
+            // Same roles as the palette it varies, so nothing falls back.
+            for key in base.colors.keys() {
+                assert!(theme.colors.contains_key(key), "{name}: {key}");
+            }
+            let c = |key: &str| Rgba::parse(&theme.colors[key]).unwrap();
+            for surface in [
+                "background",
+                "panel.background",
+                "elevated_surface.background",
+                "toolbar.background",
+                "status_bar.background",
+                "shadowroom.canvas",
+            ] {
+                let s = c(surface);
+                let selected = c("ghost_element.selected").composite_over(s);
+                for text in ["text", "text.muted"] {
+                    assert!(
+                        c(text).contrast_ratio(s) >= 7.0,
+                        "{name}: {text} on {surface}"
+                    );
+                    assert!(
+                        c(text).contrast_ratio(selected) >= 7.0,
+                        "{name}: {text} on selected {surface}"
+                    );
+                }
+                for key in ["text.accent", "error", "success", "warning"] {
+                    assert!(
+                        c(key).contrast_ratio(s) >= 4.5,
+                        "{name}: {key} on {surface}"
+                    );
+                }
+                for key in [
+                    "border",
+                    "border.variant",
+                    "shadowroom.control_border",
+                    "shadowroom.focus_ring",
+                    "icon.muted",
+                ] {
+                    assert!(
+                        c(key).contrast_ratio(s) >= 3.0,
+                        "{name}: {key} on {surface}"
+                    );
+                }
+            }
+            // The high-contrast palette is at least as strong as its base.
+            for (fg, bg) in [
+                ("text.muted", "panel.background"),
+                ("border", "panel.background"),
+                ("shadowroom.control_border", "elevated_surface.background"),
+            ] {
+                assert!(
+                    theme.contrast_ratio(fg, bg).unwrap() > base.contrast_ratio(fg, bg).unwrap(),
+                    "{name}: {fg} on {bg}"
+                );
+            }
         }
     }
     #[test]
