@@ -8,6 +8,7 @@ mod frame_trace;
 mod help;
 mod ingest_ui;
 mod layout;
+mod ledger;
 mod motion;
 mod preferences;
 mod prefetch;
@@ -1199,6 +1200,10 @@ pub struct Workspace {
     /// Bumped whenever a photo's decision changes; keys derived caches.
     decision_epoch: u64,
     selection_summary_cache: RefCell<Option<((usize, usize, u64), SelectionSummary)>>,
+    /// Cull ledger cells keyed by (decision epoch, frames, cells).
+    ledger_cache: RefCell<Option<(ledger::CacheKey, Rc<ledger::Ledger>)>>,
+    /// Painted ledger track (left edge, geometry) for pointer hit-testing.
+    ledger_track: Rc<Cell<(f32, ledger::Track)>>,
     /// The guide opened by itself at launch; closing it stops that.
     startup_guide: bool,
     /// One-time notices already shown this session.
@@ -1656,6 +1661,8 @@ impl Workspace {
             rated_counts: None,
             decision_epoch: 0,
             selection_summary_cache: RefCell::new(None),
+            ledger_cache: RefCell::new(None),
+            ledger_track: Rc::new(Cell::new((0., ledger::Track::default()))),
             startup_guide: getting_started,
             shown_hints: HashSet::new(),
             window_title: String::new(),
@@ -2910,6 +2917,7 @@ impl Workspace {
         }
         // Last decision for an ID wins, as in the former map + full-library pass.
         let decisions_by_id: HashMap<_, _> = decisions.iter().map(|d| (d.id, *d)).collect();
+        let mut ledger_changes = Vec::new();
         for d in decisions_by_id.values() {
             let Some(&i) = self.photo_index.get(&d.id) else {
                 continue;
@@ -2917,6 +2925,7 @@ impl Workspace {
             let before = Decision::from(&self.photos[i]);
             let accepted_before = self.accepts_photo(&self.photos[i]);
             let reviewed_before = !Filter::Unrated.accepts(&self.photos[i]);
+            let mark_before = ledger::Mark::of(&self.photos[i]);
             self.counts.adjust(before, false);
             let in_scope = self
                 .scope
@@ -2952,6 +2961,10 @@ impl Workspace {
             self.decision_membership_changed |=
                 accepted_before != self.accepts_photo(&self.photos[i]);
             if self.filtered_positions[i] != usize::MAX {
+                let mark_after = ledger::Mark::of(&self.photos[i]);
+                if mark_after != mark_before {
+                    ledger_changes.push((self.filtered_positions[i], mark_before, mark_after));
+                }
                 let reviewed_after = !Filter::Unrated.accepts(&self.photos[i]);
                 if reviewed_before != reviewed_after {
                     if let Some((_, summary)) = &mut self.survey_cache {
@@ -2968,6 +2981,17 @@ impl Workspace {
                     }
                 }
             }
+        }
+        // The cull ledger follows in place, without another pass over the view
+        // (a membership change rebuilds the view, and the ledger with it).
+        if let Some(((epoch, ..), ledger)) = self.ledger_cache.get_mut().as_mut()
+            && *epoch == self.decision_epoch
+        {
+            let ledger = Rc::make_mut(ledger);
+            for (position, before, after) in ledger_changes {
+                ledger.update(position, before, after);
+            }
+            *epoch = self.decision_epoch.wrapping_add(1);
         }
         self.decision_epoch = self.decision_epoch.wrapping_add(1);
         self.save_revisions.stage(decisions.iter().map(|d| d.id));
@@ -5240,6 +5264,15 @@ fn stars(rating: u8) -> &'static str {
     const STARS: [&str; 6] = ["", "★", "★★", "★★★", "★★★★", "★★★★★"];
     STARS[usize::from(rating.min(5))]
 }
+/// The one rating notation on thumbnails (grid, filmstrip, Survey): "★5".
+/// Repeated stars stay for the decision bar and the loupe chip.
+fn thumb_rating(rating: u8) -> &'static str {
+    const COMPACT: [&str; 6] = ["", "★1", "★2", "★3", "★4", "★5"];
+    COMPACT[usize::from(rating.min(5))]
+}
+/// Inner cell of a thumbnail badge plate (glyph or label chip); the plate
+/// adds 2 px of scrim around it, keeping badges 18 px tall.
+const BADGE_CELL: f32 = 14.;
 /// Thumbnail-preview dimensions for a larger preview, or `None` when it is
 /// already no larger (`PreviewKind::Thumbnail` decodes to a 384 px long edge).
 fn thumbnail_size(width: u32, height: u32) -> Option<(u32, u32)> {
@@ -5663,6 +5696,10 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Histogram plot plate: the dark plate in dark themes, white in light.
+    fn histogram_plate(&self) -> Hsla {
+        self.c("shadowroom.histogram.background", "#0f0f0f")
+    }
     fn canvas_bg(&self) -> Hsla {
         self.c("shadowroom.canvas", "#0f0f0f")
     }
@@ -5688,10 +5725,17 @@ impl Workspace {
     fn well_bg(&self) -> Hsla {
         self.c("shadowroom.well", "#161616")
     }
-    /// Outline of an input or choice group (3:1 class), unlike decorative
-    /// `border` hairlines between panels.
+    /// Outline of an input with no other boundary (3:1 class): text fields
+    /// and the empty label swatch. Not for groups whose parts carry their own
+    /// state cue (segments, tiles, keycaps); those use `group_border`.
     fn control_border(&self) -> Hsla {
         self.c("shadowroom.control_border", "#707070")
+    }
+    /// Thin outline of a segmented control or keycap: the chosen segment is
+    /// marked by its text-coloured underline and fill, so the box itself
+    /// carries no state and stays a hairline.
+    fn group_border(&self) -> Hsla {
+        self.c("border.variant", "#333333")
     }
     /// Plate under every on-photo badge. Theme-independent: it sits on pixels.
     fn scrim(&self) -> Hsla {
@@ -5750,7 +5794,7 @@ impl Workspace {
     }
     fn keycap(&self, keys: &str) -> Div {
         div()
-            .text_size(px(11.))
+            .text_size(px(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
@@ -5781,7 +5825,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .border_1()
-                    .border_color(self.control_border())
+                    .border_color(self.group_border())
                     .bg(self.canvas_bg())
                     .text_size(px(ui::text::MICRO))
                     .text_color(self.muted())
@@ -5800,9 +5844,10 @@ impl Workspace {
         active: bool,
         cx: &gpui::Context<Self>,
     ) -> Stateful<Div> {
-        // Controls also appear on elevated surfaces; a ghost hover can match
-        // the dialog background exactly. Use the filled control hover there.
-        let hover = self.c("element.hover", "#303030");
+        // The translucent ghost hover sits a step below the selected fill on
+        // every surface (panel, dialog, canvas), so hovering a plain button
+        // never outranks a toggle that is on.
+        let hover = self.hover_bg();
         let icon_only = label.is_empty();
         div()
             .id(id)
@@ -5819,16 +5864,15 @@ impl Workspace {
             // Reserve the outline so keyboard selection never shifts layout.
             .border_1()
             .border_color(transparent_black())
-            .when(active, |s| {
-                s.bg(self.selected_bg())
-                    .border_color(self.c("border.focused", "#5b9bd5"))
-            })
-            .hover(move |s| s.bg(hover))
+            // Active is the toggle idiom: a quiet fill and a full-strength
+            // icon. The accent box is keyboard focus's alone.
+            .when(active, |s| s.bg(self.selected_bg()).text_color(self.text()))
+            .when(!active, |s| s.hover(move |s| s.bg(hover)))
             .when(!glyph.is_empty(), |s| {
                 s.child(icon(
                     glyph,
                     if active {
-                        self.accent()
+                        self.c("icon", "#b8b8b8")
                     } else {
                         self.icon_muted()
                     },
@@ -7826,9 +7870,10 @@ impl Workspace {
         let (cell, image) = ui::GRID_SIZES[self.grid_size_index()];
         (cell, image, image + ui::GRID_ROW_CHROME)
     }
-    /// Columns that keep grid cells at least the chosen size wide.
+    /// Columns that keep grid cells at least the chosen size wide. The
+    /// scrollbar lives inside the right gutter, so both gutters are equal.
     fn grid_cols(&self) -> usize {
-        ((self.center_size.0 - scrollbar::WIDTH - 2. * ui::PANEL_INSET + ui::GRID_GAP)
+        ((self.center_size.0 - 2. * ui::PANEL_INSET + ui::GRID_GAP)
             / (self.grid_metrics().0 + ui::GRID_GAP))
             .floor()
             .clamp(1., 64.) as usize
@@ -7840,11 +7885,9 @@ impl Workspace {
         let handle = self.grid_scroll.clone();
         // Equal cells (placeholders share the box), so the well width is known
         // and badges can be pinned to each photo's contained rectangle.
-        let cell_w = (self.center_size.0
-            - scrollbar::WIDTH
-            - 2. * ui::PANEL_INSET
-            - ui::GRID_GAP * (cols as f32 - 1.))
-            / cols as f32;
+        let cell_w =
+            (self.center_size.0 - 2. * ui::PANEL_INSET - ui::GRID_GAP * (cols as f32 - 1.))
+                / cols as f32;
         let well_w = (cell_w - 2. * space::XS - 2. * ui::HAIRLINE).max(1.);
         let list = uniform_list(
             "photo-grid",
@@ -7863,7 +7906,10 @@ impl Workspace {
                             .min_w(px(0.))
                             .flex()
                             .gap(px(ui::GRID_GAP))
-                            .px(px(ui::PANEL_INSET))
+                            // Equal gutters: the 12 px scrollbar column beside
+                            // the list is part of the right one.
+                            .pl(px(ui::PANEL_INSET))
+                            .pr(px(ui::PANEL_INSET - scrollbar::WIDTH))
                             .pt(px(space::LG));
                         for col in 0..cols {
                             let position = row * cols + col;
@@ -7981,7 +8027,9 @@ impl Workspace {
                                     .items_center()
                                     .justify_center()
                                     .overflow_hidden()
-                                    .child(frame);
+                                    .child(frame)
+                                    // Same place for every aspect ratio: the well's edge.
+                                    .children(this.label_strip(photo.label, 3., 0.));
                                 // Adjacent bursts alternate intensity so boundaries read
                                 // at a glance; neutral, since blue means "current".
                                 let burst_bar = burst.map(|(group, ..)| {
@@ -8043,7 +8091,7 @@ impl Workspace {
                                                     div()
                                                         .flex_shrink_0()
                                                         .text_color(this.rating_color())
-                                                        .child(stars(photo.rating)),
+                                                        .child(thumb_rating(photo.rating)),
                                                 ),
                                         )
                                         .on_hover(cx.listener(
@@ -8328,19 +8376,7 @@ impl Workspace {
                     })
                     .child((first + i + 1).to_string()),
             );
-            if p.rating > 0 {
-                photo_box = photo_box.child(
-                    div()
-                        .absolute()
-                        .bottom(px(space::XS))
-                        .right(px(space::XS))
-                        .px(px(space::XS))
-                        .bg(self.scrim())
-                        .text_size(px(ui::text::LABEL))
-                        .text_color(self.scrim_rating())
-                        .child(stars(p.rating)),
-                );
-            }
+            photo_box = photo_box.children(self.rating_badge(p.rating));
             let cell = div()
                 .id(("survey", position))
                 .flex_1()
@@ -8452,47 +8488,27 @@ impl Workspace {
             .child(grid)
             .into_any_element()
     }
-    /// 18 px scrim plate with the pick/reject glyph, in photo-overlay colours.
-    fn flag_badge(&self, flag: Flag) -> Div {
-        div()
-            .size(px(18.))
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .bg(self.scrim())
-            .child(
-                svg()
-                    .path(if flag == Flag::Pick {
-                        "pick-badge"
-                    } else {
-                        "reject-badge"
-                    })
-                    .size(px(12.))
-                    .text_color(self.scrim_flag(flag)),
-            )
-    }
-    /// Label badge: the label's initial in its colour, so the label survives
-    /// colour-vision deficiency and any photo underneath.
+    /// Label chip: filled with the label's photo-overlay colour, its initial
+    /// in near-black, so a label reads at a glance by colour area and survives
+    /// colour-vision deficiency by its letter. Sits on a scrim plate.
     fn label_badge(&self, label: ColorLabel) -> Option<Div> {
         self.photo_label_color(label).map(|color| {
             div()
-                .h(px(18.))
-                .min_w(px(18.))
-                .px(px(space::XS))
+                .size(px(BADGE_CELL))
                 .flex()
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .bg(self.scrim())
+                .bg(color)
                 .text_size(px(ui::text::MICRO))
                 .line_height(px(ui::text::MICRO))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(color)
+                .text_color(self.c("shadowroom.scrim.label.text", "#0f0f0f"))
                 .child(label_initial(label))
         })
     }
-    /// Decisions cluster at the photo's top-left: flag, then label.
+    /// Decisions at the photo's top-left on one continuous 18 px scrim plate:
+    /// the pick/reject glyph, then the label chip, 2 px apart.
     fn decision_badges(&self, flag: Flag, label: ColorLabel) -> Option<Div> {
         let label = self.label_badge(label);
         if flag == Flag::None && label.is_none() {
@@ -8504,10 +8520,108 @@ impl Workspace {
                 .top(px(space::XS))
                 .left(px(space::XS))
                 .flex()
+                .items_center()
                 .gap(px(space::TINY))
-                .when(flag != Flag::None, |s| s.child(self.flag_badge(flag)))
+                .p(px(space::TINY))
+                .bg(self.scrim())
+                .when(flag != Flag::None, |s| {
+                    s.child(
+                        div()
+                            .size(px(BADGE_CELL))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path(if flag == Flag::Pick {
+                                        "pick-badge"
+                                    } else {
+                                        "reject-badge"
+                                    })
+                                    .size(px(12.))
+                                    .text_color(self.scrim_flag(flag)),
+                            ),
+                    )
+                })
                 .children(label),
         )
+    }
+    /// Compact "★5" rating chip, bottom-right of a thumbnail (filmstrip, Survey).
+    fn rating_badge(&self, rating: u8) -> Option<Div> {
+        (rating > 0).then(|| {
+            div()
+                .absolute()
+                .bottom(px(space::XS))
+                .right(px(space::XS))
+                .h(px(14.))
+                .px(px(space::XS))
+                .flex()
+                .items_center()
+                .bg(self.scrim())
+                .text_size(px(ui::text::MICRO))
+                .text_color(self.scrim_rating())
+                .child(thumb_rating(rating))
+        })
+    }
+    /// Inspector label swatch: the chrome label colour carrying its key
+    /// (6-9; Purple has none), a text-coloured ring with an inset gap when
+    /// chosen. The R/Y/G/B/P initials stay on photo badges, where they are the
+    /// colour-blind shape code; here a letter would read as a keycap.
+    fn label_swatch(
+        &self,
+        id: impl Into<ElementId>,
+        label: ColorLabel,
+        selected: bool,
+        tip: String,
+        cx: &gpui::Context<Self>,
+    ) -> Stateful<Div> {
+        let color = self.label_color(label);
+        div()
+            .id(id)
+            .size(px(ui::COMPACT_CONTROL_HEIGHT))
+            .p(px(space::XS))
+            .border_1()
+            .border_color(if selected {
+                self.text()
+            } else {
+                transparent_black()
+            })
+            .cursor_pointer()
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(ui::text::MICRO))
+                    .line_height(px(ui::text::MICRO))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
+                    .when_some(color, |s, c| s.bg(c).child(label_key(label)))
+                    // The empty choice is an input with no fill of its own.
+                    .when(color.is_none(), |s| {
+                        s.border_1().border_color(self.control_border())
+                    }),
+            )
+            .tooltip(self.tip(&tip, label_key(label)))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.execute(Cmd::Label(label), window, cx)),
+            )
+    }
+    /// Colour-label strip along a thumbnail's bottom edge: colour area for
+    /// scanning a shoot, in the chrome label colour because it sits on the
+    /// well, not the photo.
+    fn label_strip(&self, label: ColorLabel, height: f32, inset: f32) -> Option<Div> {
+        self.label_color(label).map(|color| {
+            div()
+                .absolute()
+                .left(px(inset))
+                .right(px(inset))
+                .bottom(px(inset))
+                .h(px(height))
+                .bg(color)
+        })
     }
     /// (group index, frame position, frame count) for photos in a burst or
     /// duplicate set of two or more.
@@ -8572,6 +8686,7 @@ impl Workspace {
             if next == end { end += 1 } else { start -= 1 }
         }
         let mut strip = div()
+            .relative()
             .h(px(FILMSTRIP_HEIGHT))
             .flex_shrink_0()
             .flex()
@@ -8579,10 +8694,44 @@ impl Workspace {
             .justify_center()
             .gap(px(ui::FILM_GAP))
             .px(px(ui::PANEL_INSET))
+            // The cull ledger rides in the top padding; frames stay centred
+            // below it (the same top padding whether or not it is shown).
+            .pt(px(ledger::TRACK_TOP + ledger::TRACK))
+            .pb(px(ui::HAIRLINE))
             .bg(self.panel())
             .border_t_1()
             .border_color(self.border())
             .overflow_hidden();
+        if self.ledger_visible() {
+            // When every frame fits, each ledger cell sits exactly over its
+            // frame; otherwise the track is a minimap of the whole view.
+            let all = start == 0 && end == self.filtered.len();
+            let (left, track) = if all {
+                let width = used - ui::FILM_GAP;
+                (
+                    ui::PANEL_INSET + ((available - width) / 2.).max(0.),
+                    ledger::Track {
+                        width,
+                        gap: ui::FILM_GAP,
+                    },
+                )
+            } else {
+                (
+                    ui::PANEL_INSET,
+                    ledger::Track {
+                        width: self.ledger_width(),
+                        gap: 1.,
+                    },
+                )
+            };
+            strip = strip.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(left))
+                    .child(self.ledger(track, cx)),
+            );
+        }
         // Consecutive frames of one burst share a tinted run so group
         // boundaries are visible without opening the inspector.
         let mut run: Option<(usize, Div)> = None;
@@ -8616,23 +8765,8 @@ impl Workspace {
             if let Some(badges) = self.decision_badges(p.flag, p.label) {
                 frame = frame.child(badges);
             }
-            if p.rating > 0 {
-                // Compact "★5" chip: the count, not five glyphs over the photo.
-                frame = frame.child(
-                    div()
-                        .absolute()
-                        .bottom(px(space::XS))
-                        .right(px(space::XS))
-                        .h(px(14.))
-                        .px(px(space::XS))
-                        .flex()
-                        .items_center()
-                        .bg(self.scrim())
-                        .text_size(px(ui::text::MICRO))
-                        .text_color(self.scrim_rating())
-                        .child(format!("★{}", p.rating)),
-                );
-            }
+            // Compact "★5" chip: the count, not five glyphs over the photo.
+            frame = frame.children(self.rating_badge(p.rating));
             let burst = self.burst_slot(p.id);
             let run_start =
                 burst.is_some_and(|(group, ..)| run.as_ref().is_none_or(|(g, _)| *g != group));
@@ -8651,7 +8785,9 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(frame);
+                .child(frame)
+                // 2 px label strip inside the 2 px selection inset.
+                .children(self.label_strip(p.label, 2., 2.));
             let photo_id = p.id;
             // Selection is an inset overlay, so selected and unselected cells
             // have identical boxes and the strip keeps one constant gap.
@@ -8811,9 +8947,12 @@ impl Workspace {
                 + if tight { 0. } else { 16. + space::SM };
             zoom + gap + control + if compare { control } else { 0. }
         };
+        // Groups: decide | rate … position | workflow | view | delete.
+        let view_group = grid || zoomable;
+        let dividers = if view_group { 4. } else { 3. };
         let base = 2. * if tight { space::XS } else { ui::BAR_INSET }
             + 2. * control // flag icons
-            + 2. * (1. + 2. * space::XS + gap) // dividers
+            + dividers * (1. + 2. * space::XS + gap)
             + stars_width
             + gap
             + if mixed_rating { 5. * SMALL_CHAR + gap } else { 0. }
@@ -8825,16 +8964,16 @@ impl Workspace {
             + view_controls
             + control; // trash
         let optional = [
-            // P / X keycaps beside the flag icons.
-            2. * (space::SM + SMALL_CHAR + space::XS),
+            // P / X keycaps beside the flag icons, and "1-5" after the stars.
+            2. * (space::SM + SMALL_CHAR + space::XS) + 3. * SMALL_CHAR + gap,
             // "Pick" / "Reject" words.
             10. * CHAR + 2. * space::SM,
             // Pin and Survey (Survey only in Catalog).
             if grid { control } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
-            // Progress bar and "N reviewed".
-            64. + space::SM + reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
+            // "N reviewed" (the cull ledger under the bar draws the progress).
+            reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
             // "Reset" text.
             space::SM + 5. * CHAR,
         ];
@@ -8945,6 +9084,9 @@ impl Workspace {
             ))
             .child(self.control_divider())
             .child(stars)
+            .when(flag_keys, |bar| {
+                bar.child(self.keycap("1-5").flex_shrink_0())
+            })
             .when(mixed_rating, |bar| {
                 bar.child(
                     div()
@@ -8982,16 +9124,7 @@ impl Workspace {
                     .text_size(px(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(div().text_color(self.text()).child(position))
-                    .when(progress && self.multi.len() < 2, |s| {
-                        s.child(
-                            div()
-                                .w(px(64.))
-                                .h(px(3.))
-                                .bg(self.selected_bg())
-                                .child(div().h_full().w(px(64. * share)).bg(self.muted())),
-                        )
-                        .child(reviewed_text)
-                    })
+                    .when(progress && self.multi.len() < 2, |s| s.child(reviewed_text))
                     .tooltip(self.tip(
                         &format!(
                             "{} of {} reviewed ({:.0}%)",
@@ -9002,6 +9135,7 @@ impl Workspace {
                         "",
                     )),
             )
+            .child(self.control_divider())
             .child(
                 self.toggle_button(
                     "header-advance",
@@ -9057,6 +9191,7 @@ impl Workspace {
                     )),
                 )
             })
+            .when(view_group, |bar| bar.child(self.control_divider()))
             .when(grid, |bar| bar.child(self.grid_size_control(cx)))
             .when(zoomable, |bar| {
                 bar.child(
@@ -9146,7 +9281,7 @@ impl Workspace {
             .flex()
             .flex_shrink_0()
             .border_1()
-            .border_color(self.control_border());
+            .border_color(self.group_border());
         for (i, label) in ui::GRID_SIZE_LABELS.into_iter().enumerate() {
             segments = segments.child(
                 self.segment(
@@ -9353,7 +9488,7 @@ impl Workspace {
                     .id("histogram-scale")
                     .flex()
                     .border_1()
-                    .border_color(self.control_border())
+                    .border_color(self.group_border())
                     .child(
                         self.segment(
                             "histogram-lin",
@@ -9402,11 +9537,14 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
+                            plot: self.histogram_plate().into(),
+                            plot_border: self.border().into(),
+                            plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
                             ..Default::default()
                         },
                     ));
                 } else {
-                    body = body.child(div().h(px(122.)).bg(self.canvas_bg()));
+                    body = body.child(div().h(px(122.)).bg(self.histogram_plate()));
                 }
             }
             if !self.inspector_info {
@@ -9422,46 +9560,17 @@ impl Workspace {
                 .into_iter()
                 .enumerate()
                 {
-                    let color = self.label_color(label);
-                    labels = labels.child(
-                        div()
-                            .id(("label", n))
-                            .size(px(ui::COMPACT_CONTROL_HEIGHT))
-                            .p(px(space::XS))
-                            .border_1()
-                            .border_color(if p.label == label {
-                                self.text()
-                            } else {
-                                transparent_black()
-                            })
-                            .cursor_pointer()
-                            .child(
-                                div()
-                                    .size_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(ui::text::MICRO))
-                                    .line_height(px(ui::text::MICRO))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                                    .when_some(color, |s, c| s.bg(c).child(label_initial(label)))
-                                    .when(color.is_none(), |s| {
-                                        s.border_1().border_color(self.control_border())
-                                    }),
-                            )
-                            .tooltip(self.tip(
-                                &if color.is_none() {
-                                    "No label".to_string()
-                                } else {
-                                    format!("{label:?}")
-                                },
-                                label_key(label),
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.execute(Cmd::Label(label), window, cx)
-                            })),
-                    );
+                    labels = labels.child(self.label_swatch(
+                        ("label", n),
+                        label,
+                        p.label == label,
+                        if label == ColorLabel::None {
+                            "No label".to_owned()
+                        } else {
+                            format!("{label:?}")
+                        },
+                        cx,
+                    ));
                 }
                 let label_name = if p.label == ColorLabel::None {
                     String::new()
@@ -10636,7 +10745,7 @@ impl Workspace {
             .flex()
             .flex_shrink_0()
             .border_1()
-            .border_color(self.control_border());
+            .border_color(self.group_border());
         for (i, (label, cmd, active)) in options.into_iter().enumerate() {
             row = row.child(self.segment(
                 SharedString::from(format!("{id}-{i}")),
@@ -11892,12 +12001,18 @@ impl Workspace {
         } else {
             DECISION_HEIGHT
         };
-        let strip_height =
-            if self.filtered.is_empty() || self.mode == ViewMode::Grid || self.import_ui.open {
-                0.
+        let strip_height = if self.filtered.is_empty() || self.import_ui.open {
+            0.
+        } else if self.mode == ViewMode::Grid {
+            // The Catalog has no filmstrip; the ledger gets its own band.
+            if self.ledger_visible() {
+                ledger::ROW_HEIGHT
             } else {
-                FILMSTRIP_HEIGHT
-            };
+                0.
+            }
+        } else {
+            FILMSTRIP_HEIGHT
+        };
         self.center_size = (
             self.docks.center,
             self.workspace_size.1
@@ -11981,6 +12096,9 @@ impl Workspace {
             if self.mode != ViewMode::Grid {
                 let strip = self.filmstrip(cx);
                 main = main.child(self.trace.timed("filmstrip", strip));
+            } else if self.ledger_visible() {
+                let band = self.ledger_band(cx);
+                main = main.child(self.trace.timed("ledger", band));
             }
         }
         let mut body = div().relative().flex().flex_1().min_h(px(0.)).min_w(px(0.));
@@ -12886,6 +13004,7 @@ mod ui_tests {
             ("help.rs", include_str!("desktop/help.rs")),
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
             ("layout.rs", include_str!("desktop/layout.rs")),
+            ("ledger.rs", include_str!("desktop/ledger.rs")),
             ("preferences.rs", include_str!("desktop/preferences.rs")),
             (
                 "review_actions.rs",

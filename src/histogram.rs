@@ -1,7 +1,8 @@
 //! RGB histogram element for the inspector.
 //!
 //! Renders `shadowroom::media::Histogram` as three filled, outlined channel
-//! curves over a neutral `#0f0f0f` plot. Overlaps are drawn as exact additive
+//! curves over a neutral plot plate (`#0f0f0f` in dark themes, white in light
+//! ones, from `shadowroom.histogram.background`). Overlaps are drawn as exact additive
 //! bands (white where all three channels overlap, cyan/magenta/yellow where two
 //! do) instead of relying on alpha blending, so the image reads the same on
 //! every renderer and the colours mean something.
@@ -73,10 +74,15 @@ pub struct HistogramOptions {
     /// Tone-axis tick labels and the source/clip footer.
     pub labels: bool,
     /// Label text, drawn on the surrounding panel (not the plot), so callers
-    /// pass the theme's muted text; the plot itself stays a neutral dark plate.
+    /// pass the theme's muted text; the plate itself is `plot`.
     pub label: Rgba,
     /// Clip readout while a channel is clipped.
     pub label_strong: Rgba,
+    /// Plot plate, its outline and the quarter-tone guides. A light plate
+    /// switches the curves to darker inks that hold up on white.
+    pub plot: Rgba,
+    pub plot_border: Rgba,
+    pub plot_grid: Rgba,
 }
 
 impl Default for HistogramOptions {
@@ -89,7 +95,18 @@ impl Default for HistogramOptions {
             labels: true,
             label: rgb(LABEL),
             label_strong: rgb(LABEL_STRONG),
+            plot: rgb(PLOT_BG),
+            plot_border: rgb(PLOT_BORDER),
+            plot_grid: rgb(GRID),
         }
+    }
+}
+
+impl HistogramOptions {
+    /// A light plate (relative luminance above one half) takes the light inks.
+    fn light(&self) -> bool {
+        let c = self.plot;
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b > 0.5
     }
 }
 
@@ -119,6 +136,12 @@ const LINE_R: u32 = 0xf0_6a_6a_e6;
 const LINE_G: u32 = 0x6a_dc_78_e6;
 const LINE_B: u32 = 0x6e_9a_ff_e6;
 const LINE_L: u32 = 0xe8_e8_e8_99;
+// Light plate: the same additive bands (they mix only with the plate), with
+// outlines darkened to keep the curves' edges at ~3:1 on white.
+const LIGHT_LINE_R: u32 = 0xc4_3c_3c_e6;
+const LIGHT_LINE_G: u32 = 0x2e_8a_40_e6;
+const LIGHT_LINE_B: u32 = 0x2f_5f_d0_e6;
+const LIGHT_LINE_L: u32 = 0x29_29_29_99;
 
 /// Default inspector histogram: linear scale, preview source note.
 pub fn histogram(hist: &Histogram, width: f32, height: f32) -> AnyElement {
@@ -154,6 +177,11 @@ pub fn histogram_with(
     let empty = data.is_empty();
 
     let painted = data.clone();
+    let empty_label = if options.light() {
+        options.label
+    } else {
+        rgb(EMPTY_LABEL)
+    };
     let mut plot = div().relative().w(px(width)).h(px(plot_height)).child(
         canvas(
             |_, _, _| (),
@@ -170,7 +198,7 @@ pub fn histogram_with(
                 .items_center()
                 .justify_center()
                 .text_size(px(10.))
-                .text_color(rgb(EMPTY_LABEL))
+                .text_color(empty_label)
                 .child("No histogram data"),
         );
     }
@@ -248,6 +276,10 @@ struct Prepared {
     clip_high: u8,
     low_share: f64,
     high_share: f64,
+    plot: Rgba,
+    plot_border: Rgba,
+    plot_grid: Rgba,
+    light: bool,
 }
 
 impl Prepared {
@@ -263,6 +295,10 @@ impl Prepared {
                 clip_high: 0,
                 low_share: 0.,
                 high_share: 0.,
+                plot: options.plot,
+                plot_border: options.plot_border,
+                plot_grid: options.plot_grid,
+                light: options.light(),
             };
         }
         let channels = [&hist.red[..bins], &hist.green[..bins], &hist.blue[..bins]];
@@ -318,6 +354,10 @@ impl Prepared {
             clip_high,
             low_share,
             high_share,
+            plot: options.plot,
+            plot_border: options.plot_border,
+            plot_grid: options.plot_grid,
+            light: options.light(),
         }
     }
 
@@ -354,6 +394,7 @@ impl Prepared {
         for value in [plot.left, plot.bottom, plot.width, plot.height] {
             value.to_bits().hash(&mut hasher);
         }
+        self.light.hash(&mut hasher);
         for channel in [&self.red, &self.green, &self.blue]
             .into_iter()
             .chain(self.luma.as_ref())
@@ -389,7 +430,12 @@ impl Prepared {
                 paths.push((path, rgba(*color)));
             }
         }
-        for (channel, color) in [(r, LINE_R), (g, LINE_G), (b, LINE_B)] {
+        let lines = if self.light {
+            [LIGHT_LINE_R, LIGHT_LINE_G, LIGHT_LINE_B, LIGHT_LINE_L]
+        } else {
+            [LINE_R, LINE_G, LINE_B, LINE_L]
+        };
+        for (channel, color) in [(r, lines[0]), (g, lines[1]), (b, lines[2])] {
             if let Some(path) = plot.outline(channel) {
                 paths.push((path, rgba(color)));
             }
@@ -397,13 +443,13 @@ impl Prepared {
         if let Some(luma) = &self.luma
             && let Some(path) = plot.outline(luma)
         {
-            paths.push((path, rgba(LINE_L)));
+            paths.push((path, rgba(lines[3])));
         }
         paths
     }
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App) {
-        window.paint_quad(fill(bounds, rgb(PLOT_BG)));
+        window.paint_quad(fill(bounds, self.plot));
         let left = f32::from(bounds.origin.x);
         let top = f32::from(bounds.origin.y);
         let w = f32::from(bounds.size.width);
@@ -414,7 +460,7 @@ impl Prepared {
             let x = (left + w * quarter as f32 / 4.).round();
             window.paint_quad(fill(
                 Bounds::new(point(px(x), px(top)), size(px(1.), px(h))),
-                rgb(GRID),
+                self.plot_grid,
             ));
         }
 
@@ -453,13 +499,13 @@ impl Prepared {
             }
             window.paint_quad(fill(
                 Bounds::new(point(px(x), px(top + 3.)), size(px(marker), px(marker))),
-                mask_color(mask),
+                mask_color(mask, self.light),
             ));
         }
 
         window.paint_quad(gpui::outline(
             bounds,
-            rgb(PLOT_BORDER),
+            self.plot_border,
             gpui::BorderStyle::Solid,
         ));
     }
@@ -482,8 +528,10 @@ fn display_counts(counts: &[u64], smooth: bool) -> Vec<f64> {
     out
 }
 
-fn mask_color(mask: u8) -> Rgba {
+fn mask_color(mask: u8, light: bool) -> Rgba {
     rgb(match mask {
+        // All three channels: white on the dark plate, near-black on white.
+        0b111 if light => 0x404040,
         0b001 => 0xf06a6a,
         0b010 => 0x6adc78,
         0b100 => 0x6e9aff,
@@ -627,5 +675,27 @@ mod tests {
             },
         );
         assert!(log.red[10] > lin.red[10]);
+    }
+
+    #[test]
+    fn light_plates_take_the_light_inks() {
+        assert!(!HistogramOptions::default().light());
+        let light = HistogramOptions {
+            plot: rgb(0xffffff),
+            ..Default::default()
+        };
+        assert!(light.light());
+        let h = hist(|_| (10, 10, 10));
+        let dark = Prepared::new(&h, HistogramOptions::default());
+        let pale = Prepared::new(&h, light);
+        let plot = Plot {
+            left: 0.,
+            bottom: 60.,
+            width: 200.,
+            height: 58.,
+            bins: 256,
+        };
+        // Cached paths never carry one plate's inks onto the other.
+        assert_ne!(dark.plot_key(&plot), pale.plot_key(&plot));
     }
 }

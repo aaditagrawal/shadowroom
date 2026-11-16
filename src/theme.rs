@@ -88,7 +88,7 @@ impl Default for Theme {
 /// and on-photo captions sit on image content, which can be white or black in
 /// either appearance, so their colours are tuned for the dark scrim plate
 /// (worst case: the plate over a white photo region) rather than for chrome.
-pub const PHOTO_OVERLAY: [(&str, &str); 12] = [
+pub const PHOTO_OVERLAY: [(&str, &str); 13] = [
     ("shadowroom.scrim", "#0f0f0fd0"),
     ("shadowroom.scrim.text", "#e6e6e6"),
     ("shadowroom.scrim.muted", "#b8b8b8"),
@@ -101,6 +101,8 @@ pub const PHOTO_OVERLAY: [(&str, &str); 12] = [
     ("shadowroom.scrim.label.green", "#86bfa8"),
     ("shadowroom.scrim.label.blue", "#82abe0"),
     ("shadowroom.scrim.label.purple", "#c497d0"),
+    // Initial on a filled label chip (all five fills are light pastels).
+    ("shadowroom.scrim.label.text", "#0f0f0f"),
 ];
 
 impl Theme {
@@ -145,6 +147,8 @@ impl Theme {
                 ("editor.foreground", "#e6e6e6"),
                 ("shadowroom.canvas", "#0f0f0f"),
                 ("shadowroom.well", "#161616"),
+                ("shadowroom.histogram.background", "#0f0f0f"),
+                ("shadowroom.histogram.grid", "#1c1c1c"),
                 ("shadowroom.control_border", "#707070"),
                 ("shadowroom.pick", "#7fbf7f"),
                 ("shadowroom.reject", "#d46a6a"),
@@ -200,6 +204,8 @@ impl Theme {
                 // Neutral (R=G=B) so the photo's white balance is not tinted.
                 ("shadowroom.canvas", "#dcdcdc"),
                 ("shadowroom.well", "#e4e4e4"),
+                ("shadowroom.histogram.background", "#ffffff"),
+                ("shadowroom.histogram.grid", "#00000014"),
                 ("shadowroom.control_border", "#717a88"),
                 ("shadowroom.pick", "#2f6844"),
                 ("shadowroom.reject", "#a53e42"),
@@ -815,7 +821,13 @@ mod tests {
             let plate = c("shadowroom.scrim").composite_over(white);
             for (key, value) in PHOTO_OVERLAY {
                 assert_eq!(theme.colors[key], value, "{name}: {key}");
-                if key != "shadowroom.scrim" {
+                if key == "shadowroom.scrim.label.text" {
+                    // Drawn on the filled label chip, not on the plate.
+                    for label in ["red", "yellow", "green", "blue", "purple"] {
+                        let fill = c(&format!("shadowroom.scrim.label.{label}"));
+                        assert!(c(key).contrast_ratio(fill) >= 7.0, "{name}: {label}");
+                    }
+                } else if key != "shadowroom.scrim" {
                     let minimum = if key.contains("label") || key.ends_with("text") {
                         4.5
                     } else {
@@ -831,6 +843,27 @@ mod tests {
                     "{name} {label}"
                 );
                 assert!(c("shadowroom.label.text").contrast_ratio(swatch) >= 4.5);
+                // Thumbnail label strips sit on the image well and the
+                // filmstrip's canvas slot.
+                for surface in ["shadowroom.well", "shadowroom.canvas"] {
+                    assert!(
+                        swatch.contrast_ratio(c(surface)) >= 3.0,
+                        "{name} {label} on {surface}"
+                    );
+                }
+            }
+            // Cull ledger ticks on the panel: decisions and reviewed frames
+            // are graphics that must read (3:1); unreviewed is the bare rail.
+            for key in [
+                "shadowroom.pick",
+                "shadowroom.reject",
+                "icon.muted",
+                "text.accent",
+            ] {
+                assert!(
+                    c(key).contrast_ratio(c("panel.background")) >= 3.0,
+                    "{name}: ledger {key}"
+                );
             }
             let canvas = c("shadowroom.canvas");
             assert!(

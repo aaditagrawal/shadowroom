@@ -960,46 +960,17 @@ impl Workspace {
         .into_iter()
         .enumerate()
         {
-            let color = self.label_color(label);
-            swatches = swatches.child(
-                div()
-                    .id(("batch-label", n))
-                    .size(px(ui::COMPACT_CONTROL_HEIGHT))
-                    .p(px(space::XS))
-                    .border_1()
-                    .border_color(if common_label == Some(label) {
-                        self.text()
-                    } else {
-                        transparent_black()
-                    })
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(ui::text::MICRO))
-                            .line_height(px(ui::text::MICRO))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                            .when_some(color, |s, c| s.bg(c).child(label_initial(label)))
-                            .when(color.is_none(), |s| {
-                                s.border_1().border_color(self.control_border())
-                            }),
-                    )
-                    .tooltip(self.tip(
-                        &if color.is_none() {
-                            "Clear the label of every selected photo".to_owned()
-                        } else {
-                            format!("Label every selected photo {}", label.as_str())
-                        },
-                        label_key(label),
-                    ))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.execute(Cmd::Label(label), window, cx)
-                    })),
-            );
+            swatches = swatches.child(self.label_swatch(
+                ("batch-label", n),
+                label,
+                common_label == Some(label),
+                if label == ColorLabel::None {
+                    "Clear the label of every selected photo".to_owned()
+                } else {
+                    format!("Label every selected photo {}", label.as_str())
+                },
+                cx,
+            ));
         }
         div()
             .id("batch-inspector")
