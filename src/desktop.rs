@@ -7543,10 +7543,10 @@ impl Workspace {
                 )
                 .child(
                     div()
-                        .w(px(ui::scaled(16.)))
+                        .w(px(ui::scaled(24.)))
                         .flex()
                         .justify_end()
-                        .child(self.keycap(&r.to_string())),
+                        .child(self.keycaps(&r.to_string())),
                 ),
             );
         }
