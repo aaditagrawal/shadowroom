@@ -424,8 +424,10 @@ mod tests {
         assert_eq!(counts.samples, u64::from(w * h));
         // Every pixel the overlay may paint is one the readout counts, by row.
         for (i, (pixel, plain)) in display
-            .chunks_exact(4)
-            .zip(before.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(before.as_chunks::<4>().0)
             .enumerate()
         {
             let row = i / w as usize;
@@ -442,7 +444,9 @@ mod tests {
         // Blown rows carry wider stripes than colour-clipped ones.
         let stripes = |row: usize| {
             display[row * w as usize * 4..(row + 1) * w as usize * 4]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|p| p[..3] == [204, 51, 255])
                 .count()
         };

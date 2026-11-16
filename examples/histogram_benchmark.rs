@@ -23,6 +23,7 @@ fn averaged_histogram(image: &DynamicImage) -> Histogram {
         blue: vec![0; 256],
         luminance: vec![0; 256],
         samples: u64::from(small.width()) * u64::from(small.height()),
+        clip: Default::default(),
     };
     for p in rgb.as_raw().chunks_exact(3) {
         h.red[p[0] as usize] += 1;

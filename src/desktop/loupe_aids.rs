@@ -76,22 +76,6 @@ pub(super) fn peaking_style_of(settings: &Settings) -> PeakingStyle {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::stamp_text;
-    use shadowroom::model::{ColorLabel, Flag};
-
-    #[test]
-    fn stamps_name_the_decision_in_capitals() {
-        assert_eq!(stamp_text(None, Some(Flag::Pick), None), Some("PICK"));
-        assert_eq!(stamp_text(None, Some(Flag::Reject), None), Some("REJECT"));
-        assert_eq!(stamp_text(Some(4), None, None), Some("★★★★"));
-        assert_eq!(stamp_text(Some(0), Some(Flag::None), None), Some("RESET"));
-        assert_eq!(stamp_text(None, None, Some(ColorLabel::Blue)), Some("BLUE"));
-        assert_eq!(stamp_text(None, None, None), None);
-    }
-}
-
 impl Workspace {
     pub(super) fn peaking_style(&self) -> PeakingStyle {
         peaking_style_of(&self.settings)
@@ -561,5 +545,21 @@ impl Workspace {
                 .children(plate)
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_text;
+    use shadowroom::model::{ColorLabel, Flag};
+
+    #[test]
+    fn stamps_name_the_decision_in_capitals() {
+        assert_eq!(stamp_text(None, Some(Flag::Pick), None), Some("PICK"));
+        assert_eq!(stamp_text(None, Some(Flag::Reject), None), Some("REJECT"));
+        assert_eq!(stamp_text(Some(4), None, None), Some("★★★★"));
+        assert_eq!(stamp_text(Some(0), Some(Flag::None), None), Some("RESET"));
+        assert_eq!(stamp_text(None, None, Some(ColorLabel::Blue)), Some("BLUE"));
+        assert_eq!(stamp_text(None, None, None), None);
     }
 }
