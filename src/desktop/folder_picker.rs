@@ -892,11 +892,17 @@ impl Workspace {
         }
         body = body.child(
             self.modal_footer()
-                .child(
-                    div()
-                        .text_color(self.muted())
-                        .child("Ctrl+L Path · Enter Open · Ctrl+Enter Use · Esc Cancel"),
-                )
+                // Enter goes into the highlighted folder; the primary button's
+                // own verb names what Ctrl+Enter does (R4-overlays-05, R4-io-02).
+                .child(self.key_hints(&[
+                    ("⌘L", "Path"),
+                    ("Enter", "Go into"),
+                    (
+                        "⌘Enter",
+                        confirm.split_whitespace().next().unwrap_or("Choose"),
+                    ),
+                    ("Esc", "Cancel"),
+                ]))
                 .child(
                     div()
                         .flex()

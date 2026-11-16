@@ -350,6 +350,35 @@ impl Workspace {
             .border_color(self.border())
     }
 
+    /// The keyboard hints at the left of a dialog footer: boxed keys and the
+    /// verb each runs, "⌘L Path · Enter Go into · Esc Cancel". One component
+    /// for every footer, as the palette draws its bindings (R2-overlays-08).
+    /// A verb should be the first word of the button the key presses.
+    pub(super) fn key_hints(&self, hints: &[(&str, &str)]) -> Div {
+        let mut row = div()
+            .flex_shrink()
+            .min_w(px(0.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(space::MD))
+            .gap_y(px(space::XS))
+            .text_size(ui::font(ui::text::LABEL))
+            .text_color(self.muted());
+        for (keys, verb) in hints {
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(space::XS))
+                    .child(self.keycaps(keys))
+                    .child((*verb).to_owned()),
+            );
+        }
+        row
+    }
+
     /// A dialog button without a click handler, for callers with their own action.
     pub(super) fn dialog_button(
         &self,

@@ -602,14 +602,19 @@ impl Workspace {
                 .child(body)
                 .child(
                     self.modal_footer()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_size(ui::font(11.))
-                                .text_color(self.muted())
-                                .child("Cancel is the default. Tab switches; Enter activates."),
-                        )
+                        // Cancel is the default; Enter names the ringed button.
+                        .child(self.key_hints(&[
+                            ("Tab", "Switch"),
+                            (
+                                "Enter",
+                                if confirm_focused {
+                                    if c.permanent { "Delete" } else { "Move" }
+                                } else {
+                                    "Cancel"
+                                },
+                            ),
+                            ("Esc", "Cancel"),
+                        ]))
                         .child(
                             div()
                                 .flex()
