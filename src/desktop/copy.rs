@@ -236,7 +236,7 @@ pub(super) fn import_progress(progress: &Progress) -> String {
 /// Groups already in the library and groups that failed, when there are any.
 pub(super) fn import_exceptions(progress: &Progress) -> (Option<String>, Option<String>) {
     (
-        (progress.skipped > 0).then(|| format!("{} skipped", progress.skipped)),
+        (progress.skipped > 0).then(|| format!("{} already in library", count(progress.skipped))),
         (progress.failed > 0).then(|| format!("{} failed", progress.failed)),
     )
 }

@@ -634,7 +634,8 @@ impl Workspace {
         let mut body = self
             .modal_surface("path-picker", width)
             .h(px((self.workspace_size.1 - 48.).clamp(180., 600.)))
-            .child(self.modal_header(title, None, cx))
+            // Closes like every other dialog.
+            .child(self.modal_header(title, Some(("picker-close", Cmd::Close)), cx))
             .children(subtitle.map(|subtitle| {
                 div()
                     .px(px(ui::DIALOG_INSET))
@@ -650,14 +651,18 @@ impl Workspace {
                     .py(px(space::MD))
                     .flex()
                     .gap(px(space::SM))
-                    .child(self.picker_button(
-                        "picker-home",
-                        "Home",
-                        Action::Home,
-                        ButtonKind::Secondary,
-                        false,
-                        cx,
-                    ))
+                    // Home is the first place; the file picker has no
+                    // places column, so it keeps a Home button.
+                    .when(state.purpose.files(), |s| {
+                        s.child(self.picker_button(
+                            "picker-home",
+                            "Home",
+                            Action::Home,
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        ))
+                    })
                     .child(self.picker_button(
                         "picker-up",
                         "Up",

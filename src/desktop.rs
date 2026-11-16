@@ -267,6 +267,8 @@ enum Cmd {
     ConfirmDelete,
     CancelDelete,
     TrashMode(String),
+    /// Show the operating system's Trash in the file manager.
+    OpenSystemTrash,
     ScanDuplicates,
     CancelDuplicates,
     ShowDuplicates,
@@ -3368,6 +3370,18 @@ impl Workspace {
             self.announce("Batch decision cancelled", Tone::Info);
         }
         match cmd {
+            Cmd::GridSize(size) if size > 0 && self.grid_size_forced() => {
+                // Nothing would change: say why instead of storing a size
+                // that can't show.
+                self.announce(
+                    format!(
+                        "Larger thumbnails need a wider catalog · hide a panel ({} or {})",
+                        shortcut("⌘B"),
+                        shortcut("I")
+                    ),
+                    Tone::Info,
+                );
+            }
             Cmd::GridSize(size) => {
                 self.grid_size = size.min(ui::GRID_SIZES.len() - 1);
                 self.settings
@@ -3644,6 +3658,14 @@ impl Workspace {
                     return;
                 }
                 if self.import_ui.menu.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                if !self.palette
+                    && !self.preferences
+                    && self.import_ui.open
+                    && self.import_ui.dismiss_confirmation()
+                {
                     cx.notify();
                     return;
                 }
@@ -3969,15 +3991,15 @@ impl Workspace {
                 self.rebuild(id);
             }
             Cmd::RatedAtLeast(r) => {
+                // Like the toolbar's rating menu: narrows what is in view
+                // (folder, collection, label) and toggles off when active.
                 let id = self.selected_id();
-                self.scope = None;
-                self.duplicates_only = false;
-                self.label_filter = None;
-                self.bursts_only = false;
-                self.filter = Filter::All;
-                self.min_rating = r;
-                self.settings.filter = "all".into();
-                self.settings.min_rating = r;
+                if self.filter == Filter::Trash {
+                    self.filter = Filter::All;
+                    self.settings.filter = "all".into();
+                }
+                self.min_rating = if self.min_rating == r { 0 } else { r };
+                self.settings.min_rating = self.min_rating;
                 self.save_settings();
                 self.rebuild(id);
             }
@@ -4163,6 +4185,17 @@ impl Workspace {
                 }
             }
             Cmd::RevealPath(path) => cx.reveal_path(&path),
+            Cmd::OpenSystemTrash => {
+                if cfg!(target_os = "macos") {
+                    if let Some(home) = std::env::var_os("HOME") {
+                        cx.open_with_system(&PathBuf::from(home).join(".Trash"));
+                    }
+                } else {
+                    // GIO's trash: location, which xdg-open hands to the
+                    // desktop's file manager.
+                    cx.open_with_system(Path::new("trash:///"));
+                }
+            }
             Cmd::AllSelect => {
                 self.multi = self.filtered.iter().map(|&i| self.photos[i].id).collect();
             }
@@ -4389,6 +4422,13 @@ impl Workspace {
                 "",
                 "trash",
                 Cmd::Filter(Filter::Trash),
+            ),
+            item(
+                "Open System Trash",
+                "Library · where deleted files go",
+                "",
+                "trash",
+                Cmd::OpenSystemTrash,
             ),
             item(
                 copy::SCAN_DUPLICATES,
@@ -4828,6 +4868,7 @@ impl Workspace {
             Cmd::RetryPreview => preview_failed,
             Cmd::CancelDuplicates => scanning,
             Cmd::RetrySaves => save_failed,
+            Cmd::OpenSystemTrash => self.settings.trash_mode == "system",
             Cmd::Trash(restore) => *restore != in_trash,
             Cmd::Filter(Filter::Trash) => !in_trash,
             Cmd::NextGroup | Cmd::PreviousGroup | Cmd::ResolveBurst => grouped,
@@ -5414,6 +5455,24 @@ fn icon(name: &'static str, color: Hsla) -> Svg {
         .flex_shrink_0()
 }
 /// Platform spelling for shortcut hints: ⌘/⇧ glyphs on macOS, words elsewhere.
+/// Survey grid for `n` frames of a typical `aspect` in a `width` × `height`
+/// area: the column count whose cells fit the largest frame, and the cell
+/// size, so small windows and short bursts get the biggest frames that fit.
+fn survey_layout(n: usize, aspect: f32, width: f32, height: f32) -> (usize, f32, f32) {
+    let n = n.max(1);
+    let mut best = (1, 1., 1.);
+    for cols in 1..=n {
+        let rows = n.div_ceil(cols);
+        let cell_w = ((width - space::SM * (cols - 1) as f32) / cols as f32).max(1.);
+        let cell_h = ((height - space::SM * (rows - 1) as f32) / rows as f32).max(1.);
+        let frame_w = cell_w.min(cell_h * aspect);
+        // Fewer columns win ties, keeping rows full.
+        if frame_w > best.1 + 0.5 {
+            best = (cols, frame_w, frame_w / aspect);
+        }
+    }
+    best
+}
 fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
@@ -6547,12 +6606,7 @@ impl Workspace {
                 "star",
                 "3 stars and up".into(),
                 Some(rated),
-                self.filter == Filter::All
-                    && self.min_rating == 3
-                    && self.scope.is_none()
-                    && self.label_filter.is_none()
-                    && !self.bursts_only
-                    && !self.duplicates_only,
+                self.min_rating == 3 && self.filter != Filter::Trash,
             )
             .on_click(
                 cx.listener(|this, _, window, cx| this.execute(Cmd::RatedAtLeast(3), window, cx)),
@@ -7023,7 +7077,9 @@ impl Workspace {
                             } else {
                                 ""
                             },
-                            "group",
+                            // Grouping wears the thumbnails' burst glyph; the
+                            // layers glyph means Survey.
+                            "group-badge",
                             Cmd::Group(if grouped {
                                 "off".into()
                             } else {
@@ -7487,12 +7543,6 @@ impl Workspace {
             .min_h(px(0.))
             .bg(self.canvas_bg())
             .overflow_hidden()
-            .border_1()
-            .border_color(if active {
-                self.accent()
-            } else {
-                transparent_black()
-            })
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 this.click_photo(reference, event);
                 cx.notify();
@@ -7777,14 +7827,15 @@ impl Workspace {
                     .children(chip.map(|chip| chip.flex_shrink_0())),
             )
         });
-        // What the previous frame now carries, briefly, after auto-advance.
+        // What the previous frame now carries, briefly, after auto-advance:
+        // inside the picture's bottom-left corner, like the chip at its top.
         let pane = pane.when(!reference, |pane| {
             pane.children(self.decision_note_chip().map(|chip| {
                 div()
                     .absolute()
-                    .bottom(px(8.))
-                    .left(px(8.))
-                    .right(px(8.))
+                    .bottom(px(inset_y.floor() + space::SM))
+                    .left(px(inset_x.floor() + space::SM))
+                    .right(px(inset_x.floor() + space::SM))
                     .flex()
                     .child(chip.max_w_full())
             }))
@@ -7859,11 +7910,15 @@ impl Workspace {
     /// The Catalog thumbnail size in effect: the chosen S / M / L, or S when
     /// the centre pane is too narrow for more than two larger columns.
     fn grid_size_index(&self) -> usize {
-        if self.center_size.0 < ui::GRID_SMALL_CENTER {
+        if self.grid_size_forced() {
             0
         } else {
             self.grid_size.min(ui::GRID_SIZES.len() - 1)
         }
+    }
+    /// The centre pane is too narrow for M or L: S is the only size.
+    fn grid_size_forced(&self) -> bool {
+        self.center_size.0 < ui::GRID_SMALL_CENTER
     }
     /// (minimum cell width, image height, row height) for the Catalog grid.
     fn grid_metrics(&self) -> (f32, f32, f32) {
@@ -7986,6 +8041,16 @@ impl Workspace {
                                             .child(icon("selected", this.scrim_accent())),
                                     );
                                 }
+                                let checked =
+                                    this.multi.len() > 1 && this.multi.contains(&photo.id);
+                                frame = frame.children(this.pin_badge(
+                                    photo.id,
+                                    if checked {
+                                        space::XS + 18. + space::TINY
+                                    } else {
+                                        space::XS
+                                    },
+                                ));
                                 let burst = this.burst_slot(photo.id);
                                 if let Some((_, frame_no, count)) = burst {
                                     frame = frame.child(
@@ -8261,30 +8326,47 @@ impl Workspace {
             .min(all.len().saturating_sub(MAX));
         let frames = &all[first..(first + MAX).min(all.len())];
         let n = frames.len();
-        let cols = match n {
-            0..=2 => n.max(1),
-            3..=4 => 2,
-            5..=9 => 3,
-            _ => 4,
-        };
         let span = &summary.span;
+        // The frames' typical shape (median), so a portrait burst gets
+        // portrait cells.
+        let mut aspects: Vec<f32> = frames
+            .iter()
+            .map(|&position| {
+                let p = &self.photos[self.filtered[position]];
+                let (w, h) = if (5..=8).contains(&p.orientation) {
+                    (p.height, p.width)
+                } else {
+                    (p.width, p.height)
+                };
+                if w > 0 && h > 0 {
+                    w as f32 / h as f32
+                } else {
+                    1.5
+                }
+            })
+            .collect();
+        aspects.sort_by(f32::total_cmp);
+        let aspect = aspects
+            .get(aspects.len() / 2)
+            .copied()
+            .unwrap_or(1.5)
+            .clamp(0.4, 2.5);
+        let (cols, cell_w, cell_h) = survey_layout(
+            n,
+            aspect,
+            self.center_size.0 - 2. * ui::PANEL_INSET,
+            self.center_size.1 - 2. * ui::PANEL_INSET - ui::SURVEY_HEADER_HEIGHT,
+        );
         let rows = n.div_ceil(cols);
-        let cell_w = ((self.center_size.0 - 2. * ui::PANEL_INSET - space::SM * (cols - 1) as f32)
-            / cols as f32)
-            .max(1.);
-        let cell_h = ((self.center_size.1
-            - 2. * ui::PANEL_INSET
-            - ui::SURVEY_HEADER_HEIGHT
-            - space::SM * (rows - 1) as f32)
-            / rows as f32)
-            .max(1.);
+        // The block hugs its cells and sits centred, so spare width becomes
+        // margin around the frames instead of wide gaps between them.
         let mut grid = div()
-            .flex_1()
-            .min_h(px(0.))
+            .w(px(cols as f32 * cell_w + space::SM * (cols - 1) as f32))
+            .h(px(rows as f32 * cell_h + space::SM * (rows - 1) as f32))
             .flex()
             .flex_col()
             .gap(px(space::SM));
-        let mut row = div().flex_1().min_h(px(0.)).flex().gap(px(space::SM));
+        let mut row = div().h(px(cell_h)).flex().gap(px(space::SM));
         for (i, &position) in frames.iter().enumerate() {
             let index = self.filtered[position];
             let p = &self.photos[index];
@@ -8358,15 +8440,18 @@ impl Workspace {
             if let Some(badges) = self.decision_badges(p.flag, p.label) {
                 photo_box = photo_box.child(badges);
             }
+            // Frame number in a fixed plate (up to "16"), the pin beside it.
+            photo_box = photo_box.children(self.pin_badge(p.id, space::XS + 22. + space::TINY));
             photo_box = photo_box.child(
                 div()
                     .absolute()
                     .top(px(space::XS))
                     .right(px(space::XS))
-                    .px(px(space::XS))
+                    .w(px(22.))
                     .h(px(18.))
                     .flex()
                     .items_center()
+                    .justify_center()
                     .bg(self.scrim())
                     .text_size(px(ui::text::LABEL))
                     .text_color(if active {
@@ -8379,9 +8464,8 @@ impl Workspace {
             photo_box = photo_box.children(self.rating_badge(p.rating));
             let cell = div()
                 .id(("survey", position))
-                .flex_1()
-                .min_w(px(0.))
-                .min_h(px(0.))
+                .w(px(cell_w))
+                .h_full()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -8408,10 +8492,10 @@ impl Workspace {
             if (i + 1) % cols == 0 || i + 1 == n {
                 // Pad the last row so frames keep a uniform size.
                 for _ in 0..(cols - 1 - i % cols) {
-                    row = row.child(div().flex_1().min_w(px(0.)));
+                    row = row.child(div().w(px(cell_w)).flex_shrink_0());
                 }
                 grid = grid.child(row);
-                row = div().flex_1().min_h(px(0.)).flex().gap(px(space::SM));
+                row = div().h(px(cell_h)).flex().gap(px(space::SM));
             }
         }
         let decided = summary.decided;
@@ -8485,7 +8569,15 @@ impl Workspace {
                             }))
                     }),
             )
-            .child(grid)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(grid),
+            )
             .into_any_element()
     }
     /// Label chip: filled with the label's photo-overlay colour, its initial
@@ -8633,6 +8725,27 @@ impl Workspace {
         }
     }
 
+    /// The pinned Compare reference, marked on its thumbnail: a pin plate at
+    /// the photo's top-right, `right` px in from the edge.
+    fn pin_badge(&self, id: i64, right: f32) -> Option<Div> {
+        (self.reference == Some(id)).then(|| {
+            div()
+                .absolute()
+                .top(px(space::XS))
+                .right(px(right))
+                .size(px(18.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(self.scrim())
+                .child(
+                    svg()
+                        .path("pin")
+                        .size(px(12.))
+                        .text_color(self.scrim_text()),
+                )
+        })
+    }
     fn group_count_badge(&self, count: usize) -> Div {
         div()
             .absolute()
@@ -8765,6 +8878,7 @@ impl Workspace {
             if let Some(badges) = self.decision_badges(p.flag, p.label) {
                 frame = frame.child(badges);
             }
+            frame = frame.children(self.pin_badge(p.id, space::XS));
             // Compact "★5" chip: the count, not five glyphs over the photo.
             frame = frame.children(self.rating_badge(p.rating));
             let burst = self.burst_slot(p.id);
@@ -8942,9 +9056,7 @@ impl Workspace {
         } else if !zoomable {
             0.
         } else {
-            let zoom = 2. * space::SM
-                + zoom_label.len() as f32 * CHAR
-                + if tight { 0. } else { 16. + space::SM };
+            let zoom = 2. * space::SM + zoom_label.len() as f32 * CHAR;
             zoom + gap + control + if compare { control } else { 0. }
         };
         // Groups: decide | rate … position | workflow | view | delete.
@@ -8968,8 +9080,8 @@ impl Workspace {
             2. * (space::SM + SMALL_CHAR + space::XS) + 3. * SMALL_CHAR + gap,
             // "Pick" / "Reject" words.
             10. * CHAR + 2. * space::SM,
-            // Pin and Survey (Survey only in Catalog).
-            if grid { control } else { 2. * control },
+            // Pin and Survey (Review modes only; Catalog has S and the tab).
+            if grid { 0. } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
             // "N reviewed" (the cull ledger under the bar draws the progress).
@@ -9145,6 +9257,20 @@ impl Workspace {
                     self.settings.auto_advance,
                     cx,
                 )
+                // On is marked by shape as well as tint: the segment's 2 px
+                // text-colour bar (a state, not a location).
+                .relative()
+                .when(self.settings.auto_advance, |s| {
+                    s.child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left(px(space::XS))
+                            .right(px(space::XS))
+                            .h(px(2.))
+                            .bg(self.text()),
+                    )
+                })
                 .tooltip(self.tip(
                     if self.settings.auto_advance {
                         "Auto-advance on · a decision moves to the next photo"
@@ -9167,7 +9293,7 @@ impl Workspace {
                         )),
                 )
             })
-            .when(pin_survey, |bar| {
+            .when(pin_survey && !grid, |bar| {
                 bar.child(
                     self.toggle_button(
                         "survey-burst",
@@ -9195,22 +9321,16 @@ impl Workspace {
             .when(grid, |bar| bar.child(self.grid_size_control(cx)))
             .when(zoomable, |bar| {
                 bar.child(
-                    self.toggle_button(
-                        "zoom-photo",
-                        &zoom_label,
-                        if tight { "" } else { "zoom" },
-                        Cmd::Zoom,
-                        self.zoom,
-                        cx,
-                    )
-                    .tooltip(self.tip(
-                        if self.zoom {
-                            "Fit to window"
-                        } else {
-                            "View at 100% · or click the photo where you want to look"
-                        },
-                        "Z",
-                    )),
+                    // Text only: the lens glyph belongs to the Zoom-in step.
+                    self.toggle_button("zoom-photo", &zoom_label, "", Cmd::Zoom, self.zoom, cx)
+                        .tooltip(self.tip(
+                            if self.zoom {
+                                "Fit to window"
+                            } else {
+                                "View at 100% · or click the photo where you want to look"
+                            },
+                            "Z",
+                        )),
                 )
                 .when(zoom_steps, |bar| {
                     bar.child(
@@ -9282,8 +9402,25 @@ impl Workspace {
             .flex_shrink_0()
             .border_1()
             .border_color(self.group_border());
+        let forced = self.grid_size_forced();
         for (i, label) in ui::GRID_SIZE_LABELS.into_iter().enumerate() {
-            segments = segments.child(
+            segments = segments.child(if forced && i > 0 {
+                // M and L can't apply while the catalog is narrow: shown
+                // disabled, inert to hover and click.
+                div()
+                    .id(("grid-size", i))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .h(px(ui::CONTROL_HEIGHT - 2.))
+                    .px(px(space::SM))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .border_b_2()
+                    .border_color(transparent_black())
+                    .text_color(self.c("text.disabled", "#666666"))
+                    .child(label)
+            } else {
                 self.segment(
                     ("grid-size", i),
                     label,
@@ -9291,13 +9428,13 @@ impl Workspace {
                     effective == i,
                     cx,
                 )
-                .h(px(ui::CONTROL_HEIGHT - 2.)),
-            );
+                .h(px(ui::CONTROL_HEIGHT - 2.))
+            });
         }
         segments
             .tooltip(self.tip(
-                if effective != self.grid_size {
-                    "Thumbnail size · small while the catalog is narrow"
+                if forced {
+                    "Thumbnail size · M and L need a wider catalog · hide a panel"
                 } else {
                     "Thumbnail size"
                 },
@@ -9833,6 +9970,7 @@ impl Workspace {
             "recovery":{"pending":self.recovery_pending,"needs_repair":self.recovery_broken},"persistence":self.persistence_state(),"indexing":self.busy,"status":self.status,"error":self.error,"export_jobs":self.export_jobs,
             "closing":self.quit.closing(),"settings_writable":self.settings_writable,"settings_persistence":{"state":if self.settings_failure.is_some(){"failed"}else if self.prefs_sync.dirty(){"pending"}else{"durable"},"error":self.settings_failure}});
         state["notice"] = json!(self.feedback.flash.as_ref().map(|flash| &flash.text));
+        state["auto_advance"] = json!(self.settings.auto_advance);
         state["quit_prompt"] = json!(self.feedback.quit_prompt.as_ref().map(|p| p.title()));
         state["inspector_tab"] = json!(if self.inspector_info {
             "info"
@@ -12454,7 +12592,7 @@ mod ui_tests {
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
         SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
         index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
-        palette_step, retained_position, text_input, thumbnail_size,
+        palette_step, retained_position, survey_layout, text_input, thumbnail_size, ui::space,
     };
 
     #[test]
@@ -13218,6 +13356,24 @@ mod ui_tests {
             Some("Neighbours · 9 photos")
         );
         assert_eq!(SurveyKey::Group(false, 2).label(7), None);
+    }
+    #[test]
+    fn survey_layout_picks_the_columns_with_the_largest_frames() {
+        // Seven landscape frames in a 1024 px window with both docks hidden:
+        // four columns of ≥ 230 px cells, not three of ~166 px.
+        let (cols, w, h) = survey_layout(7, 1.5, 992., 356.);
+        assert_eq!(cols, 4);
+        assert!(w >= 230., "{w}");
+        assert!((w / h - 1.5).abs() < 0.01);
+        // The cells and gaps never exceed the area.
+        let rows = 7usize.div_ceil(cols) as f32;
+        assert!(cols as f32 * w + 3. * space::SM <= 992. + 0.5);
+        assert!(rows * h + (rows - 1.) * space::SM <= 356. + 0.5);
+        // A pair side by side in a wide pane; a portrait burst gets tall cells.
+        assert_eq!(survey_layout(2, 1.5, 1200., 600.).0, 2);
+        let (_, w, h) = survey_layout(6, 2. / 3., 1200., 600.);
+        assert!(h > w && h >= 290., "{w} × {h}");
+        assert_eq!(survey_layout(0, 1.5, 100., 100.).0, 1);
     }
 
     #[test]

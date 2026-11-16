@@ -705,6 +705,15 @@ impl Workspace {
         } else if self.duplicates_only {
             let (title, body, _) = copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
             (title, body)
+        } else if self.filter == Filter::Trash && self.settings.trash_mode == "system" {
+            // Deleting goes to the system Trash in this mode: this view only
+            // holds photos trashed in-app earlier, so say where the rest went.
+            (
+                "Nothing in Shadowroom's Trash".into(),
+                "Deleted photos go to the system Trash · restore them from your file manager. \
+                 For in-app restore with ratings, choose the in-app Trash in Preferences."
+                    .into(),
+            )
         } else if self.filter == Filter::Trash {
             (
                 "Trash is empty".into(),
@@ -797,6 +806,16 @@ impl Workspace {
                 ));
             }
         } else if self.filter == Filter::Trash {
+            if self.settings.trash_mode == "system" {
+                actions = actions.child(self.action_button(
+                    "empty-open-system-trash",
+                    "Open System Trash",
+                    Cmd::OpenSystemTrash,
+                    ButtonKind::Secondary,
+                    false,
+                    cx,
+                ));
+            }
         } else if only_unreviewed {
             actions = actions
                 .child(self.action_button(

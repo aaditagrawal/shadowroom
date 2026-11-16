@@ -247,6 +247,9 @@ pub(super) struct ImportUi {
     outcome: Option<Outcome>,
     /// An action waiting for its inline second click (Cancel, Mark as imported).
     confirm: Option<(IngestConfirm, Instant)>,
+    /// Keyboard choice in an open confirmation: the safe button (Tab/arrows
+    /// move it; Enter activates it). Off means the confirm button.
+    confirm_keep: bool,
     /// The naming token reference is open (always while a template is edited).
     tokens_open: bool,
 }
@@ -257,8 +260,6 @@ pub(super) enum IngestConfirm {
     Cancel,
     Mark,
 }
-/// How long an inline confirmation waits for its second click.
-const CONFIRM_TTL: Duration = Duration::from_secs(4);
 
 /// The last job's result, in the panel: what is safe, what is left.
 #[derive(Clone, Debug)]
@@ -267,6 +268,8 @@ pub(super) struct Outcome {
     text: String,
     /// Offer to import the photos that are still selected.
     remaining: bool,
+    /// A completed job's library folder: offer to cull or reveal it.
+    library: Option<PathBuf>,
 }
 impl ImportUi {
     pub fn new(settings: &Settings) -> Self {
@@ -334,13 +337,23 @@ impl ImportUi {
             recent: HashSet::new(),
             outcome: None,
             confirm: None,
+            confirm_keep: false,
             tokens_open: false,
         }
     }
-    /// Whether `confirm` is armed and still waiting for its second click.
+    /// Whether `confirm` is armed and waiting for its answer. It stays until
+    /// answered or dismissed (Escape), never on a timer: the prompt takes
+    /// a few seconds to read.
     fn confirming(&self, what: IngestConfirm) -> bool {
-        self.confirm
-            .is_some_and(|(c, at)| c == what && at.elapsed() < CONFIRM_TTL)
+        self.confirm.is_some_and(|(c, _)| c == what)
+    }
+    fn arm(&mut self, what: IngestConfirm) {
+        self.confirm = Some((what, Instant::now()));
+        self.confirm_keep = false;
+    }
+    /// Escape answers an open confirmation with its safe choice.
+    pub fn dismiss_confirmation(&mut self) -> bool {
+        self.confirm.take().is_some()
     }
     /// Cancel was clicked once and waits for the second click.
     pub fn cancel_pending(&self) -> bool {
@@ -836,10 +849,15 @@ impl Workspace {
                 };
                 self.status = if p.phase == Phase::Completed {
                     format!(
-                        "Imported {}{} · {verified}",
+                        "Imported {}{} · {verified}{}",
                         plural(p.photos, "photo", "photos"),
                         if p.videos > 0 {
                             format!(", {}", plural(p.videos, "video", "videos"))
+                        } else {
+                            String::new()
+                        },
+                        if p.skipped > 0 {
+                            format!(" · {} already in library", copy::count(p.skipped))
                         } else {
                             String::new()
                         }
@@ -865,6 +883,7 @@ impl Workspace {
                                 skipped.unwrap_or_default()
                             ),
                             remaining: false,
+                            library: p.library_root.clone(),
                         },
                         Phase::Cancelled => Outcome {
                             tone: Tone::Info,
@@ -875,6 +894,7 @@ impl Workspace {
                                 remaining
                             ),
                             remaining: remaining > 0,
+                            library: None,
                         },
                         _ => Outcome {
                             tone: Tone::Warning,
@@ -886,6 +906,7 @@ impl Workspace {
                                 p.failed
                             ),
                             remaining: remaining > 0,
+                            library: None,
                         },
                     });
                     self.import_ui.confirm = None;
@@ -914,9 +935,12 @@ impl Workspace {
                     if self.settings.eject_after_ingest {
                         self.enqueue(IoCommand::Eject(self.import_ui.source.clone()));
                     }
+                    // The catalog moves to the new photos behind the panel;
+                    // an open panel stays open on the outcome until closed
+                    // (Cull imported photos, Escape), so the summary and its
+                    // skipped count are seen even after walking away.
                     let p = &self.import_ui.progress;
                     if let Some(root) = &p.library_root {
-                        self.import_ui.open = false;
                         self.scope = None;
                         self.mode = ViewMode::Grid;
                         self.pending_ingest_scope = Some(root.clone());
@@ -953,16 +977,8 @@ impl Workspace {
         }
         self.palette_revision = self.palette_revision.wrapping_add(1);
     }
-    /// Debounced replanning. Returns whether the view must repaint (an inline
-    /// confirmation timed out).
+    /// Debounced replanning. Returns whether the view must repaint.
     pub(super) fn ingest_tick(&mut self) -> bool {
-        let expired = self
-            .import_ui
-            .confirm
-            .is_some_and(|(_, at)| at.elapsed() >= CONFIRM_TTL);
-        if expired {
-            self.import_ui.confirm = None;
-        }
         if self.outbox.is_empty()
             && self.awaiting == 0
             && self.unsaved.is_empty()
@@ -979,7 +995,7 @@ impl Workspace {
             self.import_ui.expected_plan = Some(options.clone());
             self.enqueue(IoCommand::IngestPlan(options));
         }
-        expired
+        false
     }
     pub(super) fn ingest_scope_arrived(&mut self) {
         if let Some(root) = &self.pending_ingest_scope {
@@ -1323,15 +1339,16 @@ impl Workspace {
                         self.import_ui.selected.iter().copied().collect(),
                     ));
                 } else {
-                    self.import_ui.confirm = Some((IngestConfirm::Mark, Instant::now()));
+                    self.import_ui.arm(IngestConfirm::Mark);
                 }
             }
             "mark:keep" | "cancel:keep" => self.import_ui.confirm = None,
-            // The palette names the action outright, so it cancels at once.
+            // From the palette: the same question as the button, in the
+            // Import view where it is answered.
             "cancel_now" => {
                 if self.import_ui.active() {
-                    self.import_ui.confirm = None;
-                    self.enqueue(IoCommand::IngestCancel);
+                    self.import_ui.open = true;
+                    self.import_ui.arm(IngestConfirm::Cancel);
                 } else {
                     self.announce("No import is running", Tone::Info);
                 }
@@ -1418,12 +1435,12 @@ impl Workspace {
             }
             "cancel" => {
                 // Cancelling a long copy by accident is costly: the button asks
-                // once ("Cancel import?") and a second click within 4 s cancels.
+                // once ("Cancel import?") and the confirm button cancels.
                 if self.import_ui.confirming(IngestConfirm::Cancel) {
                     self.import_ui.confirm = None;
                     self.enqueue(IoCommand::IngestCancel);
                 } else if self.import_ui.active() {
-                    self.import_ui.confirm = Some((IngestConfirm::Cancel, Instant::now()));
+                    self.import_ui.arm(IngestConfirm::Cancel);
                 }
             }
             "eject" => {
@@ -1524,6 +1541,31 @@ impl Workspace {
                 }
                 cx.notify();
                 return true;
+            }
+        }
+        // An open confirmation answers Enter (the ringed button), with
+        // Tab or the arrows moving between its two buttons.
+        if let Some((what, _)) = self.import_ui.confirm {
+            let m = event.keystroke.modifiers;
+            if !m.control && !m.platform && !m.alt {
+                match event.keystroke.key.as_str() {
+                    "tab" | "left" | "right" => {
+                        self.import_ui.confirm_keep = !self.import_ui.confirm_keep;
+                        cx.notify();
+                        return true;
+                    }
+                    "enter" | "space" => {
+                        let action = match (what, self.import_ui.confirm_keep) {
+                            (IngestConfirm::Mark, false) => "mark",
+                            (IngestConfirm::Mark, true) => "mark:keep",
+                            (IngestConfirm::Cancel, false) => "cancel",
+                            (IngestConfirm::Cancel, true) => "cancel:keep",
+                        };
+                        self.ingest_action(action, cx);
+                        return true;
+                    }
+                    _ => {}
+                }
             }
         }
         if let Some(field) = self.import_ui.active_field {
@@ -2357,19 +2399,15 @@ impl Workspace {
         ((width - 2. * (ui::BAR_INSET + space::SM + ui::FIELD_INSET)) / 7.4).max(16.) as usize
     }
     /// Display name of the volume holding `root`: a mounted drive's name,
-    /// else the folder's own name.
+    /// else "this disk" (never the folder's own name, which reads as a disk
+    /// called "Library").
     fn volume_name(&self, root: &std::path::Path) -> String {
         self.drives
             .iter()
             .filter(|drive| root.starts_with(&drive.path))
             .max_by_key(|drive| drive.path.as_os_str().len())
             .map(|drive| drive.name.clone())
-            .unwrap_or_else(|| {
-                root.file_name().map_or_else(
-                    || root.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                )
-            })
+            .unwrap_or_else(|| "this disk".into())
     }
     /// One destination (library or backup): its path, what this import needs
     /// there and the space left, with a bar for this import's share.
@@ -2377,6 +2415,7 @@ impl Workspace {
         &self,
         index: usize,
         capacity: &ingest::SpaceProjection,
+        labeled: bool,
         cx: &gpui::Context<Self>,
     ) -> Div {
         let error = self.c("error", "#d46a6a");
@@ -2404,43 +2443,47 @@ impl Workspace {
             .flex_shrink_0()
             .px(px(space::SM))
             .gap(px(space::XS))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(space::XS))
-                    .child(
-                        div()
-                            .id(("ingest-space-path", index))
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(px(ui::text::LABEL))
-                            .child(format!(
-                                "{} · {}",
-                                if index == 0 { "Library" } else { "Backup" },
-                                copy::middle_path(
-                                    &path,
-                                    self.ingest_field_chars().saturating_sub(10)
-                                )
-                            ))
-                            .tooltip(self.tip(&path, "")),
-                    )
-                    .when(index > 0, |s| {
-                        s.child(
-                            self.compact_button(
-                                ("ingest-backup-remove", index),
-                                "",
-                                "close",
-                                Cmd::Ingest(format!("backup_remove:{}", index - 1)),
-                                false,
-                                cx,
-                            )
-                            .tooltip(self.tip("Remove this backup destination", "")),
+            // The library's path is already in its field above: name each
+            // destination only once backups make the rows ambiguous.
+            .when(labeled, |s| {
+                s.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::XS))
+                        .child(
+                            div()
+                                .id(("ingest-space-path", index))
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(ui::text::LABEL))
+                                .child(format!(
+                                    "{} · {}",
+                                    if index == 0 { "Library" } else { "Backup" },
+                                    copy::middle_path(
+                                        &path,
+                                        self.ingest_field_chars().saturating_sub(10)
+                                    )
+                                ))
+                                .tooltip(self.tip(&path, "")),
                         )
-                    }),
-            )
+                        .when(index > 0, |s| {
+                            s.child(
+                                self.compact_button(
+                                    ("ingest-backup-remove", index),
+                                    "",
+                                    "close",
+                                    Cmd::Ingest(format!("backup_remove:{}", index - 1)),
+                                    false,
+                                    cx,
+                                )
+                                .tooltip(self.tip("Remove this backup destination", "")),
+                            )
+                        }),
+                )
+            })
             .child(
                 div()
                     .text_size(px(ui::text::LABEL))
@@ -2534,8 +2577,9 @@ impl Workspace {
                     )),
             );
         if let Some(plan) = &self.import_ui.plan {
+            let labeled = plan.space.len() > 1;
             for (index, capacity) in plan.space.iter().enumerate() {
-                panel = panel.child(self.ingest_space_row(index, capacity, cx));
+                panel = panel.child(self.ingest_space_row(index, capacity, labeled, cx));
             }
         }
         panel = panel
@@ -2735,21 +2779,27 @@ impl Workspace {
                         .flex()
                         .flex_wrap()
                         .gap(px(space::XS))
-                        .child(self.action_button(
-                            "ingest-mark-keep",
-                            "Cancel",
-                            Cmd::Ingest("mark:keep".into()),
-                            ButtonKind::Secondary,
-                            false,
-                            cx,
+                        .child(self.confirm_button(
+                            self.action_button(
+                                "ingest-mark-keep",
+                                "Cancel",
+                                Cmd::Ingest("mark:keep".into()),
+                                ButtonKind::Secondary,
+                                false,
+                                cx,
+                            ),
+                            true,
                         ))
-                        .child(self.action_button(
-                            "ingest-mark-confirm",
-                            &format!("Mark {} as imported", plural(count, "photo", "photos")),
-                            Cmd::Ingest("mark".into()),
-                            ButtonKind::DestructiveQuiet,
+                        .child(self.confirm_button(
+                            self.action_button(
+                                "ingest-mark-confirm",
+                                &format!("Mark {} as imported", plural(count, "photo", "photos")),
+                                Cmd::Ingest("mark".into()),
+                                ButtonKind::DestructiveQuiet,
+                                false,
+                                cx,
+                            ),
                             false,
-                            cx,
                         )),
                 );
         } else {
@@ -2976,10 +3026,23 @@ impl Workspace {
                         let group = &this.import_ui.timeline[index];
                         // Day level, then the session indented under it; each
                         // level's checkbox sits at one left edge.
+                        // The year only when the card spans more than one.
+                        let timeline = &this.import_ui.timeline;
+                        let one_year =
+                            timeline.first().zip(timeline.last()).is_some_and(|(a, b)| {
+                                a.day.get(..4).is_some() && a.day.get(..4) == b.day.get(..4)
+                            });
                         let date = chrono::NaiveDate::parse_from_str(&group.day, "%Y-%m-%d")
                             .map_or_else(
                                 |_| group.day.clone(),
-                                |d| d.format("%a %-d %b %Y").to_string(),
+                                |d| {
+                                    d.format(if one_year {
+                                        "%a %-d %b"
+                                    } else {
+                                        "%a %-d %b %Y"
+                                    })
+                                    .to_string()
+                                },
                             );
                         let (day_selected, day_total) = this
                             .import_ui
@@ -3013,18 +3076,30 @@ impl Workspace {
                                         selection_icon(day_selected, day_total),
                                         this.icon_muted(),
                                     ))
+                                    // The label yields; the count never clips.
                                     .child(
                                         div()
+                                            .flex_1()
                                             .min_w(px(0.))
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_ellipsis()
-                                            .child(format!(
-                                                "{date} · {}",
-                                                plural(day_total, "photo", "photos")
-                                            )),
+                                            .child(date),
                                     )
-                                    .tooltip(this.tip("Check or uncheck the whole day", ""))
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_size(px(ui::text::LABEL))
+                                            .text_color(this.muted())
+                                            .child(copy::count(day_total)),
+                                    )
+                                    .tooltip(this.tip(
+                                        &format!(
+                                            "{} · check or uncheck the whole day",
+                                            plural(day_total, "photo", "photos")
+                                        ),
+                                        "",
+                                    ))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let day = this.import_ui.timeline[index].day.clone();
                                         let ids: Vec<_> = this
@@ -3050,6 +3125,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .pl(px(space::LG))
+                                    .min_w(px(0.))
                                     .text_size(px(11.))
                                     .text_color(this.muted())
                                     .flex()
@@ -3066,11 +3142,18 @@ impl Workspace {
                                         ),
                                         this.icon_muted(),
                                     ))
-                                    .child(format!(
-                                        "{} · {}",
-                                        group.label,
-                                        plural(group.ids.len(), "photo", "photos")
-                                    )),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(group.label.clone()),
+                                    )
+                                    .child(
+                                        div().flex_shrink_0().child(copy::count(group.ids.len())),
+                                    ),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let ids = this.import_ui.timeline[index].ids.clone();
@@ -3361,6 +3444,22 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.ingest_action("start", cx)))
             })
     }
+    /// A button of an inline confirmation: the one Enter activates wears the
+    /// focus ring, always (as in the delete dialog), with the keys taught.
+    fn confirm_button(&self, button: Stateful<Div>, keep: bool) -> Stateful<Div> {
+        let focused = self.import_ui.confirm_keep == keep;
+        button
+            .relative()
+            .when(focused, |s| s.child(self.focus_ring_overlay()))
+            .tooltip(self.tip(
+                if keep {
+                    "Keep things as they are · Tab or arrows switch"
+                } else {
+                    "Confirm · Tab or arrows switch"
+                },
+                if keep { "Esc" } else { "Enter" },
+            ))
+    }
     /// Footer of the Import view: the last job's outcome, the plan problem,
     /// the guarantees, then either the running job's progress or the summary
     /// and the primary Import button.
@@ -3403,6 +3502,27 @@ impl Workspace {
                             .line_clamp(2)
                             .child(outcome.text.clone()),
                     )
+                    .when_some(outcome.library.clone(), |s, root| {
+                        s.child(
+                            self.action_button(
+                                "ingest-outcome-reveal",
+                                "Reveal",
+                                Cmd::RevealPath(root),
+                                ButtonKind::Secondary,
+                                false,
+                                cx,
+                            )
+                            .tooltip(self.tip("Show the library folder in the file manager", "")),
+                        )
+                        .child(self.action_button(
+                            "ingest-outcome-cull",
+                            "Cull imported photos",
+                            Cmd::Ingest("close".into()),
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        ))
+                    })
                     .when(outcome.remaining, |s| {
                         s.child(self.action_button(
                             "ingest-remaining",
@@ -3511,11 +3631,13 @@ impl Workspace {
                                     .overflow_hidden()
                                     .child(line.clone()),
                             )
+                            // Identical files already in the library are the
+                            // engine's safe deduplication, not a problem.
                             .when_some(skipped, |s, text| {
                                 s.child(
                                     div()
                                         .flex_shrink_0()
-                                        .text_color(warning)
+                                        .text_color(self.muted())
                                         .child(format!("· {text}")),
                                 )
                             })
@@ -3546,21 +3668,27 @@ impl Workspace {
                             .text_color(self.muted())
                             .child("Verified photos stay imported."),
                     )
-                    .child(self.action_button(
-                        "ingest-cancel-keep",
-                        "Keep importing",
-                        Cmd::Ingest("cancel:keep".into()),
-                        ButtonKind::Secondary,
-                        false,
-                        cx,
+                    .child(self.confirm_button(
+                        self.action_button(
+                            "ingest-cancel-keep",
+                            "Keep importing",
+                            Cmd::Ingest("cancel:keep".into()),
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        ),
+                        true,
                     ))
-                    .child(self.action_button(
-                        "ingest-cancel",
-                        "Cancel import",
-                        Cmd::Ingest("cancel".into()),
-                        ButtonKind::DestructiveQuiet,
+                    .child(self.confirm_button(
+                        self.action_button(
+                            "ingest-cancel",
+                            "Cancel import",
+                            Cmd::Ingest("cancel".into()),
+                            ButtonKind::DestructiveQuiet,
+                            false,
+                            cx,
+                        ),
                         false,
-                        cx,
                     ));
             } else {
                 actions = actions

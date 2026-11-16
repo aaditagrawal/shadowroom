@@ -38,7 +38,7 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Delete / Backspace | Open the confirmation for the configured Trash destination |
 | Shift+Delete | Open the permanent-deletion confirmation |
 
-Automatic advance has no bare-letter shortcut, so a stray key can't change how decisions move: use Shift+A or the toggle in the bottom bar, which also shows your position (`2 / 7`). The status bar confirms each change. When the bar is narrow it drops, in order, the **Reset** label, the reviewed count, the zoom −/+ buttons, Pin and Survey, and finally the Pick/Reject words; the keycaps, position, auto-advance and zoom stay. In Catalog the bar shows an **S / M / L** thumbnail-size control instead of loupe zoom and focus peaking.
+Automatic advance has no bare-letter shortcut, so a stray key can't change how decisions move: use Shift+A or the toggle in the bottom bar (underlined while on), which also shows your position (`2 / 7`). The status bar confirms each change. When the bar is narrow it drops, in order, the **Reset** label, the reviewed count, the zoom −/+ buttons, Pin and Survey, and finally the Pick/Reject words; the keycaps, position, auto-advance and zoom stay. In Catalog the bar shows an **S / M / L** thumbnail-size control instead of loupe zoom, focus peaking, Pin and Survey; M and L are disabled while the catalog is too narrow for them (`=` then says so).
 
 The **cull ledger** is the thin track under the bar (along the filmstrip's top edge, or in its own band in Catalog). It covers every photo in the current view, not just the frames the filmstrip shows: green for picks, red for rejects, grey for photos rated or labelled without a flag, and the bare rail for unreviewed photos, with a short blue mark at the current photo. When every frame fits in the filmstrip, each ledger cell sits over its frame; in larger views photos share cells and each cell shows its most common state. Click or drag along the ledger to jump to that photo. The Trash has no ledger.
 
@@ -48,7 +48,7 @@ A decision on 50 or more selected photos is confirmed in the status bar with its
 
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
 
-The loupe shows the current photo's flag, stars and label at its top-left. When a decision moves on to another frame (automatic advance, or the photo leaving the filtered view), the previous frame's decision appears briefly at the bottom-left of the photo, and the status bar names it with an **Undo** button for a few seconds. The status bar reports other completed actions the same way (undo/redo, pinning, focus peaking, resolved bursts, duplicate scans, Trash, imports with **Reveal**, exports with **Reveal**, ejects), then returns to the photo count.
+The loupe shows the current photo's flag, stars and label at its top-left, with the word **Rejected** on a reject. When a decision moves on to another frame (automatic advance, or the photo leaving the filtered view), the previous frame's decision appears briefly inside the photo's bottom-left corner, and the status bar names it with an **Undo** button for a few seconds. The status bar reports other completed actions the same way (undo/redo, pinning, focus peaking, resolved bursts, duplicate scans, Trash, imports with **Reveal**, exports with **Reveal**, ejects), then returns to the photo count.
 
 Zoom ranges from 12.5% to 800%; the zoom button shows the actual magnification
 at Fit (for example **Fit 45%**), the **−** and **+** buttons change it, and **Z**
@@ -56,12 +56,13 @@ restores 100% or Fit. While zoomed, a navigator at the photo's bottom-right show
 where the view sits in the frame; click or drag it to move. Adjacent frames retain
 zoom and pan. In Compare, arrows skip the reference frame, so the two panes never
 show the same photo, and each pane is labelled on the picture with its role, file
-and decision; the active pane's label is underlined. Small windows give the photo
+and decision; the active pane's label is underlined, the only active-pane mark. The pinned reference carries a pin badge on its thumbnail in the filmstrip, Catalog grid and Survey. Small windows give the photo
 room: below 1280 px wide, Review, Compare and Survey hide the sidebar (and below
 1100 px, Compare and Survey also hide the inspector) without changing your panel
 settings; Ctrl/Cmd+B brings the sidebar back. Survey (`S`) shows a frozen Catalog
 selection of two or more photos (**Selection · 4 photos**), otherwise the current
-burst, otherwise up to nine neighbouring frames (**Neighbours**); its header's
+burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column count that
+gives the largest frames; its header's
 **⇧P Keep this · reject undecided** button acts on exactly those frames. Focus peaking
 highlights abrupt luminance edges in the displayed preview, including both Compare
 panes. It is a visual aid, not an automatic sharpness verdict, and never changes
