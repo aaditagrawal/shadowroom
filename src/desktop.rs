@@ -4355,7 +4355,7 @@ impl Workspace {
                 Cmd::Filter(Filter::Trash),
             ),
             item(
-                "Find Duplicates…",
+                copy::SCAN_DUPLICATES,
                 "Library · exact bytes in current folder or library",
                 "",
                 "duplicates",
@@ -4412,8 +4412,8 @@ impl Workspace {
                 Cmd::View(ViewMode::Compare),
             ),
             item(
-                "Survey Burst",
-                "View · every frame of the current burst",
+                "Survey View",
+                "View · selection, burst or neighbours side by side",
                 "S",
                 "group",
                 Cmd::View(ViewMode::Survey),
@@ -6758,9 +6758,23 @@ impl Workspace {
     fn filters(&self, cx: &gpui::Context<Self>) -> AnyElement {
         // The breadcrumb names every constraint actually narrowing the view,
         // each removable on its own (CAT-04).
-        let constraints = self.constraints();
+        // It leads with the collection as plain text: "All photos", or Trash
+        // and Duplicates, which are places reached from the sidebar rather
+        // than filters to clear (R2-catalog-07).
+        let place = self.duplicates_only || self.filter == Filter::Trash;
+        let root = if self.duplicates_only {
+            "Duplicates"
+        } else {
+            collection_label(if place { Filter::Trash } else { Filter::All })
+        };
+        let constraints: Vec<_> = self
+            .constraints()
+            .into_iter()
+            .filter(|c| !(place && c.id == "chip-collection"))
+            .collect();
         let chips = constraints.len();
         let chip_width = (self.center_size.0 * 0.3).clamp(96., 200.);
+        let separator = || div().flex_shrink_0().text_color(self.muted()).child("·");
         let mut crumb = div()
             .id("breadcrumb")
             .flex()
@@ -6769,26 +6783,19 @@ impl Workspace {
             .items_center()
             .gap(px(space::XS))
             .overflow_hidden()
-            .whitespace_nowrap();
-        if chips == 0 {
-            crumb = crumb.child(
+            .whitespace_nowrap()
+            .child(
                 div()
                     .id("breadcrumb-scope")
                     .flex_shrink_0()
                     .pr(px(space::XS))
-                    .child(collection_label(Filter::All)),
+                    .child(root),
             );
+        if chips > 0 {
+            crumb = crumb.child(separator());
         }
         for constraint in constraints {
             crumb = crumb.child(self.constraint_chip(constraint, chip_width, cx));
-        }
-        if chips >= 2 {
-            crumb = crumb.child(
-                self.compact_button("clear-filters", "Clear", "", Cmd::ClearFilters, false, cx)
-                    .px(px(space::SM))
-                    .text_color(self.muted())
-                    .tooltip(self.tip("Show the whole library", "")),
-            );
         }
         if self.mode != ViewMode::Grid && self.review_folder == self.scope {
             if let Some(ids) = &self.review_subset {
@@ -6804,12 +6811,12 @@ impl Workspace {
         }
         match (self.mode, self.selected_photo()) {
             (ViewMode::Grid, _) | (_, None) => {
-                crumb = crumb.child(
-                    div()
-                        .flex_shrink_0()
-                        .pl(px(space::XS))
-                        .text_color(self.muted())
-                        .child(copy::count(self.filtered.len())),
+                crumb = crumb.child(separator()).child(
+                    div().flex_shrink_0().text_color(self.muted()).child(plural(
+                        self.filtered.len(),
+                        "photo",
+                        "photos",
+                    )),
                 );
             }
             (_, Some(photo)) => {
@@ -6895,6 +6902,23 @@ impl Workspace {
             .border_b_1()
             .border_color(self.border())
             .child(crumb)
+            // Clear sits after the result count, apart from it, so the count
+            // never reads as part of the action.
+            .when(chips >= 2, |row| {
+                row.child(
+                    self.compact_button(
+                        "clear-filters",
+                        "Clear all",
+                        "",
+                        Cmd::ClearFilters,
+                        false,
+                        cx,
+                    )
+                    .px(px(space::SM))
+                    .text_color(self.muted())
+                    .tooltip(self.tip("Show the whole library", "")),
+                )
+            })
             .when(self.duplicates_only, |row| {
                 let running = self
                     .duplicate_scan
@@ -6903,7 +6927,11 @@ impl Workspace {
                 row.child(
                     self.toggle_button(
                         "duplicate-scan",
-                        if running { "Stop scan" } else { "Scan" },
+                        if running {
+                            "Stop scan"
+                        } else {
+                            copy::SCAN_DUPLICATES
+                        },
                         if running { "stop" } else { "duplicates" },
                         if running {
                             Cmd::CancelDuplicates
@@ -9430,10 +9458,13 @@ impl Workspace {
                     .child(
                         self.metadata_row(
                             "Flag",
+                            // Same words as the sidebar: no flag and no stars
+                            // is "Unreviewed"; stars without a flag, "No flag".
                             match p.flag {
                                 Flag::Pick => "Pick",
                                 Flag::Reject => "Reject",
-                                Flag::None => "None",
+                                Flag::None if p.rating == 0 => "Unreviewed",
+                                Flag::None => "No flag",
                             }
                             .into(),
                         ),
@@ -11412,7 +11443,8 @@ impl Workspace {
         {
             format!(
                 "Checking duplicates · {} of {}",
-                scan.processed, scan.candidates
+                copy::count(scan.processed),
+                copy::count(scan.candidates)
             )
         } else {
             let exports = self

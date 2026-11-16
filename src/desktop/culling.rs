@@ -677,8 +677,8 @@ impl Workspace {
                 .into_any_element();
         }
         let scope = match &self.scope {
-            Some(scope) => format!("in {}", self.scope_display(scope)),
-            None => "in the whole library".into(),
+            Some(scope) => self.scope_display(scope),
+            None => "the whole library".into(),
         };
         let counts = self.scope_counts.as_ref().unwrap_or(&self.counts);
         let only_unreviewed = self.filter == Filter::Unrated
@@ -926,7 +926,7 @@ impl Workspace {
         cx: &gpui::Context<Self>,
     ) -> AnyElement {
         let mut flags = Vec::new();
-        for (n, name) in summary.flags.iter().zip(["Pick", "Reject", "None"]) {
+        for (n, name) in summary.flags.iter().zip(["Pick", "Reject", "no flag"]) {
             if *n > 0 {
                 flags.push(format!("{} {name}", copy::count(*n)));
             }
