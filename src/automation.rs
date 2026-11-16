@@ -922,7 +922,21 @@ fn build_tool_definitions() -> Vec<Value> {
         ),
         tool(
             "ingest_cancel",
-            "Cancel the import/scan; keep committed groups and remove incomplete staging files.",
+            "Cancel the running import (or the scan when nothing copies); keep committed groups and remove incomplete staging files. The next queued import starts.",
+            json!({}),
+            &[],
+            false,
+        ),
+        tool(
+            "ingest_dequeue",
+            "Remove one queued import, by its source path, without touching the running import or other queued imports.",
+            json!({"path":path}),
+            &["path"],
+            false,
+        ),
+        tool(
+            "ingest_clear_queue",
+            "Drop every queued import; the running import continues.",
             json!({}),
             &[],
             false,

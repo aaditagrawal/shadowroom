@@ -159,6 +159,61 @@ pub(super) fn import_label(photos: usize, videos: usize, bytes: u64) -> String {
     label
 }
 
+/// Photos and videos together: "4 photos, 1 video", "1 video", "0 photos".
+/// Every import result (outcome, status, queue notice, desktop notification,
+/// History) counts through this, so one job never reads two ways.
+pub(super) fn media_count(photos: usize, videos: usize) -> String {
+    match (photos, videos) {
+        (0, 0) => plural(0, "photo", "photos"),
+        (0, videos) => plural(videos, "video", "videos"),
+        (photos, 0) => plural(photos, "photo", "photos"),
+        (photos, videos) => format!(
+            "{}, {}",
+            plural(photos, "photo", "photos"),
+            plural(videos, "video", "videos")
+        ),
+    }
+}
+
+/// What a job imported (copied and verified), split into photos and videos.
+pub(super) fn imported_count(progress: &Progress) -> String {
+    let videos = progress.completed_videos.min(progress.completed);
+    media_count(progress.completed - videos, videos)
+}
+
+/// The one-line result of a finished import job, as the panel, the status
+/// bar and the desktop notification all say it.
+pub(super) fn import_result(progress: &Progress) -> String {
+    let destinations = progress.destinations.len().max(1);
+    let verified = if destinations > 1 {
+        format!("verified on {destinations} destinations")
+    } else {
+        "verified".to_owned()
+    };
+    let skipped = if progress.skipped > 0 {
+        format!(" · {} already in library", count(progress.skipped))
+    } else {
+        String::new()
+    };
+    let imported = imported_count(progress);
+    match progress.phase {
+        Phase::Completed => format!("Imported {imported} · {verified}{skipped}"),
+        Phase::Cancelled => format!(
+            "Cancelled · {imported} of {} imported and {verified}{skipped}",
+            count(progress.total)
+        ),
+        _ => format!(
+            "Import stopped · {imported} of {} imported and {verified}{skipped} · {}",
+            count(progress.total),
+            if progress.failed > 0 {
+                format!("{} failed", count(progress.failed))
+            } else {
+                "it could not finish".to_owned()
+            }
+        ),
+    }
+}
+
 /// "8.4 of 48 GB": both amounts in the unit of the total.
 pub(super) fn bytes_of(done: u64, total: u64) -> String {
     let whole = fmt_bytes(total);
@@ -599,6 +654,58 @@ mod tests {
             "Import 612 photos · 3 videos · 48 GB"
         );
         assert_eq!(import_label(0, 1, 1_500_000_000), "Import 1 video · 1.5 GB");
+    }
+
+    #[test]
+    fn import_results_count_photos_and_videos_the_same_way_everywhere() {
+        assert_eq!(media_count(4, 1), "4 photos, 1 video");
+        assert_eq!(media_count(1, 0), "1 photo");
+        assert_eq!(media_count(0, 2), "2 videos");
+        assert_eq!(media_count(0, 0), "0 photos");
+        let mut progress = Progress {
+            phase: Phase::Completed,
+            completed: 5,
+            completed_videos: 1,
+            total: 5,
+            ..Default::default()
+        };
+        assert_eq!(imported_count(&progress), "4 photos, 1 video");
+        assert_eq!(
+            import_result(&progress),
+            "Imported 4 photos, 1 video · verified"
+        );
+        progress.skipped = 2;
+        progress.destinations = vec!["a".into(), "b".into()];
+        assert_eq!(
+            import_result(&progress),
+            "Imported 4 photos, 1 video · verified on 2 destinations · 2 already in library"
+        );
+        let stopped = Progress {
+            phase: Phase::Failed,
+            completed: 3,
+            completed_videos: 0,
+            failed: 1,
+            total: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_result(&stopped),
+            "Import stopped · 3 photos of 5 imported and verified · 1 failed"
+        );
+        let cancelled = Progress {
+            phase: Phase::Cancelled,
+            completed: 1,
+            completed_videos: 1,
+            total: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_result(&cancelled),
+            "Cancelled · 1 video of 4 imported and verified"
+        );
+        for text in [import_result(&progress), import_result(&cancelled)] {
+            assert!(!text.contains("5 photos"), "{text}");
+        }
     }
 
     #[test]

@@ -752,10 +752,10 @@ struct ExportJob {
     state: JobState,
     completed: usize,
     error: Option<String>,
-    /// Where it writes and whether it exports picks (else XMP sidecars), for
-    /// the completion notice and its Reveal button.
+    /// Where it writes, whether it exports picks (else XMP sidecars) and for
+    /// how many photos, for the completion notice and its Reveal button.
     #[serde(skip)]
-    target: Option<(PathBuf, bool)>,
+    target: Option<(PathBuf, bool, usize)>,
 }
 /// What raised the error toast, so a later success clears only its own notice
 /// instead of matching message text.
@@ -2026,6 +2026,7 @@ impl Workspace {
         }
         // Picks with no ids are every catalog pick; ids scope either kind.
         let scope: HashSet<i64> = ids.iter().copied().collect();
+        let mut photos = 0;
         for photo in self.photos.iter().filter(|photo| {
             !photo.trashed
                 && (!picks || photo.flag == Flag::Pick)
@@ -2034,10 +2035,11 @@ impl Workspace {
             photo
                 .require_local("Export and XMP writing")
                 .map_err(|e| e.to_string())?;
+            photos += 1;
         }
         self.next_job_id += 1;
         let id = self.next_job_id;
-        let target = Some((destination.clone(), picks));
+        let target = Some((destination.clone(), picks, photos));
         if !self.enqueue(IoCommand::ExportTracked {
             id,
             destination,
@@ -2407,11 +2409,15 @@ impl Workspace {
                     let finished = state == JobState::Completed
                         && previous
                             .is_none_or(|i| self.export_jobs[i].state != JobState::Completed);
+                    let failed = state == JobState::Failed
+                        && previous.is_none_or(|i| self.export_jobs[i].state != JobState::Failed);
                     if let Some(i) = previous {
                         job.target = self.export_jobs[i].target.take();
                     }
                     if finished {
                         self.announce_export(&job);
+                    } else if failed {
+                        self.notify_export_failure(&job);
                     }
                     if let Some(i) = previous {
                         self.export_jobs[i] = job;
@@ -12074,14 +12080,21 @@ impl Workspace {
         } else if self.quit.closing() {
             self.status.clone()
         } else if self.import_ui.active() {
+            let progress = &self.import_ui.progress;
+            // The open Import view says the pulled-card sentence in full;
+            // the status bar only keeps the state.
+            let line = if progress.source_missing && self.import_ui.open {
+                format!("Waiting for {}", copy::source_name(progress))
+            } else {
+                copy::import_progress(progress)
+            };
             if self.import_ui.cancel_pending() {
                 "Cancel the import? Click Cancel again · verified photos stay imported".into()
             } else if self.import_ui.queue.is_empty() {
-                copy::import_progress(&self.import_ui.progress)
+                line
             } else {
                 format!(
-                    "{} · {} queued",
-                    copy::import_progress(&self.import_ui.progress),
+                    "{line} · {} queued",
                     copy::count(self.import_ui.queue.len())
                 )
             }
