@@ -1,4 +1,5 @@
-//! Built-in Linux path picker. Directory and theme reads stay off the UI thread.
+//! Path choosing: the platform file chooser first (XDG portal on Linux), the
+//! built-in picker as fallback. Directory and theme reads stay off the UI thread.
 use super::*;
 use anyhow::Context as _;
 use shadowroom::path_picker::{Entry, address, list};
@@ -65,13 +66,177 @@ enum Action {
     Enter(usize),
 }
 
+/// A theme file's source label and the themes read from it.
+type ThemeFamily = (String, Vec<Theme>);
+
+/// Which chooser `show_path_picker` opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chooser {
+    /// The platform dialog (XDG portal on Linux, NSOpenPanel on macOS).
+    Native,
+    /// The built-in picker.
+    Builtin,
+}
+
+/// `SHADOWROOM_FILE_CHOOSER=native|builtin` forces one chooser.
+fn chooser_override() -> Option<Chooser> {
+    match std::env::var("SHADOWROOM_FILE_CHOOSER").as_deref() {
+        Ok("native" | "portal") => Some(Chooser::Native),
+        Ok("builtin" | "custom") => Some(Chooser::Builtin),
+        _ => None,
+    }
+}
+
+impl Purpose {
+    /// The native dialog's accept button.
+    fn accept_label(&self) -> &'static str {
+        match self {
+            Self::Workspace { export: None, .. } => "Open",
+            Self::Workspace { .. } => "Export Here",
+            Self::Ingest(_) => "Choose",
+            Self::Theme(_) => "Import",
+        }
+    }
+}
+
 impl Workspace {
+    /// Asks for a folder (or a theme file) for `purpose`. The platform's own
+    /// chooser opens first; the built-in picker is the fallback when the
+    /// desktop has no file-chooser portal, when the app is driven by
+    /// automation (whose state must stay inspectable), and when a native
+    /// choice breaks an in-app rule (an export inside a photo folder, a file
+    /// that is not a theme): it then opens at that choice with the reason.
     pub(super) fn show_path_picker(
         &mut self,
         purpose: Purpose,
         initial: PathBuf,
         cx: &mut Context<Self>,
     ) {
+        let chooser =
+            chooser_override().unwrap_or(if self.native_chooser_failed || self.automation_driven {
+                Chooser::Builtin
+            } else {
+                Chooser::Native
+            });
+        if chooser == Chooser::Native {
+            self.prompt_native_path(purpose, initial, cx);
+        } else {
+            self.show_builtin_picker(purpose, initial, cx);
+        }
+    }
+
+    fn prompt_native_path(&mut self, purpose: Purpose, initial: PathBuf, cx: &mut Context<Self>) {
+        self.palette = false;
+        self.image_context = None;
+        self.rating_filter_open = false;
+        let files = purpose.files();
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files,
+            directories: !files,
+            multiple: false,
+            prompt: Some(purpose.accept_label().into()),
+        });
+        let photo_folders = self.export_photo_folders(&purpose);
+        cx.spawn(async move |this, cx| {
+            let chosen = match prompt.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.refocus_ingest_field();
+                        cx.notify();
+                    });
+                    return;
+                }
+                // No portal (or no session bus): use the built-in picker
+                // from now on, starting where the caller asked.
+                Ok(Err(_)) | Err(_) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.native_chooser_failed = true;
+                        this.show_builtin_picker(purpose, initial, cx);
+                    });
+                    return;
+                }
+            };
+            let Some(path) = chosen else {
+                return;
+            };
+            let checked = path.clone();
+            let check = purpose.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { validate_choice(&check, checked, &photo_folders) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok((path, theme)) => this.apply_path_choice(purpose, path, theme),
+                    Err(error) => {
+                        // An in-app rule refused the native choice: the
+                        // built-in picker shows why, at that location.
+                        let start = if path.is_dir() {
+                            path
+                        } else {
+                            path.parent().map(Path::to_path_buf).unwrap_or(initial)
+                        };
+                        this.show_builtin_picker(purpose, start, cx);
+                        if let Some(state) = this.folder_picker.as_mut() {
+                            state.error = Some(format!("{error:#}"));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Photo folders an export must stay outside of (empty for other purposes).
+    fn export_photo_folders(&self, purpose: &Purpose) -> Vec<PathBuf> {
+        if !matches!(
+            purpose,
+            Purpose::Workspace {
+                export: Some(_),
+                ..
+            }
+        ) {
+            return Vec::new();
+        }
+        self.photos
+            .iter()
+            .filter(|photo| !photo.is_remote())
+            .flat_map(|photo| std::iter::once(&photo.path).chain(photo.companion_path.iter()))
+            .filter_map(|path| path.parent())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .collect()
+    }
+
+    /// Hands a validated choice to whoever asked for it.
+    fn apply_path_choice(&mut self, purpose: Purpose, path: PathBuf, theme: Option<ThemeFamily>) {
+        match purpose {
+            Purpose::Workspace {
+                export: Some(picks),
+                ids,
+            } => self.start_export(path, picks, ids),
+            Purpose::Workspace { export: None, .. } => {
+                self.status = format!("Opening {}", path.display());
+                self.open_ingest(path);
+            }
+            Purpose::Ingest(field) => self.apply_ingest_path(field, &path),
+            Purpose::Theme(id) => {
+                if let Some(draft) = self
+                    .preferences_draft
+                    .as_mut()
+                    .filter(|draft| draft.id == id && !draft.applying)
+                {
+                    let (source, themes) = theme.expect("Validated theme file");
+                    draft.import(source, themes);
+                }
+            }
+        }
+    }
+
+    fn show_builtin_picker(&mut self, purpose: Purpose, initial: PathBuf, cx: &mut Context<Self>) {
         let home = directories::BaseDirs::new()
             .map(|d| d.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("/"));
@@ -212,58 +377,17 @@ impl Workspace {
         let purpose = state.purpose.clone();
         // Exports check the destination rule here, so a bad choice keeps the
         // picker open with the reason instead of failing later in a toast.
-        let photo_folders: Vec<PathBuf> = if matches!(
-            purpose,
-            Purpose::Workspace {
-                export: Some(_),
-                ..
-            }
-        ) {
-            self.photos
-                .iter()
-                .filter(|photo| !photo.is_remote())
-                .flat_map(|photo| std::iter::once(&photo.path).chain(photo.companion_path.iter()))
-                .filter_map(|path| path.parent())
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .map(Path::to_path_buf)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let photo_folders = self.export_photo_folders(&purpose);
         let request = rand::random();
         let state = self.folder_picker.as_mut().unwrap();
         state.request = request;
         state.loading = true;
         state.error = None;
         cx.spawn(async move |this, cx| {
-            let files = purpose.files();
+            let check = purpose.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    let path = std::fs::canonicalize(&path)
-                        .with_context(|| format!("Cannot open {}", path.display()))?;
-                    if files {
-                        anyhow::ensure!(
-                            path.is_file()
-                                && path
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .is_some_and(|e| e.eq_ignore_ascii_case("json")),
-                            "Choose a theme JSON file"
-                        );
-                        let theme = read_theme_family(&path)?;
-                        Ok((path, Some(theme)))
-                    } else {
-                        anyhow::ensure!(path.is_dir(), "Choose an existing folder");
-                        shadowroom::catalog::check_export_destination(
-                            photo_folders.iter().map(PathBuf::as_path),
-                            &path,
-                        )
-                        .context("Choose a folder outside your photo folders, such as a new Exports folder")?;
-                        Ok::<_, anyhow::Error>((path, None))
-                    }
-                })
+                .spawn(async move { validate_choice(&check, path, &photo_folders) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if !this
@@ -276,27 +400,7 @@ impl Workspace {
                 match result {
                     Ok((path, theme)) => {
                         this.folder_picker = None;
-                        match purpose {
-                            Purpose::Workspace {
-                                export: Some(picks),
-                                ids,
-                            } => this.start_export(path, picks, ids),
-                            Purpose::Workspace { export: None, .. } => {
-                                this.status = format!("Opening {}", path.display());
-                                this.open_ingest(path);
-                            }
-                            Purpose::Ingest(field) => this.apply_ingest_path(field, &path),
-                            Purpose::Theme(id) => {
-                                if let Some(draft) = this
-                                    .preferences_draft
-                                    .as_mut()
-                                    .filter(|draft| draft.id == id && !draft.applying)
-                                {
-                                    let (source, themes) = theme.expect("Validated theme file");
-                                    draft.import(source, themes);
-                                }
-                            }
-                        }
+                        this.apply_path_choice(purpose, path, theme);
                     }
                     Err(error) => {
                         let state = this.folder_picker.as_mut().unwrap();
@@ -640,7 +744,7 @@ impl Workspace {
                 div()
                     .px(px(ui::DIALOG_INSET))
                     .pt(px(space::MD))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .whitespace_normal()
                     .child(subtitle)
@@ -794,5 +898,38 @@ impl Workspace {
             .p(px(space::LG))
             .child(body)
             .into_any_element()
+    }
+}
+
+/// The in-app rules for a chosen path, off the UI thread: themes must be JSON
+/// theme files; folders must exist, and export folders must lie outside the
+/// photo folders being exported. Returns the canonical path (and the theme
+/// family read from a theme file).
+fn validate_choice(
+    purpose: &Purpose,
+    path: PathBuf,
+    photo_folders: &[PathBuf],
+) -> anyhow::Result<(PathBuf, Option<ThemeFamily>)> {
+    let path =
+        std::fs::canonicalize(&path).with_context(|| format!("Cannot open {}", path.display()))?;
+    if purpose.files() {
+        anyhow::ensure!(
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json")),
+            "Choose a theme JSON file"
+        );
+        let theme = read_theme_family(&path)?;
+        Ok((path, Some(theme)))
+    } else {
+        anyhow::ensure!(path.is_dir(), "Choose an existing folder");
+        shadowroom::catalog::check_export_destination(
+            photo_folders.iter().map(PathBuf::as_path),
+            &path,
+        )
+        .context("Choose a folder outside your photo folders, such as a new Exports folder")?;
+        Ok((path, None))
     }
 }

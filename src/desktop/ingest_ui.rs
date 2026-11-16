@@ -1748,7 +1748,7 @@ impl Workspace {
                                             .px(px(space::XS))
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
-                                            .text_size(px(ui::text::MICRO))
+                                            .text_size(ui::font(ui::text::MICRO))
                                             .child(badge),
                                     );
                                 }
@@ -1768,7 +1768,7 @@ impl Workspace {
                                             .px(px(space::XS))
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
-                                            .text_size(px(ui::text::MICRO))
+                                            .text_size(ui::font(ui::text::MICRO))
                                             .child(
                                                 icon("check", this.c("success", "#7fbf7f"))
                                                     .size(px(12.)),
@@ -1784,7 +1784,7 @@ impl Workspace {
                                             .px(px(space::XS))
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
-                                            .text_size(px(ui::text::MICRO))
+                                            .text_size(ui::font(ui::text::MICRO))
                                             .child(seen),
                                     );
                                 }
@@ -1864,7 +1864,7 @@ impl Workspace {
                                         .child(
                                             div()
                                                 .px(px(space::SM))
-                                                .text_size(px(ui::text::LABEL))
+                                                .text_size(ui::font(ui::text::LABEL))
                                                 .text_color(this.muted())
                                                 .child(cell.detail),
                                         )
@@ -2046,21 +2046,21 @@ impl Workspace {
                     .border_t_1()
                     .border_color(self.border())
             })
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.muted())
             .child(label.to_uppercase())
     }
     fn ingest_label(&self, label: &str) -> Div {
         div()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.muted())
             .child(label.to_owned())
     }
     fn ingest_hint(&self, hint: &str) -> Div {
         div()
-            .text_size(px(ui::text::LABEL))
-            .line_height(px(14.))
+            .text_size(ui::font(ui::text::LABEL))
+            .line_height(px(ui::scaled(14.)))
             .text_color(self.muted())
             .child(hint.to_owned())
     }
@@ -2078,7 +2078,7 @@ impl Workspace {
             .child(
                 div()
                     .id(("ingest-field", n))
-                    .h(px(ui::FIELD_HEIGHT))
+                    .h(px(ui::scaled(ui::FIELD_HEIGHT)))
                     .flex_shrink_0()
                     .min_w(px(0.))
                     .p(px(ui::FIELD_INSET))
@@ -2132,7 +2132,7 @@ impl Workspace {
             .id(id)
             .flex_shrink_0()
             .cursor_pointer()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.muted())
             .hover(move |s| s.text_color(hover))
             .child(label.to_owned())
@@ -2156,7 +2156,7 @@ impl Workspace {
         };
         let trigger = div()
             .id(id)
-            .h(px(ui::FIELD_HEIGHT))
+            .h(px(ui::scaled(ui::FIELD_HEIGHT)))
             .flex()
             .items_center()
             .justify_between()
@@ -2267,7 +2267,7 @@ impl Workspace {
                                 .when(!option.detail.is_empty(), |s| {
                                     s.child(
                                         div()
-                                            .text_size(px(ui::text::LABEL))
+                                            .text_size(ui::font(ui::text::LABEL))
                                             .text_color(self.muted())
                                             .overflow_hidden()
                                             .text_ellipsis()
@@ -2336,7 +2336,7 @@ impl Workspace {
                 .items_center()
                 .border_1()
                 .border_color(self.border())
-                .text_size(px(11.))
+                .text_size(ui::font(11.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .tooltip(self.tip(meaning, ""))
@@ -2361,7 +2361,7 @@ impl Workspace {
                             .flex_shrink_0()
                             .flex()
                             .items_center()
-                            .text_size(px(ui::text::LABEL))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(group),
                     )
@@ -2458,7 +2458,7 @@ impl Workspace {
                                 .min_w(px(0.))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .text_size(px(ui::text::LABEL))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .child(format!(
                                     "{} · {}",
                                     if index == 0 { "Library" } else { "Backup" },
@@ -2486,7 +2486,7 @@ impl Workspace {
             })
             .child(
                 div()
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(if capacity.sufficient {
                         self.muted()
                     } else {
@@ -2627,7 +2627,7 @@ impl Workspace {
                 .child(
                     div()
                         .min_w(px(0.))
-                        .text_size(px(11.))
+                        .text_size(ui::font(11.))
                         .whitespace_normal()
                         .child(example.clone()),
                 )
@@ -2646,7 +2646,7 @@ impl Workspace {
                 .gap(px(space::XS))
                 .px(px(space::SM))
                 .cursor_pointer()
-                .text_size(px(ui::text::LABEL))
+                .text_size(ui::font(ui::text::LABEL))
                 .text_color(self.muted())
                 .hover(move |s| s.text_color(hover))
                 .child(icon(
@@ -2770,7 +2770,7 @@ impl Workspace {
             .px(px(space::SM));
         if marking {
             mark = mark
-                .child(div().text_size(px(ui::text::LABEL)).whitespace_normal().child(format!(
+                .child(div().text_size(ui::font(ui::text::LABEL)).whitespace_normal().child(format!(
                     "Mark {} as already imported? Nothing is copied, and they appear dimmed and unchecked next time this card is scanned.",
                     plural(count, "photo", "photos")
                 )))
@@ -2891,7 +2891,7 @@ impl Workspace {
                     .text_center()
                     .child(
                         div()
-                            .text_size(px(15.))
+                            .text_size(ui::font(15.))
                             .font_weight(FontWeight::MEDIUM)
                             .child(if loaded {
                                 "No imports yet"
@@ -3089,7 +3089,7 @@ impl Workspace {
                                     .child(
                                         div()
                                             .flex_shrink_0()
-                                            .text_size(px(ui::text::LABEL))
+                                            .text_size(ui::font(ui::text::LABEL))
                                             .text_color(this.muted())
                                             .child(copy::count(day_total)),
                                     )
@@ -3126,7 +3126,7 @@ impl Workspace {
                                 div()
                                     .pl(px(space::LG))
                                     .min_w(px(0.))
-                                    .text_size(px(11.))
+                                    .text_size(ui::font(11.))
                                     .text_color(this.muted())
                                     .flex()
                                     .items_center()
@@ -3429,7 +3429,7 @@ impl Workspace {
             .child(div().w(px(1.)).h(px(14.)).bg(on).opacity(0.5))
             .child(
                 div()
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .font_weight(FontWeight::NORMAL)
                     .child(if cfg!(target_os = "macos") {
                         "⌘↵"
@@ -3575,7 +3575,7 @@ impl Workspace {
                 .items_center()
                 .gap(px(space::XS))
                 .px(px(space::SM))
-                .text_size(px(ui::text::LABEL))
+                .text_size(ui::font(ui::text::LABEL))
                 .text_color(self.muted())
                 .child(icon("check", self.icon_muted()).size(px(12.)))
                 .child(
@@ -3664,7 +3664,7 @@ impl Workspace {
                 actions = actions
                     .child(
                         div()
-                            .text_size(px(ui::text::LABEL))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child("Verified photos stay imported."),
                     )
@@ -3904,7 +3904,7 @@ impl Workspace {
             ))
             .child(
                 div()
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(mode.2),
             );
@@ -4032,7 +4032,7 @@ impl Workspace {
                         &settings.ingest_file_template,
                     ),
                     div()
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child("Set in Import → Naming")
                         .into_any_element(),

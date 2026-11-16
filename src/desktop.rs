@@ -1,3 +1,4 @@
+mod appearance;
 mod copy;
 mod culling;
 mod deletion_ui;
@@ -11,6 +12,8 @@ mod layout;
 mod ledger;
 mod loupe_aids;
 mod motion;
+mod panes;
+mod platform_prefs;
 mod preferences;
 mod prefetch;
 mod review_actions;
@@ -249,6 +252,8 @@ enum Cmd {
     AutoAdvance,
     SetAutoAdvance(bool),
     ReduceMotion(bool),
+    /// Text size in percent; 0 follows the desktop's text scaling.
+    TextSize(u32),
     SetAutoDrives(bool),
     Font(String),
     Theme(String),
@@ -1082,6 +1087,10 @@ pub struct Workspace {
     theme_colors: RefCell<HashMap<(&'static str, &'static str), Hsla>>,
     /// Settings or theme files changed since `apply_theme_mode` last resolved.
     theme_stale: bool,
+    /// Last seen `platform_prefs::revision()`.
+    platform_revision: u64,
+    #[cfg(target_os = "macos")]
+    platform_polled: Instant,
     /// The window appearance `apply_theme_mode` last resolved against.
     theme_appearance: Option<WindowAppearance>,
     photos: Vec<Photo>,
@@ -1162,6 +1171,12 @@ pub struct Workspace {
     guide_scroll: ScrollHandle,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
+    /// The pane F6 moved keyboard focus to (`panes.rs`).
+    pane: panes::Pane,
+    /// F6 was used and the pointer has not taken over since: ring the pane.
+    pane_ring: bool,
+    /// Keyboard cursor over `library_targets()` while the library has focus.
+    library_cursor: usize,
     deletion: deletion_ui::State,
     folder_picker: Option<folder_picker::State>,
     getting_started: bool,
@@ -1220,6 +1235,10 @@ pub struct Workspace {
     grid_range: Option<(usize, usize)>,
     last_media: u64,
     automation: Option<AutomationServer>,
+    /// The platform file chooser failed once (no portal): use the built-in picker.
+    native_chooser_failed: bool,
+    /// An automation client has sent a request this session.
+    automation_driven: bool,
     _poll: Task<()>,
     poll_wake: Rc<PollWake>,
     /// The pending repaint was requested by poll, not by input.
@@ -1411,6 +1430,9 @@ impl SurveyKey {
 
 /// A batch decision this large asks for Enter first (CAT-11).
 const BULK_CONFIRM_AT: usize = 1000;
+/// Smallest window (logical px): fits a 200% display of 1920x1080 (960x540)
+/// and tablets; layouts below 1024x680 drop docks and bar items first.
+const MIN_WINDOW: (f32, f32) = (720., 480.);
 /// A batch decision this large is confirmed with a counted Undo notice.
 const BULK_NOTICE_AT: usize = 50;
 
@@ -1467,7 +1489,7 @@ impl Workspace {
             .get("histogram_log")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let themes = vec![Theme::dark(), Theme::light()];
+        let themes = Theme::builtins();
         let (theme_watcher, theme_updates) = start_theme_watch();
         let theme = themes
             .iter()
@@ -1566,6 +1588,9 @@ impl Workspace {
             fallback_theme,
             theme_colors: RefCell::default(),
             theme_stale: true,
+            platform_revision: u64::MAX,
+            #[cfg(target_os = "macos")]
+            platform_polled: Instant::now(),
             theme_appearance: None,
             photos: Vec::new(),
             photo_index: HashMap::new(),
@@ -1637,6 +1662,9 @@ impl Workspace {
             theme_list_scroll: ScrollHandle::new(),
             guide_scroll: ScrollHandle::new(),
             focus_visible: false,
+            pane: panes::Pane::default(),
+            pane_ring: false,
+            library_cursor: 0,
             deletion: deletion_ui::State::default(),
             folder_picker: None,
             getting_started,
@@ -1692,6 +1720,8 @@ impl Workspace {
             grid_range: None,
             last_media: 0,
             automation,
+            native_chooser_failed: false,
+            automation_driven: false,
             _poll: poll,
             poll_wake,
             poll_render: false,
@@ -1943,6 +1973,10 @@ impl Workspace {
                 .unwrap_or(&self.settings.theme),
             _ => &self.settings.theme,
         };
+        // The system asks for more contrast: the standard Shadowroom palettes
+        // become their high-contrast variants (imported themes are kept).
+        let desired = self.contrast_theme(desired).to_owned();
+        let desired = desired.as_str();
         if self.theme.name != desired {
             if let Some(theme) = self.themes.iter().find(|t| t.name == desired) {
                 self.theme = theme.clone();
@@ -2113,6 +2147,20 @@ impl Workspace {
         let mut dirty = std::mem::take(&mut self.texture_retry);
         if let Some(edit) = self.focused_edit() {
             dirty |= edit.blink();
+        }
+        // System contrast, text scaling and reduced motion changed (live,
+        // `platform_prefs`): re-resolve the theme and the interface scale.
+        #[cfg(target_os = "macos")]
+        if self.platform_polled.elapsed() >= Duration::from_secs(2) {
+            self.platform_polled = Instant::now();
+            platform_prefs::poll_macos();
+        }
+        let platform = platform_prefs::revision();
+        if platform != self.platform_revision {
+            self.platform_revision = platform;
+            self.theme_stale = true;
+            self.apply_ui_scale();
+            dirty = true;
         }
         while let Ok(update) = self.theme_updates.try_recv() {
             self.theme_stale = true;
@@ -4095,6 +4143,13 @@ impl Workspace {
                     .insert("reduce_motion".into(), json!(enabled));
                 self.save_settings();
             }
+            Cmd::TextSize(percent) => {
+                self.settings
+                    .extra
+                    .insert("text_size".into(), appearance::text_size_value(percent));
+                self.save_settings();
+                self.apply_ui_scale();
+            }
             Cmd::SetAutoDrives(enabled) => {
                 self.settings.auto_discover_drives = enabled;
                 self.save_settings();
@@ -5102,6 +5157,10 @@ impl Workspace {
             {
                 self.import_ui.active_field = None;
                 cx.notify();
+            } else if self.top_overlay().is_none() && self.focused_pane() != panes::Pane::Canvas {
+                // From the library or inspector, Escape returns to the photos.
+                self.pane = panes::Pane::Canvas;
+                cx.notify();
             } else {
                 self.execute(Cmd::Close, window, cx);
             }
@@ -5131,6 +5190,24 @@ impl Workspace {
             // Quit, F1, the palette and Esc were routed above.
             self.preferences_key(event, window, cx);
             return;
+        }
+        if !self.palette && self.add_host.is_none() {
+            // F6 / Shift+F6 move focus between library, photos and inspector
+            // (`panes.rs`); Shift+F10 or the Menu key opens the image menu
+            // for the current photo, as a right-click does.
+            if key == "f6" && !primary && !modifiers.alt {
+                self.cycle_pane(modifiers.shift, cx);
+                return;
+            }
+            if (key == "f10" && modifiers.shift && !primary && !modifiers.alt) || key == "menu" {
+                if !self.import_ui.open {
+                    self.open_image_context_from_keyboard(cx);
+                }
+                return;
+            }
+            if self.pane_key(event, window, cx) {
+                return;
+            }
         }
         if !self.palette && self.add_host.is_none() && self.ingest_key(event, cx) {
             return;
@@ -5630,7 +5707,7 @@ impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
             .font_family(self.font.clone())
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.fg)
             .bg(self.bg)
             .border_1()
@@ -5960,7 +6037,7 @@ impl Workspace {
     }
     fn keycap(&self, keys: &str) -> Div {
         div()
-            .text_size(px(ui::text::LABEL))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(shortcut(keys))
     }
@@ -5993,7 +6070,7 @@ impl Workspace {
                     .border_1()
                     .border_color(self.group_border())
                     .bg(self.canvas_bg())
-                    .text_size(px(ui::text::MICRO))
+                    .text_size(ui::font(ui::text::MICRO))
                     .text_color(self.muted())
                     .child(cap),
             );
@@ -6185,8 +6262,8 @@ impl Workspace {
             .h(px(ui::CONTROL_HEIGHT))
             .px(px(space::SM))
             // Explicit metrics keep the label vertically centred at every scale factor.
-            .text_size(px(12.))
-            .line_height(px(16.))
+            .text_size(ui::font(12.))
+            .line_height(px(ui::scaled(16.)))
             .overflow_hidden()
             .cursor_pointer()
             .occlude()
@@ -6237,13 +6314,13 @@ impl Workspace {
     }
     fn section(&self, label: &str) -> Div {
         div()
-            .h(px(ui::SECTION_HEIGHT))
+            .h(px(ui::scaled(ui::SECTION_HEIGHT)))
             .mt(px(space::LG))
             .px(px(ui::PANEL_INSET))
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.muted())
             .child(label.to_owned())
@@ -6409,7 +6486,7 @@ impl Workspace {
                     .when(!narrow, |s| {
                         s.child(
                             div()
-                                .text_size(px(13.))
+                                .text_size(ui::font(13.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Shadowroom"),
                         )
@@ -6540,6 +6617,8 @@ impl Workspace {
         let hover = self.hover_bg();
         // While Import replaces the centre, only its source drive is current.
         let importing = self.import_ui.open;
+        // F6 keyboard cursor (`panes.rs`).
+        let cursor = self.library_cursor_id();
         let row = |id: ElementId,
                    glyph: &'static str,
                    label: String,
@@ -6548,7 +6627,9 @@ impl Workspace {
             let active = active && (!importing || glyph == "drive");
             // One zero rule: no "0" except on the collection being viewed.
             let count = count.filter(|n| *n > 0 || active);
+            let focused = cursor.as_ref() == Some(&id);
             div()
+                .when(focused, |s| s.relative().child(self.library_cursor_ring()))
                 .id(id)
                 .h(px(ui::ROW_HEIGHT))
                 .pl(px(ui::PANEL_INSET - 2.))
@@ -6587,7 +6668,7 @@ impl Workspace {
                 .when_some(count, |s, n| {
                     s.child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(copy::count(n)),
                     )
@@ -6668,7 +6749,7 @@ impl Workspace {
                 .when_some(rated.filter(|_| count > 0 || active), |s, rated| {
                     s.child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(format!("{} of {}", copy::count(rated), copy::count(count))),
                     )
@@ -6750,8 +6831,10 @@ impl Workspace {
                 continue;
             }
             let active = self.label_filter == Some(label);
+            let focused = cursor.as_ref() == Some(&ElementId::from(("smart-label", n)));
             body = body.child(
                 div()
+                    .when(focused, |s| s.relative().child(self.library_cursor_ring()))
                     .id(("smart-label", n))
                     .h(px(ui::ROW_HEIGHT))
                     .pl(px(ui::PANEL_INSET - 2.))
@@ -6788,7 +6871,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(copy::count(count)),
                     )
@@ -7900,7 +7983,7 @@ impl Workspace {
                                 .flex()
                                 .gap(px(space::SM))
                                 .bg(self.scrim())
-                                .text_size(px(ui::text::LABEL))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(if active {
                                     self.scrim_text()
                                 } else {
@@ -7965,7 +8048,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(space::SM))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(if requested_error.is_some() {
                             self.c("warning", "#e0b341")
                         } else {
@@ -8104,7 +8187,7 @@ impl Workspace {
                                             |s, error| {
                                                 s.child(
                                                     div()
-                                                        .text_size(px(ui::text::LABEL))
+                                                        .text_size(ui::font(ui::text::LABEL))
                                                         .text_color(this.muted())
                                                         .child(
                                                             if error
@@ -8120,7 +8203,8 @@ impl Workspace {
                                             },
                                         );
                                 }
-                                if let Some(badges) = this.decision_badges(photo.flag, photo.label)
+                                if let Some(badges) =
+                                    this.decision_badges(photo.id, photo.flag, photo.label)
                                 {
                                     frame = frame.child(badges);
                                 }
@@ -8164,7 +8248,7 @@ impl Workspace {
                                             .gap(px(space::XS))
                                             .bg(this.scrim())
                                             .text_color(this.scrim_text())
-                                            .text_size(px(ui::text::MICRO))
+                                            .text_size(ui::font(ui::text::MICRO))
                                             .child(
                                                 svg()
                                                     .path(if this.duplicates_only {
@@ -8235,7 +8319,7 @@ impl Workspace {
                                                 .items_center()
                                                 .justify_between()
                                                 .gap(px(space::SM))
-                                                .text_size(px(ui::text::LABEL))
+                                                .text_size(ui::font(ui::text::LABEL))
                                                 .child(
                                                     div()
                                                         .flex_1()
@@ -8526,7 +8610,7 @@ impl Workspace {
                         .justify_center()
                         .child(icon("camera", self.icon_muted()))
                         .when_some(self.media.photo_error(p, kind), |s, error| {
-                            s.child(div().text_size(px(ui::text::LABEL)).child(
+                            s.child(div().text_size(ui::font(ui::text::LABEL)).child(
                                 if error.message.contains("Unavailable offline") {
                                     "Unavailable offline"
                                 } else {
@@ -8536,7 +8620,7 @@ impl Workspace {
                         }),
                 );
             }
-            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+            if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 photo_box = photo_box.child(badges);
             }
             // Frame number in a fixed plate (up to "16"), the pin beside it.
@@ -8552,7 +8636,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .bg(self.scrim())
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(if active {
                         self.scrim_text()
                     } else {
@@ -8615,7 +8699,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::MD))
                     .px(px(space::TINY))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .when_some(key.label(all.len()), |s, label| {
                         s.child(div().flex_shrink_0().text_color(self.text()).child(label))
@@ -8691,18 +8775,20 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .bg(color)
-                .text_size(px(ui::text::MICRO))
-                .line_height(px(ui::text::MICRO))
+                .text_size(ui::font(ui::text::MICRO))
+                .line_height(ui::font(ui::text::MICRO))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(self.c("shadowroom.scrim.label.text", "#0f0f0f"))
                 .child(label_initial(label))
         })
     }
     /// Decisions at the photo's top-left on one continuous 18 px scrim plate:
-    /// the pick/reject glyph, then the label chip, 2 px apart.
-    fn decision_badges(&self, flag: Flag, label: ColorLabel) -> Option<Div> {
+    /// the pick/reject glyph, then the label chip, 2 px apart; a warning glyph
+    /// last while that photo's decision failed to save (gone once it saves).
+    fn decision_badges(&self, id: i64, flag: Flag, label: ColorLabel) -> Option<Div> {
         let label = self.label_badge(label);
-        if flag == Flag::None && label.is_none() {
+        let unsaved = self.save_state() == SaveState::Failed && self.unsaved.contains_key(&id);
+        if flag == Flag::None && label.is_none() && !unsaved {
             return None;
         }
         Some(
@@ -8735,7 +8821,23 @@ impl Workspace {
                             ),
                     )
                 })
-                .children(label),
+                .children(label)
+                .when(unsaved, |s| {
+                    s.child(
+                        div()
+                            .size(px(BADGE_CELL))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path("warning")
+                                    .size(px(12.))
+                                    .text_color(self.c("shadowroom.scrim.reject", "#e07a7a")),
+                            ),
+                    )
+                }),
         )
     }
     /// Compact "★5" rating chip, bottom-right of a thumbnail (filmstrip, Survey).
@@ -8750,7 +8852,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .bg(self.scrim())
-                .text_size(px(ui::text::MICRO))
+                .text_size(ui::font(ui::text::MICRO))
                 .text_color(self.scrim_rating())
                 .child(thumb_rating(rating))
         })
@@ -8785,8 +8887,8 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(ui::text::MICRO))
-                    .line_height(px(ui::text::MICRO))
+                    .text_size(ui::font(ui::text::MICRO))
+                    .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
                     .when_some(color, |s, c| s.bg(c).child(label_key(label)))
@@ -8857,7 +8959,7 @@ impl Workspace {
             .gap(px(space::TINY))
             .bg(self.scrim())
             .text_color(self.scrim_text())
-            .text_size(px(ui::text::MICRO))
+            .text_size(ui::font(ui::text::MICRO))
             .child(
                 svg()
                     .path(if self.duplicates_only {
@@ -8974,7 +9076,7 @@ impl Workspace {
                     .justify_center()
                     .child(icon("camera", self.icon_muted()));
             }
-            if let Some(badges) = self.decision_badges(p.flag, p.label) {
+            if let Some(badges) = self.decision_badges(p.id, p.flag, p.label) {
                 frame = frame.child(badges);
             }
             frame = frame.children(self.pin_badge(p.id, space::XS));
@@ -9100,7 +9202,7 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(px(11.)).text_color(self.muted()).child(
+                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(11.)).text_color(self.muted()).child(
                     "Originals stay in their source folders. Ratings and flags are preserved.",
                 ))
                 .into_any_element();
@@ -9127,8 +9229,9 @@ impl Workspace {
         // Responsive priority: the essentials always stay (flags, stars,
         // position, auto-advance, zoom or thumbnail size, Trash); optional
         // items drop lowest value first as the bar narrows.
-        const CHAR: f32 = 7.2;
-        const SMALL_CHAR: f32 = 6.6;
+        // Geist Mono advances at 12 and 11 px, at the current text size.
+        let char_w = 7.2 * ui::text_scale();
+        let small_char = 6.6 * ui::text_scale();
         let width = self.center_size.0;
         let tight = width < 760.;
         let gap = if tight { space::TINY } else { space::XS };
@@ -9151,11 +9254,11 @@ impl Workspace {
         let reviewed_text = format!("{} reviewed", copy::count(reviewed));
         let stars_width = 5. * if tight { 20. } else { ui::CONTROL_HEIGHT };
         let view_controls = if grid {
-            3. * (2. * space::SM + CHAR) + 2. + gap
+            3. * (2. * space::SM + char_w) + 2. + gap
         } else if !zoomable {
             0.
         } else {
-            let zoom = 2. * space::SM + zoom_label.len() as f32 * CHAR;
+            let zoom = 2. * space::SM + zoom_label.len() as f32 * char_w;
             zoom + gap + control + if compare { control } else { 0. }
         };
         // Groups: decide | rate … position | workflow | view | delete.
@@ -9166,9 +9269,9 @@ impl Workspace {
             + dividers * (1. + 2. * space::XS + gap)
             + stars_width
             + gap
-            + if mixed_rating { 5. * SMALL_CHAR + gap } else { 0. }
+            + if mixed_rating { 5. * small_char + gap } else { 0. }
             + control // reset icon
-            + position.chars().count() as f32 * SMALL_CHAR
+            + position.chars().count() as f32 * small_char
             + 2. * space::SM
             + gap
             + control // auto-advance
@@ -9176,17 +9279,17 @@ impl Workspace {
             + control; // trash
         let optional = [
             // P / X keycaps beside the flag icons, and "1-5" after the stars.
-            2. * (space::SM + SMALL_CHAR + space::XS) + 3. * SMALL_CHAR + gap,
+            2. * (space::SM + small_char + space::XS) + 3. * small_char + gap,
             // "Pick" / "Reject" words.
-            10. * CHAR + 2. * space::SM,
+            10. * char_w + 2. * space::SM,
             // Pin and Survey (Review modes only; Catalog has S and the tab).
             if grid { 0. } else { 2. * control },
             // Zoom − / + (Review and Compare only).
             if zoomable { 2. * control } else { 0. },
             // "N reviewed" (the cull ledger under the bar draws the progress).
-            reviewed_text.len() as f32 * SMALL_CHAR + space::SM,
+            reviewed_text.len() as f32 * small_char + space::SM,
             // "Reset" text.
-            space::SM + 5. * CHAR,
+            space::SM + 5. * char_w,
         ];
         let kept = ui::fit_prefix(width, base, &optional);
         let (flag_keys, flag_labels, pin_survey, zoom_steps, progress, reset_label) =
@@ -9303,7 +9406,7 @@ impl Workspace {
                     div()
                         .id("rating-mixed")
                         .flex_shrink_0()
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child("mixed")
                         .tooltip(self.tip("Selected photos have different ratings", "")),
@@ -9332,7 +9435,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::SM))
                     .px(px(space::SM))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(div().text_color(self.text()).child(position))
                     .when(progress && self.multi.len() < 2, |s| s.child(reviewed_text))
@@ -9513,8 +9616,8 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT - 2.))
                     .px(px(space::SM))
-                    .text_size(px(12.))
-                    .line_height(px(16.))
+                    .text_size(ui::font(12.))
+                    .line_height(px(ui::scaled(16.)))
                     .border_b_2()
                     .border_color(transparent_black())
                     .text_color(self.c("text.disabled", "#666666"))
@@ -9575,7 +9678,7 @@ impl Workspace {
     }
     fn inspector_section(&self, label: &str) -> Div {
         div()
-            .h(px(ui::INSPECTOR_SECTION_HEIGHT))
+            .h(px(ui::scaled(ui::INSPECTOR_SECTION_HEIGHT)))
             .flex_shrink_0()
             .mt(px(space::LG))
             .pt(px(space::LG))
@@ -9585,7 +9688,7 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(self.muted())
             .child(label.to_owned())
@@ -9627,7 +9730,7 @@ impl Workspace {
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(px(ui::text::TITLE))
+                        .text_size(ui::font(ui::text::TITLE))
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_normal()
@@ -9641,7 +9744,7 @@ impl Workspace {
                         div()
                             .id("inspector-exposure")
                             .pt(px(space::XS))
-                            .text_size(px(ui::text::BODY))
+                            .text_size(ui::font(ui::text::BODY))
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
@@ -9655,7 +9758,7 @@ impl Workspace {
                         div()
                             .id("inspector-capture")
                             .pt(px(space::XS))
-                            .text_size(px(ui::text::LABEL))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .overflow_hidden()
                             .text_ellipsis()
@@ -9680,7 +9783,7 @@ impl Workspace {
                 .child(
                     div()
                         .pt(px(space::XS))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(facts.join(" · ")),
                 );
@@ -9764,7 +9867,7 @@ impl Workspace {
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(ui::text::LABEL)),
+                        .text_size(ui::font(ui::text::LABEL)),
                     )
                     .child(
                         self.segment(
@@ -9776,7 +9879,7 @@ impl Workspace {
                         )
                         .h(px(ui::COMPACT_CONTROL_HEIGHT))
                         .px(px(space::SM))
-                        .text_size(px(ui::text::LABEL)),
+                        .text_size(ui::font(ui::text::LABEL)),
                     )
                     .tooltip(self.tip("Histogram scale · log lifts shadows and highlights", ""));
                 let clipping = self
@@ -9907,7 +10010,7 @@ impl Workspace {
                     if let Some(note) = &preview.rendering_note {
                         body = body.child(self.inspector_section("Rendering")).child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(ui::font(11.))
                                 .text_color(self.muted())
                                 .child(note.clone()),
                         );
@@ -10167,8 +10270,15 @@ impl Workspace {
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
         state["label_filter"] = json!(self.label_filter.map(ColorLabel::as_str));
         state["image_context"] = self.image_context_state();
+        state["pane"] = json!({"focused":self.focused_pane().as_str(),"ring":self.pane_ring,
+            "library_cursor":self.library_cursor_id().map(|id| id.to_string())});
         state["catalog_hover"] = json!(self.catalog_hover);
         state["fit_zoom_percent"] = json!(self.fit_scales.get()[1] * 100.);
+        state["accessibility"] = json!({"text_scale":ui::text_scale(),
+            "high_contrast":platform_prefs::high_contrast(),
+            "reduce_motion":self.reduce_motion(),
+            "native_chooser_failed":self.native_chooser_failed,
+            "automation_driven":self.automation_driven});
         state["review_subset"] = if self.review_folder == self.scope {
             json!(self.review_subset)
         } else {
@@ -10813,6 +10923,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
+        // A driven session keeps the built-in path picker, whose state
+        // automation can read; see `folder_picker::show_path_picker`.
+        self.automation_driven = true;
         if request.is_expired() {
             let _ = request.reply.try_send(Err(
                 "Request expired before reaching the UI; no action performed".into(),
@@ -10930,7 +11043,7 @@ impl Workspace {
                             .child(item.title.clone())
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(ui::font(11.))
                                     .text_color(self.muted())
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -10940,7 +11053,7 @@ impl Workspace {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             // Blue marks only where you are; "Recent" is a
                             // plain tag (and full text on the active row).
                             .text_color(if active { self.text() } else { self.muted() })
@@ -10987,7 +11100,7 @@ impl Workspace {
                     .child(title)
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(hint),
                     ),
@@ -11020,7 +11133,7 @@ impl Workspace {
                             .gap(px(space::SM))
                             .border_b_1()
                             .border_color(self.border())
-                            .text_size(px(13.))
+                            .text_size(ui::font(13.))
                             .child(icon("search", self.icon_muted()))
                             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(
                                 self.input_field(
@@ -11060,7 +11173,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_color(self.muted())
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .child(description.to_owned()),
                     ),
             )
@@ -11123,8 +11236,8 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT))
                     .px(px(space::SM))
-                    .text_size(px(12.))
-                    .line_height(px(16.))
+                    .text_size(ui::font(12.))
+                    .line_height(px(ui::scaled(16.)))
                     .text_color(if active { self.text() } else { self.muted() })
                     .when(active, |s| s.bg(self.selected_bg()))
                     .child(label)
@@ -11252,6 +11365,8 @@ impl Workspace {
             window,
             cx,
         );
+        let (text_sizes, text_size_description) = self.text_size_choices(s);
+        let text_sizes = self.pref_choices("pref-text-size", text_sizes, false, window, cx);
         let motion_description = if motion::system_reduces_motion() {
             "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."
         } else {
@@ -11451,7 +11566,7 @@ impl Workspace {
                         .px(px(space::MD))
                         .pt(px(space::SM))
                         .pb(px(space::XS))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(self.muted())
                         .child(if light { "LIGHT" } else { "DARK" }),
@@ -11590,10 +11705,12 @@ impl Workspace {
             .child(self.preference_row("Drives", "Discover mounted cards and photo drives", drives)))
             .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Font", "Interface typeface", fonts))
+            .child(self.preference_row("Text size", &text_size_description, text_sizes))
             .child(self.preference_row("Reduce motion", motion_description, motion))
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
-            .child(div().pt(px(space::XS)).text_size(px(11.)).text_color(self.muted()).child(source_description))
+            .child(div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(source_description))
+            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(note)))
             .child(
                 div()
                     .pt(px(space::MD))
@@ -11612,7 +11729,7 @@ impl Workspace {
                     )),
             )
             .child(theme_list)
-            .child(div().pt(px(space::SM)).text_size(px(11.)).text_color(self.muted()).child(match mode {
+            .child(div().pt(px(space::SM)).text_size(ui::font(11.)).text_color(self.muted()).child(match mode {
                 "system" => "Choose a light or dark theme to update its system appearance slot.",
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
@@ -11625,7 +11742,7 @@ impl Workspace {
                 div()
                     .pt(px(space::MD))
                     .text_color(self.muted())
-                    .text_size(px(11.))
+                    .text_size(ui::font(11.))
                     .child(format!(
                         "Memory {:.1} of {} MB · textures {:.1} MB · disk {:.1} MB · {} reads · {} cache hits · {} queued",
                         stats.memory_bytes as f64 / 1048576.,
@@ -11657,7 +11774,7 @@ impl Workspace {
                 div()
                     .pt(px(space::LG))
                     .pb(px(space::SM))
-                    .text_size(px(13.))
+                    .text_size(ui::font(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.text())
                     .child("Creator Micro"),
@@ -11665,7 +11782,7 @@ impl Workspace {
             .child(
                 div()
                     .text_color(self.muted())
-                    .text_size(px(11.))
+                    .text_size(ui::font(11.))
                     .child("Arrows navigate · F13–F15 flag · F16/F17 rating · F18–F20 views · F21 zoom · F22 histogram · F23/F24 bursts. Profiles: docs/CONTROLS.md"),
             ));
         let changed: HashSet<PreferencesSection> = self
@@ -11750,7 +11867,7 @@ impl Workspace {
             div().child("Applying changes…").into_any_element()
         } else if prompt {
             div()
-                .text_size(px(12.))
+                .text_size(ui::font(12.))
                 .text_color(self.text())
                 .child(format!(
                     "Discard {changes} {}?",
@@ -11887,7 +12004,7 @@ impl Workspace {
                     .child(body)
                     .child(
                         self.modal_footer()
-                            .text_size(px(11.))
+                            .text_size(ui::font(11.))
                             .text_color(self.muted())
                             .child(div().flex_1().min_w(px(0.)).child(status))
                             .child(buttons),
@@ -11966,7 +12083,7 @@ impl Workspace {
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
-            .text_size(px(11.))
+            .text_size(ui::font(11.))
             .text_color(self.muted())
             .child(
                 self.compact_toggle(
@@ -12256,6 +12373,7 @@ impl Workspace {
         }
         self.reconcile_rating_filter();
         self.apply_theme_mode(window);
+        self.apply_ui_scale();
         self.dialog_focus.borrow_mut().begin_frame();
         for texture in self.retired.drain(..) {
             let _ = window.drop_image(texture.image);
@@ -12489,6 +12607,7 @@ impl Workspace {
         if self.docks.inspector > 0. {
             body = body.child(self.dock_resize_grip(DockSide::Inspector, window, cx));
         }
+        body = body.children(self.pane_ring_view());
         let mut root = div()
             .id("shadowroom")
             .track_focus(&self.focus)
@@ -12529,7 +12648,8 @@ impl Workspace {
                     this.trace
                         .input("mouse_down", &format!("{:?}", event.button));
                 }
-                if std::mem::take(&mut this.focus_visible) {
+                // `|` so both run: the F6 pane hands focus back to the photos.
+                if std::mem::take(&mut this.focus_visible) | this.release_pane_focus() {
                     cx.notify();
                 }
             }))
@@ -12539,8 +12659,8 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .font_family(self.settings.interface_font.clone())
-            .text_size(px(12.))
-            .line_height(px(ui::TEXT_LINE_HEIGHT))
+            .text_size(ui::font(12.))
+            .line_height(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
             .text_color(self.text())
             .bg(self.bg())
             .when(chrome, |root| {
@@ -12785,7 +12905,7 @@ pub fn run() -> Result<()> {
                     }),
                     window_decorations: Some(WindowDecorations::Client),
                     app_id: Some("app.shadowroom.Shadowroom".into()),
-                    window_min_size: Some(size(px(960.), px(640.))),
+                    window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
                     ..Default::default()
                 },
                 move |window, cx| {
@@ -13370,6 +13490,7 @@ mod ui_tests {
         );
         let sources = [
             ("desktop.rs", include_str!("desktop.rs")),
+            ("appearance.rs", include_str!("desktop/appearance.rs")),
             ("copy.rs", include_str!("desktop/copy.rs")),
             ("culling.rs", include_str!("desktop/culling.rs")),
             ("deletion_ui.rs", include_str!("desktop/deletion_ui.rs")),
@@ -13390,6 +13511,11 @@ mod ui_tests {
             ("search.rs", include_str!("desktop/search.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
             ("motion.rs", include_str!("desktop/motion.rs")),
+            ("panes.rs", include_str!("desktop/panes.rs")),
+            (
+                "platform_prefs.rs",
+                include_str!("desktop/platform_prefs.rs"),
+            ),
             ("prefetch.rs", include_str!("desktop/prefetch.rs")),
             ("frame_trace.rs", include_str!("desktop/frame_trace.rs")),
         ];
@@ -13530,6 +13656,45 @@ mod ui_tests {
             .find("self.getting_started_key(event, window, cx)")
             .expect("guide keyboard routing");
         assert!(quit < guide, "guide keys route after quit");
+        // F6 pane focus, Shift+F10 / Menu (the keyboard image menu) and the
+        // open image menu's own keys route after the chord, and neither the
+        // menu nor a focused pane claims Q: Ctrl+Q quits with the image menu
+        // open and with the library or inspector focused.
+        for routed in [
+            "self.image_context_key(event, window, cx)",
+            "self.cycle_pane(modifiers.shift, cx)",
+            "self.open_image_context_from_keyboard(cx)",
+            "self.pane_key(event, window, cx)",
+        ] {
+            let at = body
+                .find(routed)
+                .unwrap_or_else(|| panic!("{routed} routing"));
+            assert!(quit < at, "{routed} routes after quit");
+        }
+        for (file, handler) in [
+            ("review_actions.rs", "fn image_context_key("),
+            ("panes.rs", "fn pane_key("),
+        ] {
+            let source = sources.iter().find(|(name, _)| *name == file).unwrap().1;
+            let start = source.find(handler).expect(handler);
+            let end = start + source[start..].find("\n    }\n").unwrap();
+            let handler_body = &source[start..end];
+            assert!(
+                !handler_body.contains("\"q\""),
+                "{handler} must not claim the quit key"
+            );
+        }
+        // Menu accelerators exclude chords: ImageAction::for_key never sees
+        // Ctrl/Cmd, so Ctrl+Q cannot run a menu action.
+        let menu = sources
+            .iter()
+            .find(|(name, _)| *name == "review_actions.rs")
+            .unwrap()
+            .1;
+        let accelerators = &menu[menu.find("fn for_key(").expect("for_key")..];
+        let accelerators = &accelerators[..accelerators.find("\n    }\n").unwrap()];
+        assert!(!accelerators.contains("\"q\""));
+        assert!(menu.contains("key if plain =>"));
     }
 
     #[test]

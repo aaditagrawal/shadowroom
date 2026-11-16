@@ -376,6 +376,12 @@ impl Draft {
             Cmd::ReduceMotion(enabled) => {
                 s.extra.insert("reduce_motion".into(), json!(enabled));
             }
+            Cmd::TextSize(percent) => {
+                s.extra.insert(
+                    "text_size".into(),
+                    super::appearance::text_size_value(*percent),
+                );
+            }
             Cmd::SetAutoDrives(enabled) => s.auto_discover_drives = *enabled,
             Cmd::PeakingColor(color) => set_default_aware(
                 &mut s.extra,

@@ -143,7 +143,7 @@ impl Workspace {
                         .bg(self.c("status_bar.background", "#141414"))
                         .border_1()
                         .border_color(self.border())
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .occlude()
                         .children(notice)

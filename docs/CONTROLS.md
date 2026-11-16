@@ -33,6 +33,8 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `F1` | Open Getting Started |
 | Ctrl+K or Cmd+K | Command palette; typing two or more characters also lists matching photos (filename) and folders, eight of each |
 | Ctrl+F or Cmd+F | Find a photo by filename across the whole library |
+| F6 / Shift+F6 | Move keyboard focus between the library, the photos and the inspector (ringed while the keyboard leads); in the library Up/Down/Home/End move a cursor and Return opens the row, in the inspector Left/Right switch Review and Info; Escape or a click returns to the photos |
+| Shift+F10 or the Menu key | Open the image menu for the current photo |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
@@ -92,15 +94,23 @@ folder and filters, starting at the selected (outlined) photo, never at the
 photo under the pointer. With two or more selected photos, **Enter/L** freezes that
 selection for Review navigation. Compare also constrains a multiple selection.
 Decisions in Review/Compare affect the current frame. Double-click and the
-**Show in review** context action always open the full current collection.
+**Open in Review** menu action always open the full current collection.
 **Show full folder** leaves a subset. Returning to Catalog restores its selection.
 
-Right-click a Catalog photo, Review image, or filmstrip thumbnail for **Show in
-folder**, **Show in review**, **Survey**, **Compare**, Pick, Reject, Reset,
-and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
-right-clicking a different photo makes it the action target. The menu names the
-photo or selected count. Up/Down and Enter activate a menu action; Escape closes
-it.
+Right-click a Catalog photo, Review image, or filmstrip thumbnail (or press
+Shift+F10 or the Menu key for the current photo) for the image menu. Its groups,
+separated by rules, are **Open in Review**, **Survey** (**Survey Burst** when the
+photo is in a burst) and **Compare**; **Pick** and **Reject** (checked when the
+photo, or every selected photo, has that flag), **Rating** and **Label** chips
+(the current value outlined) and **Reset Stars and Flag**; **Show in Files**
+(**Reveal in Finder** on macOS); and **Move to Trash…** and, in the error colour,
+**Delete Permanently…**. Each row shows its key on the right. Right-clicking a
+selected Catalog photo keeps that batch; right-clicking a different photo makes
+it the action target. The menu names the photo or selected count. Up/Down (which
+wrap), Home/End and Enter activate a row, the row keys (P, X, R, 0–5, 6–9, S, C,
+Delete, Shift+Delete) act directly, and Escape, Shift+F10 or the Menu key closes it.
+A photo whose decision failed to save shows a warning glyph on its thumbnail plate
+until the decision saves.
 
 The command palette lists photos whose filename contains the query (so
 **4512** finds `IMG_4512.CR3`) and folders whose name or path contains it,

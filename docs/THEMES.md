@@ -62,13 +62,41 @@ everything closes instantly.
 also off when the system asks for reduced motion: on Linux, the desktop portal's
 `reduced-motion` setting or GNOME's **Animations** switch (read through the
 portal, else `gsettings`); on macOS, **Accessibility → Display → Reduce motion**.
-Shadowroom reads the system setting at startup and whenever Preferences opens.
+Shadowroom reads the system setting at startup and follows changes while it
+runs (on Linux through the portal's `SettingChanged` signal, on macOS by
+re-reading the setting every two seconds), so turning on reduced motion in system
+settings applies to the next menu without reopening Preferences.
 `SHADOWROOM_REDUCE_MOTION=1` (or `0`) overrides both, for measurements.
+
+### Text size
+
+**Preferences → Appearance → Text size** scales every font size and text line
+box: **90%**, **100%**, **110%**, **125%**, **150%**, or **System** (the
+default), which follows the desktop's text-scaling factor (GNOME **Large Text** /
+`text-scaling-factor`, read through the portal or `gsettings` and followed live;
+100% on macOS). At 100% no interface text is smaller than 11 px. Controls keep
+their 24/28 px boxes, which hold a 150% line, and spacing stays on the 4 px grid,
+so layouts keep their shape while text grows; the image menu widens with the text.
+`SHADOWROOM_TEXT_SCALE=1.25` overrides the desktop factor for measurements.
+
+### High contrast
+
+**Shadowroom High Contrast Dark** and **Shadowroom High Contrast Light** are the
+standard palettes with every role pushed further: the same neutral chrome and
+single blue accent, with body and secondary text at 7:1 or more on every surface
+(including selected rows), accent and status colours at 4.5:1, and borders, text
+fields, choice groups and the focus ring at 3:1 or more. Both appear in the
+Appearance theme list. When the system asks for more contrast (the portal's
+`org.freedesktop.appearance contrast`, GNOME **High Contrast**, or macOS
+**Accessibility → Display → Increase contrast**), Shadowroom Dark and Light are
+drawn as their high-contrast variants in every theme mode, and Preferences says
+so under the theme list; imported themes are used as chosen. The change follows
+the system setting live. `SHADOWROOM_HIGH_CONTRAST=1` (or `0`) overrides it.
 
 ### Built-in palettes
 
-Both palettes are defined as theme roles in `src/theme.rs`; render code reads
-roles, not hex values.
+The palettes are defined as theme roles in `src/theme.rs`; render code reads
+roles, not hex values. The high-contrast variants' values are listed after this table.
 
 | Role | Shadowroom Dark | Shadowroom Light | Used for |
 | --- | --- | --- | --- |
@@ -109,6 +137,20 @@ The **cull ledger** draws on chrome, not photographs: `shadowroom.pick` and
 `shadowroom.reject` ticks, `icon.muted` for reviewed photos without a flag,
 `border` as the unreviewed rail, and `text.accent` only for the current
 photo's playhead.
+
+High-contrast palette values:
+
+| Role | High Contrast Dark | High Contrast Light |
+| --- | --- | --- |
+| `background`, `shadowroom.canvas` | `#000000`, `#000000` | `#ffffff`, `#d6d6d6` |
+| `panel.background` (title, toolbar, status bars) | `#0d0d0d` | `#f5f5f5` |
+| `elevated_surface.background` | `#161616` | `#ffffff` |
+| `text` / `text.muted` / `text.disabled` | `#ffffff` / `#dadada` / `#8f8f8f` | `#000000` / `#2a303a` / `#6b7280` |
+| `text.accent`, `shadowroom.focus_ring` | `#8cc4ff` | `#0a4a85` |
+| `border` / `border.variant` / `shadowroom.control_border` | `#8a8a8a` / `#9a9a9a` / `#b0b0b0` | `#5c6470` / `#6e7682` / `#3d4450` |
+| `ghost_element.hover` / `ghost_element.selected` | `#ffffff14` / `#ffffff2e` | `#00000012` / `#0a4a8529` |
+| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#6b4c00` |
+| `shadowroom.pick` / `reject` / `rating` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#5c4200` |
 
 Imported Zed themes never define Shadowroom roles. `shadowroom.well` and
 `shadowroom.control_border` are derived from the theme's own background, panel

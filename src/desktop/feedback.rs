@@ -524,7 +524,7 @@ impl Workspace {
             .items_center()
             .gap(px(space::XS))
             .bg(self.scrim())
-            .text_size(px(ui::text::LABEL))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.scrim_text())
             .whitespace_nowrap()
             .overflow_hidden()
@@ -676,7 +676,7 @@ impl Workspace {
             )
             .children(toast.detail.map(|detail| {
                 div()
-                    .text_size(px(11.))
+                    .text_size(ui::font(11.))
                     .text_color(self.muted())
                     .child(detail)
             }))
@@ -684,7 +684,7 @@ impl Workspace {
                 s.child(
                     div()
                         .mt(px(space::XS))
-                        .text_size(px(11.))
+                        .text_size(ui::font(11.))
                         .text_color(self.muted())
                         .child(notice.text.clone()),
                 )
@@ -994,7 +994,7 @@ impl Workspace {
                     .when(prompt.error.is_none(), |s| {
                         s.child(
                             div()
-                                .text_size(px(ui::text::LABEL))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(self.muted())
                                 .child(format!("Press {} again to quit anyway.", shortcut("⌘Q"))),
                         )

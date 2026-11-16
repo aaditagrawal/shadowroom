@@ -323,7 +323,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(space::SM))
-                    .text_size(px(13.))
+                    .text_size(ui::font(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
@@ -574,7 +574,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(("host-field", n))
-                            .min_h(px(ui::FIELD_HEIGHT))
+                            .min_h(px(ui::scaled(ui::FIELD_HEIGHT)))
                             .p(px(ui::FIELD_INSET))
                             .border_1()
                             .border_color(if invalid {
@@ -607,7 +607,7 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap(px(space::XS))
-                                .text_size(px(11.))
+                                .text_size(ui::font(11.))
                                 .text_color(error_color)
                                 .child(icon("warning", error_color).size(px(12.)))
                                 .child(message.clone()),

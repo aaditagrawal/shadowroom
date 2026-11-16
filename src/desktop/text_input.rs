@@ -229,7 +229,7 @@ impl Workspace {
                 });
             },
         )
-        .h(px(ui::TEXT_LINE_HEIGHT))
+        .h(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
         .w_full()
         .into_any_element()
     }

@@ -439,7 +439,7 @@ impl Workspace {
                 ))
                 .child(
                     div()
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(format!("{} applies · Esc cancels", shortcut("Enter"))),
                 )
@@ -662,7 +662,7 @@ impl Workspace {
                 .bg(self.canvas_bg())
                 .child(
                     div()
-                        .text_size(px(ui::text::DISPLAY))
+                        .text_size(ui::font(ui::text::DISPLAY))
                         .font_weight(FontWeight::MEDIUM)
                         .child("Reading photos…"),
                 )
@@ -871,7 +871,7 @@ impl Workspace {
             .bg(self.canvas_bg())
             .child(
                 div()
-                    .text_size(px(ui::text::DISPLAY))
+                    .text_size(ui::font(ui::text::DISPLAY))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
@@ -886,7 +886,7 @@ impl Workspace {
                         .flex_wrap()
                         .justify_center()
                         .gap(px(space::LG))
-                        .text_size(px(ui::text::LABEL))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(hint(&shortcut("⌘O"), "add photos"))
                         .child(hint("F1", "guide"))
@@ -998,7 +998,7 @@ impl Workspace {
             .child(
                 div()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_size(px(ui::text::TITLE))
+                    .text_size(ui::font(ui::text::TITLE))
                     .child(format!(
                         "{} selected",
                         plural(summary.count, "photo", "photos")
@@ -1007,7 +1007,7 @@ impl Workspace {
             .child(
                 div()
                     .pt(px(space::SM))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child("Decisions apply to every selected photo, including those off screen."),
             )

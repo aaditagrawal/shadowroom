@@ -14,17 +14,13 @@
 //! again. Reduced motion (the Preferences toggle, or the platform setting)
 //! removes the wrappers entirely. `SHADOWROOM_REDUCE_MOTION=1|0` overrides
 //! both for measurements.
-use super::Workspace;
+use super::{Workspace, platform_prefs};
 use gpui::{
     Animation, AnimationExt, AnyElement, ElementId, IntoElement, ParentElement, Styled, div,
 };
 use serde_json::Value;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
-    sync::{
-        OnceLock,
-        atomic::{AtomicU8, Ordering},
-    },
     time::{Duration, Instant},
 };
 
@@ -35,121 +31,16 @@ pub(super) const NOTICE: Duration = Duration::from_millis(150);
 /// The on-photo decision chip when it appears in place.
 pub(super) const CHIP: Duration = Duration::from_millis(120);
 
-/// Platform preference: 0 unknown, 1 motion allowed, 2 reduce motion.
-static SYSTEM: AtomicU8 = AtomicU8::new(0);
-
-/// `SHADOWROOM_REDUCE_MOTION`: `Some(true)` forces reduced motion, `Some(false)`
-/// forces motion on regardless of the platform setting.
-fn override_from_env() -> Option<bool> {
-    static OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
-    *OVERRIDE.get_or_init(
-        || match std::env::var("SHADOWROOM_REDUCE_MOTION").as_deref() {
-            Ok("1" | "true" | "on") => Some(true),
-            Ok("0" | "false" | "off") => Some(false),
-            _ => None,
-        },
-    )
-}
-
 /// Whether the platform asks applications to reduce motion, as last read.
+/// The value is live: `platform_prefs` follows system changes.
 pub(super) fn system_reduces_motion() -> bool {
-    SYSTEM.load(Ordering::Relaxed) == 2
+    platform_prefs::reduces_motion()
 }
 
-/// Reads the platform setting off the UI thread (startup and when Preferences
-/// opens). Linux asks the desktop portal (`org.freedesktop.appearance
-/// reduced-motion`, then GNOME's `enable-animations` through the portal) and
-/// falls back to `gsettings`; macOS reads NSWorkspace's
-/// `accessibilityDisplayShouldReduceMotion`.
+/// Re-reads the platform settings off the UI thread (startup and when
+/// Preferences opens); see `platform_prefs`.
 pub(super) fn refresh_system_preference() {
-    #[cfg(target_os = "macos")]
-    {
-        SYSTEM.store(if macos_reduce_motion() { 2 } else { 1 }, Ordering::Relaxed);
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = std::thread::Builder::new()
-            .name("reduce-motion".into())
-            .spawn(|| {
-                if let Some(reduce) = linux_reduce_motion() {
-                    SYSTEM.store(if reduce { 2 } else { 1 }, Ordering::Relaxed);
-                }
-            });
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn linux_reduce_motion() -> Option<bool> {
-    use std::process::{Command, Stdio};
-    let run = |program: &str, args: &[&str]| -> Option<String> {
-        let output = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    };
-    let portal = |namespace: &str, key: &str| {
-        run(
-            "gdbus",
-            &[
-                "call",
-                "--session",
-                "--timeout",
-                "2",
-                "--dest",
-                "org.freedesktop.portal.Desktop",
-                "--object-path",
-                "/org/freedesktop/portal/desktop",
-                "--method",
-                "org.freedesktop.portal.Settings.ReadOne",
-                namespace,
-                key,
-            ],
-        )
-    };
-    // "(<uint32 1>,)": 1 asks for reduced motion (xdg-desktop-portal 1.20+).
-    let reduced = portal("org.freedesktop.appearance", "reduced-motion")
-        .map(|reply| reply.contains("uint32 1"));
-    // "(<false>,)": GNOME animations are off.
-    let animations = portal("org.gnome.desktop.interface", "enable-animations")
-        .map(|reply| !reply.contains("false"))
-        .or_else(|| {
-            run(
-                "gsettings",
-                &["get", "org.gnome.desktop.interface", "enable-animations"],
-            )
-            .map(|value| value != "false")
-        });
-    match (reduced, animations) {
-        (None, None) => None,
-        (reduced, animations) => Some(reduced == Some(true) || animations == Some(false)),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_reduce_motion() -> bool {
-    use objc2::{
-        msg_send,
-        runtime::{AnyClass, AnyObject, Bool},
-    };
-    let Some(class) = AnyClass::get(c"NSWorkspace") else {
-        return false;
-    };
-    // SAFETY: NSWorkspace's shared instance and this BOOL property exist on
-    // every supported macOS release (10.12+); the instance is not retained.
-    unsafe {
-        let workspace: *mut AnyObject = msg_send![class, sharedWorkspace];
-        if workspace.is_null() {
-            return false;
-        }
-        let reduce: Bool = msg_send![&*workspace, accessibilityDisplayShouldReduceMotion];
-        reduce.as_bool()
-    }
+    platform_prefs::refresh();
 }
 
 /// A stable element id for one occurrence of a transient surface, so a new
@@ -168,7 +59,7 @@ fn ease_out(t: f32) -> f32 {
 impl Workspace {
     /// The Preferences toggle, the platform setting, or the environment override.
     pub(super) fn reduce_motion(&self) -> bool {
-        override_from_env().unwrap_or_else(|| {
+        platform_prefs::reduce_motion_override().unwrap_or_else(|| {
             self.settings
                 .extra
                 .get("reduce_motion")

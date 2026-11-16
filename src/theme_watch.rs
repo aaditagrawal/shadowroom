@@ -487,7 +487,7 @@ impl ThemeEngine {
         if !changed {
             return None;
         }
-        let mut themes = vec![Theme::dark(), Theme::light()];
+        let mut themes = Theme::builtins();
         let mut canonical = HashSet::new();
         for path in files {
             let cached = &self.themes[&path];
