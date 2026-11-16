@@ -5991,6 +5991,31 @@ fn reveal_label() -> &'static str {
     }
 }
 
+/// The notice for regions a small window hides to give the photo room: one
+/// sentence however many yield, always with the keys that bring the panels
+/// back.
+fn yield_hint(library: bool, inspector: bool, filmstrip: bool) -> Option<String> {
+    let sidebar = shortcut("⌘B");
+    Some(match (library, inspector, filmstrip) {
+        (true, true, true) => format!(
+            "Library, inspector and filmstrip hidden to give the photo room · {sidebar} and I show the panels"
+        ),
+        (true, false, true) => format!(
+            "Library and filmstrip hidden to give the photo room · {sidebar} shows the library"
+        ),
+        (true, true, false) => format!(
+            "Library and inspector hidden to give the photos room · {sidebar} and I show them"
+        ),
+        (true, false, false) => {
+            format!("Library hidden to give the photo room · {sidebar} shows it")
+        }
+        (false, _, true) => {
+            "Filmstrip hidden to give the photo room · the ledger still jumps to any frame".into()
+        }
+        (false, _, false) => return None,
+    })
+}
+
 /// macOS (13+) calls the window Settings; GNOME and KDE keep Preferences.
 fn settings_noun() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -13004,22 +13029,22 @@ impl Workspace {
             self.dock_override = [false; 2];
         }
         let library_yields = self.sidebar && !self.focus_mode && !library_fits;
+        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
+        // height: the ledger keeps its own band, as in the Catalog, and still
+        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
+        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
         if library_yields {
             let inspector_yields = self.inspector && !inspector_fits && !self.photos.is_empty();
-            self.hint_once(
-                "catalog-yields",
-                &if inspector_yields {
-                    format!(
-                        "Library and inspector hidden to give the photos room · {} and I show them",
-                        shortcut("⌘B")
-                    )
-                } else {
-                    format!(
-                        "Library hidden to give the photo room · {} shows it",
-                        shortcut("⌘B")
-                    )
-                },
-            );
+            // When the filmstrip yields in the same frame, one notice names
+            // all three: two hints would overwrite each other and the panel
+            // keys would never be seen (R5-review-02).
+            let strip = strip_yields && !self.lights_out();
+            if let Some(text) = yield_hint(true, inspector_yields, strip) {
+                self.hint_once("catalog-yields", &text);
+            }
+            if strip {
+                self.shown_hints.insert("filmstrip-yields");
+            }
         } else {
             // The panel is back (Catalog, a wider window): the hint is stale.
             self.withdraw_notice("catalog-yields");
@@ -13067,15 +13092,10 @@ impl Workspace {
         } else {
             DECISION_HEIGHT
         };
-        // Short windows (720 x 480 is allowed) give the photo the filmstrip's
-        // height: the ledger keeps its own band, as in the Catalog, and still
-        // jumps to any frame (R4-design-07: the photo keeps 30% of the window).
-        let strip_yields = photo_view && self.workspace_size.1 < ui::FILMSTRIP_MIN_WINDOW_HEIGHT;
         if strip_yields && !lights_out {
-            self.hint_once(
-                "filmstrip-yields",
-                "Filmstrip hidden to give the photo room · the ledger still jumps to any frame",
-            );
+            if let Some(text) = yield_hint(false, false, true) {
+                self.hint_once("filmstrip-yields", &text);
+            }
         } else {
             self.withdraw_notice("filmstrip-yields");
         }
@@ -13561,9 +13581,21 @@ mod ui_tests {
         NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
         SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, copy,
         grip_owns_key, index_filtered_positions, is_quit_chord, item, keycap_parts, label_index,
-        match_tier, palette_category_rank, palette_step, retained_position, survey_layout,
-        text_input, thumbnail_size, title_match, ui::space,
+        match_tier, palette_category_rank, palette_step, retained_position, shortcut,
+        survey_layout, text_input, thumbnail_size, title_match, ui::space, yield_hint,
     };
+
+    #[test]
+    fn one_notice_names_every_region_a_small_window_hides() {
+        // 800 x 520 in Review: library, inspector and filmstrip all yield.
+        let all = yield_hint(true, true, true).unwrap();
+        assert!(all.contains(&shortcut("⌘B")) && all.contains(" and I "));
+        assert!(all.contains("filmstrip"));
+        let library = yield_hint(true, false, true).unwrap();
+        assert!(library.contains(&shortcut("⌘B")) && library.contains("filmstrip"));
+        assert!(yield_hint(false, false, true).unwrap().contains("ledger"));
+        assert_eq!(yield_hint(false, true, false), None);
+    }
 
     #[test]
     fn keycaps_split_modifiers_from_the_key() {
