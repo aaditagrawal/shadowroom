@@ -497,10 +497,8 @@ impl Workspace {
                     cx,
                 ))
                 .child(
-                    div()
-                        .text_size(ui::font(ui::text::LABEL))
-                        .text_color(self.muted())
-                        .child(format!("{} applies · Esc cancels", shortcut("Enter"))),
+                    self.key_hints(&[("Enter", "Apply"), ("Esc", "Cancel")])
+                        .flex_shrink_0(),
                 )
                 .into_any_element(),
         )

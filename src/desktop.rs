@@ -11561,23 +11561,25 @@ impl Workspace {
         }
         if total == 0 {
             let query = self.palette_query.trim();
-            let (title, hint) = match (self.palette_photos, query.is_empty()) {
-                (true, true) => (
-                    "Type part of a filename".to_owned(),
-                    format!(
-                        "“4512” finds IMG_4512.CR3 · {} also searches commands and folders",
-                        shortcut("⌘K")
+            // Keys go in the shared keycap row, never in the prose.
+            let (title, hint, keys): (String, &str, &[(&str, &str)]) =
+                match (self.palette_photos, query.is_empty()) {
+                    (true, true) => (
+                        "Type part of a filename".to_owned(),
+                        "“4512” finds IMG_4512.CR3",
+                        &[("⌘K", "Commands and folders too"), ("Esc", "Close")],
                     ),
-                ),
-                (true, false) => (
-                    format!("No photos match “{query}”"),
-                    "Filenames only, across the whole library · Esc closes".to_owned(),
-                ),
-                (false, _) => (
-                    format!("No commands, photos or folders match “{query}”"),
-                    "Try export, zoom or a filename · Esc closes".to_owned(),
-                ),
-            };
+                    (true, false) => (
+                        format!("No photos match “{query}”"),
+                        "Filenames only, across the whole library",
+                        &[("Esc", "Close")],
+                    ),
+                    (false, _) => (
+                        format!("No commands, photos or folders match “{query}”"),
+                        "Try export, zoom or a filename",
+                        &[("Esc", "Close")],
+                    ),
+                };
             results = results.child(
                 div()
                     .px(px(ui::PANEL_INSET))
@@ -11591,7 +11593,8 @@ impl Workspace {
                             .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(hint),
-                    ),
+                    )
+                    .child(div().pt(px(space::XS)).child(self.key_hints(keys))),
             );
         }
         // `items_start` lets the panel hug its results instead of stretching to max_h.

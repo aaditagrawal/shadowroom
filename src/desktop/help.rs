@@ -21,6 +21,53 @@ fn alt() -> &'static str {
 /// One line of keyboard scrolling in the guide.
 const GUIDE_LINE: f32 = 40.;
 
+/// The guide's quick keys, grouped: (group, [(keys, verb)]). Keys use the
+/// shortcut notation (⌘, ⇧, ⌥) that `keycaps` spells per platform.
+fn quick_keys() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "Cull",
+            vec![
+                ("P", "Pick"),
+                ("X", "Reject"),
+                ("U", "Clear flag"),
+                ("0–5", "Stars"),
+                ("6–9", "Label"),
+                ("R", "Reset"),
+                ("⌘Z", "Undo"),
+            ],
+        ),
+        (
+            "Navigate",
+            vec![
+                ("← →", "Previous / Next"),
+                ("G", "Catalog"),
+                ("L", "Review"),
+                ("C", "Compare"),
+                ("S", "Survey"),
+                ("⇧Tab", "Focus mode"),
+            ],
+        ),
+        (
+            "Inspect",
+            vec![
+                ("Z", "Fit / 100%"),
+                ("- =", "Zoom"),
+                ("⌥Arrows", "Pan"),
+                ("F", "Peaking"),
+                ("J", "Clipping"),
+                ("H", "Histogram"),
+                ("B", "Pin reference"),
+                ("⇧B", "Swap"),
+            ],
+        ),
+        (
+            "App",
+            vec![("⌘K", "Commands"), ("F1", "Help"), ("⌘Q", "Quit")],
+        ),
+    ]
+}
+
 /// Guide sections: title and body, with platform-correct key names.
 fn guide_sections() -> Vec<(&'static str, String)> {
     let (primary, alt, settings) = (primary(), alt(), settings_noun());
@@ -140,6 +187,41 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(space::LG));
+        // Quick keys lead the scrolling body: one keycap + verb pair per
+        // binding, never split across lines, so the guide keeps its height
+        // for the text at 125% and in small windows (R5-overlays-02).
+        let mut keys = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(space::SM))
+            .pb(px(space::LG))
+            .border_b_1()
+            .border_color(self.border())
+            .child(self.section_header("Quick keys"));
+        for (group, hints) in quick_keys() {
+            let mut hints = hints;
+            if group == "App" {
+                hints.insert(1, ("⌘,", settings_noun()));
+            }
+            keys = keys.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(space::MD))
+                    .child(
+                        div()
+                            .w(px(ui::scaled(64.)))
+                            .flex_shrink_0()
+                            .pt(px(space::TINY))
+                            .text_size(ui::font(ui::text::LABEL))
+                            .text_color(self.muted())
+                            .child(group),
+                    )
+                    .child(self.key_hints(&hints).flex_1().text_color(self.text())),
+            );
+        }
+        content = content.child(keys);
         for (title, text) in guide_sections() {
             content = content.child(
                 div()
@@ -169,38 +251,6 @@ impl Workspace {
                         Some(("close-guide", Cmd::Close)),
                         cx,
                     ))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(ui::DIALOG_INSET))
-                            .py(px(space::LG))
-                            .flex()
-                            .flex_col()
-                            .gap(px(space::XS))
-                            .border_b_1()
-                            .border_color(self.border())
-                            .child(div().font_weight(FontWeight::MEDIUM).child("Quick keys"))
-                            .child("←/→ Navigate · P Pick · X Reject · U Clear flag · 0–5 Stars · R Reset")
-                            .child(format!(
-                                "G Catalog · L Review · C Compare · S Survey · B Pin reference · {} Swap",
-                                shortcut("⇧B")
-                            ))
-                            .child(format!(
-                                "Z/Space or click Fit/100% · -/= Zoom · {}+arrows Pan · F Peaking · J Clipping · H Histogram",
-                                alt()
-                            ))
-                            .child(
-                                div()
-                                    .text_color(self.muted())
-                                    .child(format!(
-                                        "{} Undo · {} Commands · {} {} · F1 Help",
-                                        shortcut("⌘Z"),
-                                        shortcut("⌘K"),
-                                        shortcut("⌘,"),
-                                        settings_noun()
-                                    )),
-                            ),
-                    )
                     .child(content)
                     .child(
                         self.modal_footer()
@@ -234,10 +284,12 @@ impl Workspace {
                                             "Cull where the files are; nothing is copied",
                                             "⌘O",
                                         ))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.execute(Cmd::Close, window, cx);
-                                            this.execute(Cmd::OpenFolder, window, cx);
-                                        })),
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.execute(Cmd::Close, window, cx);
+                                                this.execute(Cmd::OpenFolder, window, cx);
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         self.dialog_button(
@@ -246,11 +298,15 @@ impl Workspace {
                                             ButtonKind::Primary,
                                             false,
                                         )
-                                        .tooltip(self.tip("Copy and verify into your library", "Enter"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.execute(Cmd::Close, window, cx);
-                                            this.execute(Cmd::Import, window, cx);
-                                        })),
+                                        .tooltip(
+                                            self.tip("Copy and verify into your library", "Enter"),
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.execute(Cmd::Close, window, cx);
+                                                this.execute(Cmd::Import, window, cx);
+                                            }),
+                                        ),
                                     )
                                     .into_any_element()
                             } else {

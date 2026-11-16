@@ -1031,13 +1031,17 @@ impl Workspace {
                             .whitespace_normal()
                             .child(prompt.body()),
                     )
-                    .when(prompt.error.is_none(), |s| {
-                        s.child(
-                            div()
-                                .text_size(ui::font(ui::text::LABEL))
-                                .text_color(self.muted())
-                                .child(format!("Press {} again to quit anyway.", shortcut("⌘Q"))),
-                        )
+                    // The shared keycap hint row (R2-overlays-08); a refused
+                    // Quit Anyway leaves its key out.
+                    .child(if prompt.error.is_none() {
+                        self.key_hints(&[
+                            ("Tab", "Switch"),
+                            ("Enter", "Retry"),
+                            ("⌘Q", "Quit Anyway"),
+                            ("Esc", "Cancel"),
+                        ])
+                    } else {
+                        self.key_hints(&[("Tab", "Switch"), ("Enter", "Retry"), ("Esc", "Cancel")])
                     })
                     .children(prompt.error.as_ref().map(|error| {
                         div()
