@@ -7,8 +7,8 @@ const MENU_ROW: f32 = 28.;
 const MENU_PADDING: f32 = 5.;
 /// A hairline rule with 4 px above and below.
 const MENU_SEPARATOR: f32 = 2. * space::XS + 1.;
-/// Rating and label chips inside their menu rows.
-const MENU_CHIP: f32 = 20.;
+/// Rating and label chips inside their menu rows: 24 px targets (WCAG 2.5.8).
+const MENU_CHIP: f32 = 24.;
 
 /// Menu width at the current text size.
 fn menu_width() -> f32 {
@@ -559,7 +559,10 @@ impl Workspace {
                     .overflow_hidden()
                     .text_ellipsis()
                     .whitespace_nowrap()
-                    .when(destructive, |s| s.text_color(error))
+                    // On the selection fill the error colour falls below 4.5:1
+                    // in dark themes, so the highlighted row's label turns to
+                    // text colour; the warning icon keeps the error colour.
+                    .when(destructive && !selected, |s| s.text_color(error))
                     .child(action.label(in_burst)),
             )
             .child(div().w(px(16.)).flex_shrink_0().when(checked, |s| {
@@ -600,7 +603,7 @@ impl Workspace {
         } else {
             ImageAction::Label(ColorLabel::None)
         };
-        let mut chips = div().flex().items_center().gap(px(space::TINY));
+        let mut chips = div().flex().items_center().gap(px(space::XS));
         let values: Vec<ImageAction> = if ratings {
             (0..=5).map(ImageAction::Rating).collect()
         } else {
@@ -654,11 +657,25 @@ impl Workspace {
                     .text_size(ui::font(ui::text::LABEL))
                     .text_color(if on { self.text() } else { self.muted() })
                     .child(stars.to_string()),
+                // Each label chip carries its initial, so no label is told
+                // apart by hue alone, Purple included (R4-a11y-06).
                 ImageAction::Label(label) => match self.label_color(label) {
-                    Some(color) => chip.child(div().size(px(12.)).bg(color)),
+                    Some(color) => chip.child(
+                        div()
+                            .size(px(MENU_CHIP - 2. * space::XS))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(color)
+                            .text_size(ui::font(ui::text::MICRO))
+                            .line_height(ui::font(ui::text::MICRO))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
+                            .child(label_initial(label)),
+                    ),
                     None => chip.child(
                         div()
-                            .size(px(12.))
+                            .size(px(MENU_CHIP - 2. * space::XS))
                             .border_1()
                             .border_color(self.control_border()),
                     ),
@@ -703,25 +720,14 @@ impl Workspace {
         let all = |flag: Flag| !targets.is_empty() && targets.iter().all(|p| p.flag == flag);
         let (picked, rejected) = (all(Flag::Pick), all(Flag::Reject));
         let in_burst = self.burst_slot(menu.photo_id).is_some();
-        let mut contents = div()
+        let mut contents = self
+            .menu_surface()
             .id("image-context-menu")
-            .occlude()
             .absolute()
             .left(px(x))
             .top(px(y))
             .w(px(width))
             .p(px(MENU_PADDING))
-            .flex()
-            .flex_col()
-            .bg(self.c("elevated_surface.background", "#202020"))
-            .border_1()
-            .border_color(self.border())
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(

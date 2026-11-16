@@ -398,6 +398,8 @@ const PALETTE_PAGE: usize = 12;
 const PALETTE_CATEGORY_WIDTH: f32 = 80.;
 /// Loose command matches kept beside photo and folder results.
 const PALETTE_LOOSE: usize = 3;
+/// The rating filter menu at 100% text: label, count and digit key.
+const RATING_MENU_WIDTH: f32 = 240.;
 
 /// How a palette title answers the query: 0 contains it, 1 matches its
 /// letters in order, 2 does not (the row matched through its description).
@@ -609,6 +611,8 @@ struct CollectionCounts {
     trash: usize,
     rated: usize,
     labels: [usize; 6],
+    /// Photos per star count, 0-5, for the rating menu's counts.
+    ratings: [usize; 6],
 }
 fn label_index(label: ColorLabel) -> usize {
     match label {
@@ -647,6 +651,11 @@ impl CollectionCounts {
             bump(&mut self.rated);
         }
         bump(&mut self.labels[label_index(d.label)]);
+        bump(&mut self.ratings[usize::from(d.rating.min(5))]);
+    }
+    /// Photos rated `stars` or more.
+    fn rated_at_least(&self, stars: u8) -> usize {
+        self.ratings[usize::from(stars.min(5))..].iter().sum()
     }
     fn from_photos(photos: &[Photo]) -> Self {
         let mut counts = Self::default();
@@ -5753,6 +5762,14 @@ fn contained(well_w: f32, well_h: f32, width: u32, height: u32) -> (f32, f32) {
     )
 }
 
+/// What a chrome label swatch shows: its key, or Purple's initial (no key).
+fn label_glyph(label: ColorLabel) -> &'static str {
+    match label_key(label) {
+        "" => label_initial(label),
+        key => key,
+    }
+}
+
 fn label_key(label: ColorLabel) -> &'static str {
     match label {
         ColorLabel::Red => "6",
@@ -7305,7 +7322,7 @@ impl Workspace {
                     .size(px(12.))
                     .text_color(self.icon_muted()),
             )
-            .tooltip(self.tip("Filter by minimum rating", ""));
+            .tooltip(self.tip("Filter by minimum rating · 0-5 choose in the menu", ""));
         let grouping = self.settings.grouping_mode.clone();
         let grouped = grouping != "off";
         let (group_label, group_tip) = match grouping.as_str() {
@@ -7481,16 +7498,12 @@ impl Workspace {
         }
     }
     fn rating_filter_menu(&self, cx: &gpui::Context<Self>) -> AnyElement {
-        let mut options = div()
-            .w(px(208.))
-            .p(px(space::XS))
-            .flex()
-            .flex_col()
-            .gap(px(0.))
-            .bg(self.c("elevated_surface.background", "#202020"))
-            .border_1()
-            .border_color(self.c("border.variant", "#333333"))
-            .occlude()
+        // The shared floating surface (shadow included), a count per level for
+        // the current scope and the digit that picks it (R4-catalog-05, CAT-16).
+        let counts = self.scope_counts.as_ref().unwrap_or(&self.counts);
+        let mut options = self
+            .menu_surface()
+            .w(px(ui::scaled(RATING_MENU_WIDTH)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         for r in 0..=5u8 {
             let active = self.min_rating == r;
@@ -7506,7 +7519,21 @@ impl Workspace {
                 .h(px(ui::ROW_HEIGHT))
                 .w_full()
                 .when(self.rating_filter_index == r, |s| s.bg(self.hover_bg()))
-                .justify_start(),
+                .justify_start()
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(ui::font(ui::text::LABEL))
+                        .text_color(self.muted())
+                        .child(copy::count(counts.rated_at_least(r))),
+                )
+                .child(
+                    div()
+                        .w(px(ui::scaled(16.)))
+                        .flex()
+                        .justify_end()
+                        .child(self.keycap(&r.to_string())),
+                ),
             );
         }
         div()
@@ -8997,9 +9024,10 @@ impl Workspace {
         })
     }
     /// Inspector label swatch: the chrome label colour carrying its key
-    /// (6-9; Purple has none), a text-coloured ring with an inset gap when
-    /// chosen. The R/Y/G/B/P initials stay on photo badges, where they are the
-    /// colour-blind shape code; here a letter would read as a keycap.
+    /// (6-9), a text-coloured ring with an inset gap when chosen. Purple has
+    /// no key, so it carries its initial instead: no swatch relies on hue
+    /// alone (R4-a11y-06). The other initials stay on photo badges, where they
+    /// are the colour-blind shape code; here they would read as keycaps.
     fn label_swatch(
         &self,
         id: impl Into<ElementId>,
@@ -9030,7 +9058,7 @@ impl Workspace {
                     .line_height(ui::font(ui::text::MICRO))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.c("shadowroom.label.text", "#0f0f0f"))
-                    .when_some(color, |s, c| s.bg(c).child(label_key(label)))
+                    .when_some(color, |s, c| s.bg(c).child(label_glyph(label)))
                     // The empty choice is an input with no fill of its own.
                     .when(color.is_none(), |s| {
                         s.border_1().border_color(self.control_border())
@@ -13229,6 +13257,17 @@ mod ui_tests {
 
     fn assert_counts(counts: &CollectionCounts, photos: &[Photo]) {
         assert_eq!(counts.all, photos.iter().filter(|p| !p.trashed).count());
+        // The rating menu's per-level counts.
+        for stars in 0..=5 {
+            assert_eq!(
+                counts.rated_at_least(stars),
+                photos
+                    .iter()
+                    .filter(|p| !p.trashed && p.rating >= stars)
+                    .count()
+            );
+        }
+        assert_eq!(counts.rated_at_least(3), counts.rated);
         assert_eq!(
             counts.picks,
             photos

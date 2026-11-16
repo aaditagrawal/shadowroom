@@ -350,6 +350,26 @@ impl Workspace {
             .border_color(self.border())
     }
 
+    /// A floating menu's surface: elevated fill, hairline border, the shared
+    /// 4/14 px shadow tooltips use, and 4 px padding. Every popover menu draws
+    /// on it, so none sits flat on the grid (R4-catalog-05).
+    pub(super) fn menu_surface(&self) -> Div {
+        div()
+            .occlude()
+            .p(px(space::XS))
+            .flex()
+            .flex_col()
+            .bg(self.c("elevated_surface.background", "#202020"))
+            .border_1()
+            .border_color(self.c("border.variant", "#333333"))
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.35),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(14.),
+                spread_radius: px(0.),
+            }])
+    }
+
     /// The keyboard hints at the left of a dialog footer: boxed keys and the
     /// verb each runs, "⌘L Path · Enter Go into · Esc Cancel". One component
     /// for every footer, as the palette draws its bindings (R2-overlays-08).
