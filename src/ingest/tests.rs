@@ -482,8 +482,8 @@ fn worker_final_history_update_failure_is_terminal_and_publishes_committed_photo
     worker.send(Command::Plan(options)).unwrap();
     next_event(&rx, |e| matches!(e, Event::Plan(_)));
     worker.send(Command::Start).unwrap();
-    let committed = next_event(&rx, |e| matches!(e, Event::Committed(_)));
-    assert!(matches!(committed, Event::Committed(records) if records.len() == 1));
+    let committed = next_event(&rx, |e| matches!(e, Event::Committed { .. }));
+    assert!(matches!(committed, Event::Committed { groups: records, .. } if records.len() == 1));
     let terminal = next_event(&rx, |e| {
         matches!(e, Event::Progress(p)
         if p.phase.is_terminal())
@@ -636,8 +636,8 @@ fn postcommit_cleanup_failure_keeps_publication_counts_decisions_and_later_seque
             catalog: f.catalog.clone(),
         }),
     );
-    let committed = next_event(&rx, |e| matches!(e, Event::Committed(_)));
-    assert!(matches!(committed, Event::Committed(records) if records.len() == 2));
+    let committed = next_event(&rx, |e| matches!(e, Event::Committed { .. }));
+    assert!(matches!(committed, Event::Committed { groups: records, .. } if records.len() == 2));
     let terminal = next_event(&rx, |e| {
         matches!(e, Event::Progress(p)
         if p.phase.is_terminal())
@@ -1283,4 +1283,339 @@ fn control_reports_time_spent_paused() {
     );
     control.reset();
     assert_eq!(control.paused_for(), Duration::ZERO);
+}
+
+/// Runs `plan` on a thread, reporting every progress update on a channel.
+fn spawn_job(
+    f: &Fixture,
+    plan: &IngestPlan,
+    control: &Control,
+    hooks: impl CopyHooks + 'static,
+) -> (
+    crossbeam_channel::Receiver<Progress>,
+    thread::JoinHandle<Result<Report>>,
+) {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let catalog = f.catalog.clone();
+    let control = control.clone();
+    let plan = plan.clone();
+    let job = thread::spawn(move || {
+        execute_with(&plan, &catalog, &control, &Capacity, &hooks, |progress| {
+            let _ = tx.send(progress.clone());
+        })
+    });
+    (rx, job)
+}
+fn wait_for_progress(
+    rx: &crossbeam_channel::Receiver<Progress>,
+    predicate: impl Fn(&Progress) -> bool,
+) -> Progress {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let progress = rx.recv_timeout(remaining).expect("progress timeout");
+        if predicate(&progress) {
+            return progress;
+        }
+    }
+}
+/// Pulls the "card" (renames its folder away, as an unmount removes the mount
+/// point) once the `after`-th file write begins.
+fn pull_card_after(source: PathBuf, after: usize) -> impl CopyHooks + 'static {
+    let writes = std::sync::atomic::AtomicUsize::new(0);
+    Hook(move |_: &Path, output: &mut File, bytes: &[u8]| {
+        if writes.fetch_add(1, Ordering::SeqCst) + 1 == after {
+            fs::rename(&source, source.with_extension("pulled"))?;
+        }
+        output.write_all(bytes)?;
+        Ok(())
+    })
+}
+
+#[test]
+fn pulled_card_pauses_without_failures_and_resumes_on_reinsert() {
+    let f = Fixture::new();
+    for n in 0..6 {
+        f.write(&format!("IMG_{n:04}.mov"), format!("clip {n}").as_bytes());
+    }
+    let plan = f.plan();
+    let control = Control::default();
+    let (rx, job) = spawn_job(&f, &plan, &control, pull_card_after(f.source.clone(), 3));
+    let paused = wait_for_progress(&rx, |p| p.source_missing);
+    assert_eq!(paused.phase, Phase::Paused);
+    assert_eq!(paused.failed, 0, "a pulled card is not a failure");
+    assert!(paused.errors.is_empty(), "{:?}", paused.errors);
+    assert!(control.is_source_missing());
+    assert_eq!(control.snapshot().phase, Phase::Paused);
+    assert!(control.snapshot().source_missing);
+    // Still missing a moment later: the job waits rather than failing the rest.
+    thread::sleep(Duration::from_millis(400));
+    assert!(control.is_source_missing());
+    // Reinsert: the same folder, the same files.
+    fs::rename(f.source.with_extension("pulled"), &f.source).unwrap();
+    let report = job.join().unwrap().unwrap();
+    assert_eq!(
+        report.progress.phase,
+        Phase::Completed,
+        "{:?}",
+        report.progress
+    );
+    assert_eq!(report.progress.completed, 6);
+    assert_eq!(report.progress.failed, 0);
+    assert!(report.progress.errors.is_empty());
+    assert!(!report.progress.source_missing);
+    assert!(report.progress.transferred <= report.progress.total_bytes);
+    assert!(!control.is_source_missing());
+    // Every photo exactly once: nothing was copied twice under a suffix.
+    let mut names: Vec<_> = fs::read_dir(f.temp.path().join("library"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with("shadowroom-ingest-"))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        (0..6)
+            .map(|n| format!("IMG_{n:04}.mov"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 6);
+    assert_no_parts(f.temp.path());
+    // The card was only ever read.
+    for n in 0..6 {
+        assert_eq!(
+            fs::read(f.source.join(format!("IMG_{n:04}.mov"))).unwrap(),
+            format!("clip {n}").as_bytes()
+        );
+    }
+}
+
+#[test]
+fn cancel_while_waiting_for_a_pulled_card_keeps_verified_photos() {
+    let f = Fixture::new();
+    for n in 0..4 {
+        f.write(&format!("IMG_{n:04}.mov"), format!("clip {n}").as_bytes());
+    }
+    let plan = f.plan();
+    let control = Control::default();
+    let (rx, job) = spawn_job(&f, &plan, &control, pull_card_after(f.source.clone(), 3));
+    wait_for_progress(&rx, |p| p.source_missing);
+    control.cancel();
+    let report = job.join().unwrap().unwrap();
+    assert_eq!(report.progress.phase, Phase::Cancelled);
+    assert_eq!(report.progress.failed, 0);
+    assert!(report.progress.completed <= 2);
+    assert_eq!(
+        f.catalog.ingest_sequences().unwrap().stored as usize,
+        report.progress.completed,
+        "{:?} {:?}",
+        report.progress,
+        f.catalog.ingest_history(10).unwrap()["jobs"]
+    );
+    assert_no_parts(f.temp.path());
+    // Reinserted later, the same plan finishes without copying twice.
+    fs::rename(f.source.with_extension("pulled"), &f.source).unwrap();
+    let again = f.run(&plan, &DefaultHooks);
+    assert_eq!(again.progress.phase, Phase::Completed);
+    assert_eq!(
+        again.progress.completed + again.progress.skipped,
+        4,
+        "{:?}",
+        again.progress
+    );
+    assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 4);
+}
+
+#[test]
+fn one_missing_file_on_a_present_card_fails_alone_without_pausing() {
+    let f = Fixture::new();
+    for n in 0..4 {
+        f.write(&format!("IMG_{n:04}.mov"), format!("clip {n}").as_bytes());
+    }
+    let plan = f.plan();
+    let gone = plan.groups[2].group.clone();
+    fs::remove_file(&gone.primary.path).unwrap();
+    let control = Control::default();
+    let (rx, job) = spawn_job(&f, &plan, &control, DefaultHooks);
+    let report = job.join().unwrap().unwrap();
+    assert!(rx.try_iter().all(|p| !p.source_missing));
+    assert_eq!(report.progress.phase, Phase::Failed);
+    assert_eq!(report.progress.completed, 3);
+    assert_eq!(report.progress.failed, 1);
+    assert_eq!(report.progress.failed_ids, vec![gone.id]);
+    assert_eq!(report.progress.errors.len(), 1);
+}
+
+fn queue_options(f: &Fixture) -> IngestOptions {
+    IngestOptions {
+        library_root: f.temp.path().join("library"),
+        folder_template: String::new(),
+        file_template: "{original}".into(),
+        include_videos: true,
+        ..Default::default()
+    }
+}
+fn job_progress(
+    rx: &crossbeam_channel::Receiver<crate::service::IoEvent>,
+    source: &Path,
+    predicate: impl Fn(&Progress) -> bool,
+) -> Progress {
+    match next_event(rx, |e| {
+        matches!(e, worker::Event::Progress(p)
+            if p.source.as_deref() == Some(source) && predicate(p))
+    }) {
+        worker::Event::Progress(progress) => progress,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn worker_scans_and_queues_a_second_card_while_the_first_waits_for_reinsertion() {
+    use worker::{Command, Event, Worker};
+    let f = Fixture::new();
+    f.write("A_0001.mov", b"card a one");
+    f.write("A_0002.mov", b"card a two");
+    let card_b = f.temp.path().join("card-b");
+    fs::create_dir(&card_b).unwrap();
+    fs::write(card_b.join("B_0001.mov"), b"card b one").unwrap();
+    let (events, rx) = crossbeam_channel::unbounded();
+    let (changed, _changed) = crossbeam_channel::bounded(8);
+    let card_a = f.source.clone();
+    // Card A is pulled as its first photo is written: its job holds, paused.
+    let worker = Worker::start_with_hooks(
+        f.catalog.clone(),
+        events,
+        changed,
+        Arc::new(pull_card_after(card_a.clone(), 1)),
+    );
+    worker
+        .send(Command::Scan {
+            path: card_a.clone(),
+            auto: None,
+        })
+        .unwrap();
+    next_event(&rx, |e| matches!(e, Event::Scanned(_)));
+    worker.send(Command::Plan(queue_options(&f))).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
+    worker.send(Command::Start).unwrap();
+    let held = job_progress(&rx, &card_a, |p| p.source_missing);
+    assert_eq!(held.phase, Phase::Paused);
+    assert!(worker.is_busy());
+
+    // Card B scans read-only and plans while A's job owns the copier.
+    worker
+        .send(Command::Scan {
+            path: card_b.clone(),
+            auto: None,
+        })
+        .unwrap();
+    let scanned = next_event(&rx, |e| matches!(e, Event::Scanned(_)));
+    assert!(matches!(&scanned, Event::Scanned(scan) if scan.source == card_b));
+    worker.send(Command::Plan(queue_options(&f))).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
+    worker.send(Command::Start).unwrap();
+    let queued = next_event(&rx, |e| matches!(e, Event::Queue(q) if !q.is_empty()));
+    assert!(
+        matches!(&queued, Event::Queue(q) if q.len() == 1 && q[0].source == card_b && q[0].photos + q[0].videos == 1)
+    );
+    // Starting B twice is refused, and nothing has been copied from B yet.
+    worker.send(Command::Start).unwrap();
+    let mut refused = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while refused.is_none() && std::time::Instant::now() < deadline {
+        if let Ok(crate::service::IoEvent::Ingest(Event::Error(error))) =
+            rx.recv_timeout(Duration::from_millis(100))
+        {
+            refused = Some(error);
+        }
+    }
+    assert!(refused.is_some_and(|e| e.contains("already queued")));
+    assert!(!f.temp.path().join("library/B_0001.mov").exists());
+
+    // A is reinserted: it finishes, then B starts by itself.
+    fs::rename(card_a.with_extension("pulled"), &card_a).unwrap();
+    let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
+    assert_eq!(a.phase, Phase::Completed, "{a:?}");
+    assert_eq!((a.completed, a.failed), (2, 0));
+    let b = job_progress(&rx, &card_b, |p| p.phase.is_terminal());
+    assert_eq!(b.phase, Phase::Completed, "{b:?}");
+    assert_eq!(b.completed, 1);
+    worker.stop().unwrap();
+    for name in ["A_0001.mov", "A_0002.mov", "B_0001.mov"] {
+        assert!(f.temp.path().join("library").join(name).is_file(), "{name}");
+    }
+    assert_eq!(f.catalog.ingest_sequences().unwrap().stored, 3);
+}
+
+#[test]
+fn cancel_retires_queued_imports_and_rescanning_the_copying_card_is_ignored() {
+    use worker::{Command, Event, Worker};
+    let f = Fixture::new();
+    f.write("A_0001.mov", b"card a one");
+    let card_b = f.temp.path().join("card-b");
+    fs::create_dir(&card_b).unwrap();
+    fs::write(card_b.join("B_0001.mov"), b"card b one").unwrap();
+    let (events, rx) = crossbeam_channel::unbounded();
+    let (changed, _changed) = crossbeam_channel::bounded(8);
+    let card_a = f.source.clone();
+    // Card A is pulled as its first photo is written: its job holds, paused.
+    let worker = Worker::start_with_hooks(
+        f.catalog.clone(),
+        events,
+        changed,
+        Arc::new(pull_card_after(card_a.clone(), 1)),
+    );
+    worker
+        .send(Command::Scan {
+            path: card_a.clone(),
+            auto: None,
+        })
+        .unwrap();
+    next_event(&rx, |e| matches!(e, Event::Scanned(_)));
+    worker.send(Command::Plan(queue_options(&f))).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
+    worker.send(Command::Start).unwrap();
+    job_progress(&rx, &card_a, |p| p.source_missing);
+    worker
+        .send(Command::Scan {
+            path: card_b.clone(),
+            auto: None,
+        })
+        .unwrap();
+    next_event(&rx, |e| matches!(e, Event::Scanned(_)));
+    worker.send(Command::Plan(queue_options(&f))).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Plan(p) if p.ready));
+    worker.send(Command::Start).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Queue(q) if q.len() == 1));
+    // Drive discovery asks to scan (and auto-import) the copying card again:
+    // ignored, neither a second scan nor a second queued job.
+    worker
+        .send(Command::ScanCard {
+            path: card_a.clone(),
+            auto: Some(queue_options(&f)),
+        })
+        .unwrap();
+    worker.send(Command::Cancel).unwrap();
+    next_event(&rx, |e| matches!(e, Event::Queue(q) if q.is_empty()));
+    let a = job_progress(&rx, &card_a, |p| p.phase.is_terminal());
+    assert_eq!(a.phase, Phase::Cancelled);
+    // B never starts after the cancel, and A was not scanned again.
+    let deadline = std::time::Instant::now() + Duration::from_millis(600);
+    while let Ok(event) =
+        rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+    {
+        if let crate::service::IoEvent::Ingest(event) = event {
+            assert!(
+                !matches!(&event, Event::Progress(p) if p.source.as_deref() == Some(card_b.as_path())),
+                "queued import started after Cancel"
+            );
+            assert!(
+                !matches!(event, Event::Scanning(_)),
+                "copying card rescanned"
+            );
+        }
+    }
+    worker.stop().unwrap();
+    assert!(!f.temp.path().join("library/B_0001.mov").exists());
 }
