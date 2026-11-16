@@ -5434,6 +5434,13 @@ impl Render for Tip {
             .bg(self.bg)
             .border_1()
             .border_color(self.border)
+            // The shared floating-surface elevation (toast, menus).
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.35),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(14.),
+                spread_radius: px(0.),
+            }])
             .px(px(space::SM))
             .py(px(space::XS))
             .flex()
@@ -11297,21 +11304,7 @@ impl Workspace {
             div()
                 .flex()
                 .gap(px(space::SM))
-                .child(self.pref_button(
-                    self.action_button(
-                        "keep-editing-preferences",
-                        "Keep Editing",
-                        Cmd::KeepEditingPreferences,
-                        ButtonKind::Primary,
-                        false,
-                        cx,
-                    ),
-                    "prefs-keep-editing",
-                    3,
-                    Cmd::KeepEditingPreferences,
-                    window,
-                    cx,
-                ))
+                // The filled default sits rightmost, as in every footer.
                 .child(self.pref_button(
                     self.action_button(
                         "discard-preferences",
@@ -11324,6 +11317,21 @@ impl Workspace {
                     "prefs-discard",
                     3,
                     Cmd::DiscardPreferences,
+                    window,
+                    cx,
+                ))
+                .child(self.pref_button(
+                    self.action_button(
+                        "keep-editing-preferences",
+                        "Keep Editing",
+                        Cmd::KeepEditingPreferences,
+                        ButtonKind::Primary,
+                        false,
+                        cx,
+                    ),
+                    "prefs-keep-editing",
+                    3,
+                    Cmd::KeepEditingPreferences,
                     window,
                     cx,
                 ))
