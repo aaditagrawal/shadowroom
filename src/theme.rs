@@ -102,7 +102,7 @@ pub const PHOTO_OVERLAY: [(&str, &str); 13] = [
     ("shadowroom.scrim.label.red", "#e0918a"),
     ("shadowroom.scrim.label.yellow", "#d9bd72"),
     ("shadowroom.scrim.label.green", "#86bfa8"),
-    ("shadowroom.scrim.label.blue", "#82abe0"),
+    ("shadowroom.scrim.label.blue", "#a3a6f0"),
     ("shadowroom.scrim.label.purple", "#c497d0"),
     // Initial on a filled label chip (all five fills are light pastels).
     ("shadowroom.scrim.label.text", "#0f0f0f"),
@@ -142,7 +142,9 @@ impl Theme {
                 ("ghost_element.selected", "#ffffff12"),
                 ("success", "#7fbf7f"),
                 ("error", "#d46a6a"),
-                ("warning", "#e0b341"),
+                // Orange, 30° (OKLCH) from rating amber: a warning never
+                // reads as a star.
+                ("warning", "#e8893a"),
                 ("info", "#5b9bd5"),
                 ("scrollbar.thumb.background", "#8a8a8a40"),
                 ("scrollbar.thumb.hover_background", "#8a8a8a80"),
@@ -159,9 +161,15 @@ impl Theme {
                 ("shadowroom.label.red", "#e0918a"),
                 ("shadowroom.label.yellow", "#d9bd72"),
                 ("shadowroom.label.green", "#86bfa8"),
-                ("shadowroom.label.blue", "#82abe0"),
+                // Periwinkle, 35° from the accent: a blue strip never reads
+                // as the "current" underline.
+                ("shadowroom.label.blue", "#a3a6f0"),
                 ("shadowroom.label.purple", "#c497d0"),
                 ("shadowroom.label.text", "#0f0f0f"),
+                // Cull ledger: the unreviewed hairline rail and reviewed
+                // (rated or labelled, unflagged) cells, 3:1+ apart.
+                ("shadowroom.ledger.rail", "#3a3a3a"),
+                ("shadowroom.ledger.reviewed", "#8a8a8a"),
                 ("shadowroom.focus_ring", "#5b9bd5"),
                 ("shadowroom.scrim.modal", "#00000099"),
             ],
@@ -198,7 +206,7 @@ impl Theme {
                 ("ghost_element.selected", "#3979b418"),
                 ("success", "#39734f"),
                 ("error", "#a53e42"),
-                ("warning", "#8a661f"),
+                ("warning", "#9a4d10"),
                 ("info", "#245c91"),
                 ("scrollbar.thumb.background", "#626c7c40"),
                 ("scrollbar.thumb.hover_background", "#626c7c80"),
@@ -216,9 +224,11 @@ impl Theme {
                 ("shadowroom.label.red", "#b3362e"),
                 ("shadowroom.label.yellow", "#7e6200"),
                 ("shadowroom.label.green", "#2a7560"),
-                ("shadowroom.label.blue", "#2560b0"),
+                ("shadowroom.label.blue", "#4c49b8"),
                 ("shadowroom.label.purple", "#8a3fa6"),
                 ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.ledger.rail", "#c4c9d1"),
+                ("shadowroom.ledger.reviewed", "#626c7c"),
                 ("shadowroom.focus_ring", "#3979b4"),
                 ("shadowroom.scrim.modal", "#1f2a3a59"),
             ],
@@ -259,7 +269,7 @@ impl Theme {
                 ("ghost_element.selected", "#ffffff2e"),
                 ("success", "#8fe08f"),
                 ("error", "#ff8a8a"),
-                ("warning", "#ffd166"),
+                ("warning", "#ffa05a"),
                 ("info", "#8cc4ff"),
                 ("scrollbar.thumb.background", "#cfcfcf80"),
                 ("scrollbar.thumb.hover_background", "#cfcfcfc0"),
@@ -276,9 +286,13 @@ impl Theme {
                 ("shadowroom.label.red", "#ffa59e"),
                 ("shadowroom.label.yellow", "#f0d58a"),
                 ("shadowroom.label.green", "#9fe0c4"),
-                ("shadowroom.label.blue", "#9cc4ff"),
+                ("shadowroom.label.blue", "#b4b6ff"),
                 ("shadowroom.label.purple", "#dcaee8"),
                 ("shadowroom.label.text", "#000000"),
+                // The rail stays dim even here: `border` (3:1 outlines) as the
+                // rail made reviewed vs unreviewed 1.98:1.
+                ("shadowroom.ledger.rail", "#4a4a4a"),
+                ("shadowroom.ledger.reviewed", "#c4c4c4"),
                 ("shadowroom.focus_ring", "#8cc4ff"),
                 ("shadowroom.scrim.modal", "#000000b3"),
             ],
@@ -317,7 +331,7 @@ impl Theme {
                 ("ghost_element.selected", "#0a4a8529"),
                 ("success", "#1f5c36"),
                 ("error", "#8f1d22"),
-                ("warning", "#6b4c00"),
+                ("warning", "#8a3a00"),
                 ("info", "#0a4a85"),
                 ("scrollbar.thumb.background", "#3a445280"),
                 ("scrollbar.thumb.hover_background", "#3a4452c0"),
@@ -335,9 +349,11 @@ impl Theme {
                 ("shadowroom.label.red", "#9c2a22"),
                 ("shadowroom.label.yellow", "#5f4a00"),
                 ("shadowroom.label.green", "#1d5c4a"),
-                ("shadowroom.label.blue", "#1b4f99"),
+                ("shadowroom.label.blue", "#4038a8"),
                 ("shadowroom.label.purple", "#6f2f88"),
                 ("shadowroom.label.text", "#ffffff"),
+                ("shadowroom.ledger.rail", "#a0a6b0"),
+                ("shadowroom.ledger.reviewed", "#3a4452"),
                 ("shadowroom.focus_ring", "#0a4a85"),
                 ("shadowroom.scrim.modal", "#0000008c"),
             ],
@@ -734,6 +750,24 @@ impl Rgba {
         0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
     }
     /// Foreground alpha composites over an opaque supplied background.
+    /// OKLCH hue in degrees (0-360), for keeping semantic hues apart.
+    pub fn oklch_hue(self) -> f64 {
+        let lin = |c: u8| {
+            let c = f64::from(c) / 255.;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let (r, g, b) = (lin(self.r), lin(self.g), lin(self.b));
+        let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+        let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+        let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+        let a = 1.977_998_495_1 * l - 2.428_592_205 * m + 0.450_593_709_9 * s;
+        let b = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766 * s;
+        b.atan2(a).to_degrees().rem_euclid(360.)
+    }
     pub fn contrast_ratio(self, background: Self) -> f64 {
         let a = self.composite_over(background).relative_luminance();
         let b = background.relative_luminance();
@@ -997,11 +1031,13 @@ mod tests {
                 }
             }
             // Cull ledger ticks on the panel: decisions and reviewed frames
-            // are graphics that must read (3:1); unreviewed is the bare rail.
+            // are graphics that must read (3:1); unreviewed is the dim
+            // hairline rail, visible on the panel and 3:1 from reviewed cells
+            // in every palette, High Contrast included (R4-design-01).
             for key in [
                 "shadowroom.pick",
                 "shadowroom.reject",
-                "icon.muted",
+                "shadowroom.ledger.reviewed",
                 "text.accent",
             ] {
                 assert!(
@@ -1009,6 +1045,30 @@ mod tests {
                     "{name}: ledger {key}"
                 );
             }
+            let rail = c("shadowroom.ledger.rail");
+            assert!(
+                c("shadowroom.ledger.reviewed").contrast_ratio(rail) >= 3.0,
+                "{name}: reviewed vs unreviewed ledger cells"
+            );
+            assert!(
+                rail.contrast_ratio(c("panel.background")) >= 1.5,
+                "{name}: ledger rail on the panel"
+            );
+            // Warnings never read as ratings, and blue labels never as the
+            // accent: at least 25° apart in OKLCH hue.
+            let hue = |key: &str| c(key).oklch_hue();
+            let apart = |a: f64, b: f64| {
+                let d = (a - b).abs() % 360.;
+                d.min(360. - d)
+            };
+            assert!(
+                apart(hue("warning"), hue("shadowroom.rating")) >= 25.,
+                "{name}: warning vs rating"
+            );
+            assert!(
+                apart(hue("shadowroom.label.blue"), hue("shadowroom.focus_ring")) >= 25.,
+                "{name}: label blue vs accent"
+            );
             let canvas = c("shadowroom.canvas");
             assert!(
                 canvas.r == canvas.g && canvas.g == canvas.b,

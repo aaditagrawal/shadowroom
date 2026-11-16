@@ -5616,7 +5616,7 @@ fn label_roles(label: ColorLabel) -> Option<(&'static str, &'static str, &'stati
         ColorLabel::Blue => Some((
             "shadowroom.label.blue",
             "shadowroom.scrim.label.blue",
-            "#82abe0",
+            "#a3a6f0",
         )),
         ColorLabel::Purple => Some((
             "shadowroom.label.purple",
@@ -8327,7 +8327,7 @@ impl Workspace {
                                     .overflow_hidden()
                                     .child(frame)
                                     // Same place for every aspect ratio: the well's edge.
-                                    .children(this.label_strip(photo.label, 3., 0.));
+                                    .children(this.label_strip(photo.label, 3., 0., false));
                                 // Adjacent bursts alternate intensity so boundaries read
                                 // at a glance; neutral, since blue means "current".
                                 let burst_bar = burst.map(|(group, ..)| {
@@ -8953,18 +8953,32 @@ impl Workspace {
             )
     }
     /// Colour-label strip along a thumbnail's bottom edge: colour area for
-    /// scanning a shoot, in the chrome label colour because it sits on the
-    /// well, not the photo.
-    fn label_strip(&self, label: ColorLabel, height: f32, inset: f32) -> Option<Div> {
-        self.label_color(label).map(|color| {
+    /// scanning a shoot. On the well (Catalog) it takes the chrome label
+    /// colour; `on_photo` (the filmstrip, where landscape frames fill the
+    /// cell) takes the photo-overlay ink of the chip on the same frame, over a
+    /// 1 px scrim line so it holds up on any picture (R4-design-08).
+    fn label_strip(
+        &self,
+        label: ColorLabel,
+        height: f32,
+        inset: f32,
+        on_photo: bool,
+    ) -> Option<Div> {
+        let color = if on_photo {
+            self.photo_label_color(label)
+        } else {
+            self.label_color(label)
+        }?;
+        Some(
             div()
                 .absolute()
                 .left(px(inset))
                 .right(px(inset))
                 .bottom(px(inset))
-                .h(px(height))
+                .h(px(height + if on_photo { 1. } else { 0. }))
                 .bg(color)
-        })
+                .when(on_photo, |s| s.border_t_1().border_color(self.scrim())),
+        )
     }
     /// (group index, frame position, frame count) for photos in a burst or
     /// duplicate set of two or more.
@@ -9068,9 +9082,10 @@ impl Workspace {
             .overflow_hidden();
         if self.ledger_visible() {
             // When every frame fits, each ledger cell sits exactly over its
-            // frame; otherwise the track is a minimap of the whole view.
+            // frame; otherwise the track is a minimap of the whole view and a
+            // bracket marks the frames the strip shows (R4-review-01).
             let all = start == 0 && end == self.filtered.len();
-            let (left, track) = if all {
+            let (left, track, window) = if all {
                 let width = used - ui::FILM_GAP;
                 (
                     ui::PANEL_INSET + ((available - width) / 2.).max(0.),
@@ -9078,23 +9093,22 @@ impl Workspace {
                         width,
                         gap: ui::FILM_GAP,
                     },
+                    None,
                 )
             } else {
                 (
                     ui::PANEL_INSET,
-                    ledger::Track {
-                        width: self.ledger_width(),
-                        gap: 1.,
-                    },
+                    ledger::Track::free(self.ledger_width(), self.filtered.len()),
+                    Some((start, end)),
                 )
             };
-            strip = strip.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(left))
-                    .child(self.ledger(track, cx)),
-            );
+            strip = strip.child(div().absolute().top_0().left(px(left)).child(self.ledger(
+                track,
+                window,
+                ledger::TRACK_TOP,
+                ledger::BAND,
+                cx,
+            )));
         }
         // Consecutive frames of one burst share a tinted run so group
         // boundaries are visible without opening the inspector.
@@ -9152,7 +9166,7 @@ impl Workspace {
                 .justify_center()
                 .child(frame)
                 // 2 px label strip inside the 2 px selection inset.
-                .children(self.label_strip(p.label, 2., 2.));
+                .children(self.label_strip(p.label, 2., 2., true));
             let photo_id = p.id;
             // Selection is an inset overlay, so selected and unselected cells
             // have identical boxes and the strip keeps one constant gap.

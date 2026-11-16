@@ -143,7 +143,7 @@ const GRID: u32 = 0x1c1c1c;
 /// Standalone defaults (dark panel); the inspector passes theme colours.
 const LABEL: u32 = 0x9a9a9a;
 const LABEL_STRONG: u32 = 0xe6e6e6;
-const LABEL_WARNING: u32 = 0xe0b341;
+const LABEL_WARNING: u32 = 0xe8893a;
 /// "No histogram data" sits on the dark plot plate in every theme.
 const EMPTY_LABEL: u32 = 0x9a9a9a;
 const AXIS_ROW: f32 = 14.;
