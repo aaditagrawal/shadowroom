@@ -11164,7 +11164,7 @@ impl Workspace {
             window,
             cx,
         );
-        let (text_sizes, text_size_description) = self.text_size_choices(&s);
+        let (text_sizes, text_size_description) = self.text_size_choices(s);
         let text_sizes = self.pref_choices("pref-text-size", text_sizes, false, window, cx);
         let motion_description = if motion::system_reduces_motion() {
             "Menus, dialogs and notices appear without fading. The system asks for reduced motion, so fades are off either way."

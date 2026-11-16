@@ -66,6 +66,9 @@ enum Action {
     Enter(usize),
 }
 
+/// A theme file's source label and the themes read from it.
+type ThemeFamily = (String, Vec<Theme>);
+
 /// Which chooser `show_path_picker` opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Chooser {
@@ -209,12 +212,7 @@ impl Workspace {
     }
 
     /// Hands a validated choice to whoever asked for it.
-    fn apply_path_choice(
-        &mut self,
-        purpose: Purpose,
-        path: PathBuf,
-        theme: Option<(String, Vec<Theme>)>,
-    ) {
+    fn apply_path_choice(&mut self, purpose: Purpose, path: PathBuf, theme: Option<ThemeFamily>) {
         match purpose {
             Purpose::Workspace {
                 export: Some(picks),
@@ -911,7 +909,7 @@ fn validate_choice(
     purpose: &Purpose,
     path: PathBuf,
     photo_folders: &[PathBuf],
-) -> anyhow::Result<(PathBuf, Option<(String, Vec<Theme>)>)> {
+) -> anyhow::Result<(PathBuf, Option<ThemeFamily>)> {
     let path =
         std::fs::canonicalize(&path).with_context(|| format!("Cannot open {}", path.display()))?;
     if purpose.files() {
