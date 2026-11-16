@@ -1,6 +1,7 @@
 //! Preference edits stay private until Apply, including imported theme families.
 use super::{
-    Cmd, PreferencesSection, Settings, Theme, Workspace, persist_theme_source, read_theme_family,
+    Cmd, FocusScope, PreferencesSection, Settings, Theme, Workspace, persist_theme_source,
+    read_theme_family,
 };
 use gpui::{Context, KeyDownEvent, PathPromptOptions, Window};
 use serde_json::{Value, json};
@@ -120,13 +121,10 @@ impl Workspace {
                 let tab = self.dialog_handle(&format!("prefs-tab-{next}"), 1, cx);
                 window.focus(&tab);
             }
+            // Focus wraps inside the dialog; it never walks onto the window
+            // beneath the scrim (the dock grips are tab stops too).
             "tab" if !m.alt => {
-                self.focus_visible = true;
-                if m.shift {
-                    window.focus_prev();
-                } else {
-                    window.focus_next();
-                }
+                self.cycle_dialog_focus(FocusScope::Preferences, m.shift, window);
             }
             "s" if primary && !m.shift && !m.alt => self.execute(Cmd::ApplyPreferences, window, cx),
             "left" | "up" | "right" | "down" if !primary && !m.alt => {

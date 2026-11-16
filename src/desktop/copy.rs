@@ -287,8 +287,12 @@ pub(super) fn middle_path(path: &str, max: usize) -> String {
     )
 }
 
+/// One label for the duplicate scan in the toolbar, the pane and the palette.
+pub(super) const SCAN_DUPLICATES: &str = "Scan for Duplicates";
+
 /// The Duplicates view with nothing to show, by scan state: what happened,
 /// what was checked, and the button that moves on (None while scanning).
+/// `scope` is a bare noun: "the whole library" or a folder name.
 pub(super) fn duplicates_empty(
     scan: Option<&DuplicateScanState>,
     scope: &str,
@@ -297,24 +301,25 @@ pub(super) fn duplicates_empty(
         return (
             "Review duplicate photos".into(),
             format!(
-                "Scan {scope} to verify exact file matches. Nothing is moved or removed automatically."
+                "Scan {scope} for exact file matches. Nothing is moved or removed automatically."
             ),
-            Some("Find Duplicates"),
+            Some(SCAN_DUPLICATES),
         );
     };
     match scan.phase {
         ScanPhase::Queued | ScanPhase::Running => (
             "Checking for duplicates…".into(),
             format!(
-                "Checked {} of {} candidates {scope}.",
-                scan.processed, scan.candidates
+                "Checked {} of {} candidates in {scope}.",
+                count(scan.processed),
+                count(scan.candidates)
             ),
             None,
         ),
         ScanPhase::Completed => (
             "No exact duplicates".into(),
             format!(
-                "Checked {} {scope}. Nothing is moved or removed automatically.",
+                "Checked {} in {scope}. Nothing is moved or removed automatically.",
                 plural(scan.total, "photo", "photos")
             ),
             Some("Scan again"),
@@ -625,25 +630,25 @@ mod tests {
 
     #[test]
     fn duplicate_empty_states_follow_the_scan() {
-        let (title, body, button) = duplicates_empty(None, "in Demo Shoot");
+        let (title, body, button) = duplicates_empty(None, "the whole library");
         assert_eq!(title, "Review duplicate photos");
-        assert!(body.contains("in Demo Shoot"));
-        assert_eq!(button, Some("Find Duplicates"));
+        assert!(body.starts_with("Scan the whole library for exact file matches"));
+        assert_eq!(button, Some(SCAN_DUPLICATES));
         let mut scan = DuplicateScanState {
             phase: ScanPhase::Completed,
             total: 7,
             ..DuplicateScanState::default()
         };
-        let (title, body, button) = duplicates_empty(Some(&scan), "in the whole library");
+        let (title, body, button) = duplicates_empty(Some(&scan), "the whole library");
         assert_eq!(title, "No exact duplicates");
         assert!(body.starts_with("Checked 7 photos in the whole library"));
         assert_eq!(button, Some("Scan again"));
         scan.phase = ScanPhase::Running;
-        scan.processed = 3;
-        scan.candidates = 4;
-        let (title, body, button) = duplicates_empty(Some(&scan), "in X");
+        scan.processed = 12_043;
+        scan.candidates = 50_112;
+        let (title, body, button) = duplicates_empty(Some(&scan), "Demo Shoot");
         assert_eq!(title, "Checking for duplicates…");
-        assert!(body.contains("3 of 4"));
+        assert_eq!(body, "Checked 12,043 of 50,112 candidates in Demo Shoot.");
         assert_eq!(button, None);
         scan.phase = ScanPhase::Stale;
         assert_eq!(

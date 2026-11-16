@@ -17,7 +17,7 @@ mod text_input;
 use anyhow::{Context as _, Result};
 use copy::plural;
 use crossbeam_channel::{Receiver, Sender};
-use dialog::{ButtonKind, FocusTarget};
+use dialog::{ButtonKind, FocusScope, FocusTarget};
 use feedback::Tone;
 use gpui::{prelude::*, *};
 use layout as ui;
@@ -303,7 +303,7 @@ struct PaletteCache {
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
-    availability: [bool; 7],
+    availability: [bool; 10],
     revision: u64,
 }
 
@@ -319,11 +319,16 @@ impl PaletteCache {
             .filter_map(|(i, item)| fuzzy_score(query, &item.search).map(|score| (score, i)))
             .collect();
         if query.is_empty() {
+            // Recent commands first, then culling before housekeeping.
             scored.sort_by_key(|&(_, i)| {
-                recent
-                    .iter()
-                    .position(|title| *title == self.items[i].title)
-                    .unwrap_or(usize::MAX)
+                let item = &self.items[i];
+                (
+                    recent
+                        .iter()
+                        .position(|title| *title == item.title)
+                        .unwrap_or(usize::MAX),
+                    palette_category_rank(&item.detail),
+                )
             });
         } else {
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -331,6 +336,50 @@ impl PaletteCache {
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
     }
+}
+
+/// Rows the palette shows at once; PageUp/PageDown move by this many.
+const PALETTE_PAGE: usize = 12;
+
+/// The palette selection after an arrow or page key: arrows wrap around
+/// the ends, pages stop at them.
+fn palette_step(index: usize, total: usize, key: &str) -> usize {
+    let last = total.saturating_sub(1);
+    let index = index.min(last);
+    match key {
+        "up" if index == 0 => last,
+        "up" => index - 1,
+        "down" if index >= last => 0,
+        "down" => index + 1,
+        "pageup" => index.saturating_sub(PALETTE_PAGE),
+        "pagedown" => (index + PALETTE_PAGE).min(last),
+        _ => index,
+    }
+}
+
+/// Empty-query order of palette categories (the detail's first segment):
+/// review decisions, then navigation and filtering, then file and app commands.
+fn palette_category_rank(detail: &str) -> usize {
+    const ORDER: [&str; 13] = [
+        "Review",
+        "Edit",
+        "View",
+        "Compare",
+        "Bursts",
+        "Filter",
+        "Library",
+        "Catalog",
+        "Layout",
+        "File",
+        "Help",
+        "App",
+        "Appearance",
+    ];
+    let category = detail.split(" · ").next().unwrap_or(detail);
+    ORDER
+        .iter()
+        .position(|&c| c == category)
+        .unwrap_or(ORDER.len())
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1066,6 +1115,8 @@ pub struct Workspace {
     /// Keyboard focus handles for dialog controls (`dialog.rs`).
     dialog_focus: RefCell<dialog::DialogFocus>,
     theme_list_scroll: ScrollHandle,
+    /// Getting Started body: the scrollbar and keyboard scrolling share it.
+    guide_scroll: ScrollHandle,
     /// The keyboard, not the pointer, moved focus last: show the focus ring.
     focus_visible: bool,
     deletion: deletion_ui::State,
@@ -1535,6 +1586,7 @@ impl Workspace {
             preferences_section: PreferencesSection::default(),
             dialog_focus: RefCell::default(),
             theme_list_scroll: ScrollHandle::new(),
+            guide_scroll: ScrollHandle::new(),
             focus_visible: false,
             deletion: deletion_ui::State::default(),
             folder_picker: None,
@@ -3400,6 +3452,18 @@ impl Workspace {
                 self.save_settings();
                 self.rebuild(None);
             }
+            Cmd::AddRemoteHost
+                if self
+                    .preferences_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.changed()) =>
+            {
+                // Like Import: never drop unapplied preference edits.
+                self.palette = false;
+                self.error = Some(
+                    "Apply or cancel your preference changes before adding a network host".into(),
+                );
+            }
             Cmd::AddRemoteHost => {
                 self.close_preferences();
                 self.palette = false;
@@ -4303,7 +4367,7 @@ impl Workspace {
                 Cmd::Filter(Filter::Trash),
             ),
             item(
-                "Find Duplicates…",
+                copy::SCAN_DUPLICATES,
                 "Library · exact bytes in current folder or library",
                 "",
                 "duplicates",
@@ -4360,8 +4424,8 @@ impl Workspace {
                 Cmd::View(ViewMode::Compare),
             ),
             item(
-                "Survey Burst",
-                "View · every frame of the current burst",
+                "Survey View",
+                "View · selection, burst or neighbours side by side",
                 "S",
                 "group",
                 Cmd::View(ViewMode::Survey),
@@ -4726,7 +4790,16 @@ impl Workspace {
             || self.save_state() == SaveState::Failed;
         let in_trash = self.filter == Filter::Trash;
         let grouped = self.duplicates_only || !self.groups.is_empty();
+        let (import_open, importing) = (self.import_ui.open, self.import_ui.active());
         items.retain(|i| match &i.command {
+            Cmd::ClearReviewSubset => self.review_subset.is_some(),
+            // Import controls appear only where they act: Start and Refresh on
+            // the open panel, Pause and Cancel while an import runs.
+            Cmd::Ingest(action) => match action.as_str() {
+                "start" | "plan" => import_open && !importing,
+                "pause" | "cancel_now" => importing,
+                _ => true,
+            },
             Cmd::CancelImport => self.busy,
             Cmd::RetryPreview => preview_failed,
             Cmd::CancelDuplicates => scanning,
@@ -4790,6 +4863,9 @@ impl Workspace {
             self.filter == Filter::Trash,
             self.duplicates_only || !self.groups.is_empty(),
             self.recovery_pending,
+            self.import_ui.open,
+            self.import_ui.active(),
+            self.review_subset.is_some(),
         ];
         let mut cell = self.palette_cache.borrow_mut();
         if cell.as_ref().is_none_or(|cache| {
@@ -4876,6 +4952,8 @@ impl Workspace {
             return;
         }
         if self.getting_started {
+            // Scrolling keys and Return; nothing reaches the views beneath.
+            self.getting_started_key(event, window, cx);
             return;
         }
         if self.rating_filter_open {
@@ -4921,15 +4999,15 @@ impl Workspace {
             return;
         }
         if self.palette {
+            let total = self.matches().matches.len();
+            // Home/End move the caret while there is a query to edit.
+            let list_ends = primary || self.palette_query.is_empty();
             match key {
-                "up" => {
-                    let last = self.matches().matches.len().saturating_sub(1);
-                    self.palette_index = self.palette_index.min(last).saturating_sub(1);
+                "up" | "down" | "pageup" | "pagedown" => {
+                    self.palette_index = palette_step(self.palette_index, total, key);
                 }
-                "down" => {
-                    let last = self.matches().matches.len().saturating_sub(1);
-                    self.palette_index = (self.palette_index + 1).min(last);
-                }
+                "home" if list_ends => self.palette_index = 0,
+                "end" if list_ends => self.palette_index = total.saturating_sub(1),
                 "enter" => {
                     let selected = {
                         let cache = self.matches();
@@ -5358,6 +5436,13 @@ impl Render for Tip {
             .bg(self.bg)
             .border_1()
             .border_color(self.border)
+            // The shared floating-surface elevation (toast, menus).
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.35),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(14.),
+                spread_radius: px(0.),
+            }])
             .px(px(space::SM))
             .py(px(space::XS))
             .flex()
@@ -6694,9 +6779,23 @@ impl Workspace {
     fn filters(&self, cx: &gpui::Context<Self>) -> AnyElement {
         // The breadcrumb names every constraint actually narrowing the view,
         // each removable on its own (CAT-04).
-        let constraints = self.constraints();
+        // It leads with the collection as plain text: "All photos", or Trash
+        // and Duplicates, which are places reached from the sidebar rather
+        // than filters to clear (R2-catalog-07).
+        let place = self.duplicates_only || self.filter == Filter::Trash;
+        let root = if self.duplicates_only {
+            "Duplicates"
+        } else {
+            collection_label(if place { Filter::Trash } else { Filter::All })
+        };
+        let constraints: Vec<_> = self
+            .constraints()
+            .into_iter()
+            .filter(|c| !(place && c.id == "chip-collection"))
+            .collect();
         let chips = constraints.len();
         let chip_width = (self.center_size.0 * 0.3).clamp(96., 200.);
+        let separator = || div().flex_shrink_0().text_color(self.muted()).child("·");
         let mut crumb = div()
             .id("breadcrumb")
             .flex()
@@ -6705,26 +6804,19 @@ impl Workspace {
             .items_center()
             .gap(px(space::XS))
             .overflow_hidden()
-            .whitespace_nowrap();
-        if chips == 0 {
-            crumb = crumb.child(
+            .whitespace_nowrap()
+            .child(
                 div()
                     .id("breadcrumb-scope")
                     .flex_shrink_0()
                     .pr(px(space::XS))
-                    .child(collection_label(Filter::All)),
+                    .child(root),
             );
+        if chips > 0 {
+            crumb = crumb.child(separator());
         }
         for constraint in constraints {
             crumb = crumb.child(self.constraint_chip(constraint, chip_width, cx));
-        }
-        if chips >= 2 {
-            crumb = crumb.child(
-                self.compact_button("clear-filters", "Clear", "", Cmd::ClearFilters, false, cx)
-                    .px(px(space::SM))
-                    .text_color(self.muted())
-                    .tooltip(self.tip("Show the whole library", "")),
-            );
         }
         if self.mode != ViewMode::Grid && self.review_folder == self.scope {
             if let Some(ids) = &self.review_subset {
@@ -6740,12 +6832,12 @@ impl Workspace {
         }
         match (self.mode, self.selected_photo()) {
             (ViewMode::Grid, _) | (_, None) => {
-                crumb = crumb.child(
-                    div()
-                        .flex_shrink_0()
-                        .pl(px(space::XS))
-                        .text_color(self.muted())
-                        .child(copy::count(self.filtered.len())),
+                crumb = crumb.child(separator()).child(
+                    div().flex_shrink_0().text_color(self.muted()).child(plural(
+                        self.filtered.len(),
+                        "photo",
+                        "photos",
+                    )),
                 );
             }
             (_, Some(photo)) => {
@@ -6831,6 +6923,23 @@ impl Workspace {
             .border_b_1()
             .border_color(self.border())
             .child(crumb)
+            // Clear sits after the result count, apart from it, so the count
+            // never reads as part of the action.
+            .when(chips >= 2, |row| {
+                row.child(
+                    self.compact_button(
+                        "clear-filters",
+                        "Clear all",
+                        "",
+                        Cmd::ClearFilters,
+                        false,
+                        cx,
+                    )
+                    .px(px(space::SM))
+                    .text_color(self.muted())
+                    .tooltip(self.tip("Show the whole library", "")),
+                )
+            })
             .when(self.duplicates_only, |row| {
                 let running = self
                     .duplicate_scan
@@ -6839,7 +6948,11 @@ impl Workspace {
                 row.child(
                     self.toggle_button(
                         "duplicate-scan",
-                        if running { "Stop scan" } else { "Scan" },
+                        if running {
+                            "Stop scan"
+                        } else {
+                            copy::SCAN_DUPLICATES
+                        },
                         if running { "stop" } else { "duplicates" },
                         if running {
                             Cmd::CancelDuplicates
@@ -9366,10 +9479,13 @@ impl Workspace {
                     .child(
                         self.metadata_row(
                             "Flag",
+                            // Same words as the sidebar: no flag and no stars
+                            // is "Unreviewed"; stars without a flag, "No flag".
                             match p.flag {
                                 Flag::Pick => "Pick",
                                 Flag::Reject => "Reject",
-                                Flag::None => "None",
+                                Flag::None if p.rating == 0 => "Unreviewed",
+                                Flag::None => "No flag",
                             }
                             .into(),
                         ),
@@ -10320,8 +10436,11 @@ impl Workspace {
         // Matches can shrink while the palette is open (busy, scan or theme
         // changes); never index or window past the current list.
         let selected = self.palette_index.min(total.saturating_sub(1));
-        let start = selected.saturating_sub(6);
-        let end = (start + 12).min(total);
+        // A full page of rows even when the selection wrapped to the end.
+        let start = selected
+            .saturating_sub(PALETTE_PAGE / 2)
+            .min(total.saturating_sub(PALETTE_PAGE));
+        let end = (start + PALETTE_PAGE).min(total);
         let mut results = div().flex().flex_col().py(px(space::XS));
         for (n, &index) in cache
             .matches
@@ -10403,7 +10522,9 @@ impl Workspace {
                         div()
                             .flex_shrink_0()
                             .text_size(px(11.))
-                            .text_color(if recent { self.accent() } else { self.muted() })
+                            // Blue marks only where you are; "Recent" is a
+                            // plain tag (and full text on the active row).
+                            .text_color(if active { self.text() } else { self.muted() })
                             .child(if recent {
                                 "Recent".to_string()
                             } else {
@@ -10611,6 +10732,7 @@ impl Workspace {
     }
     /// Renders staged preferences with explicit apply and cancel actions.
     fn preferences_view(&self, window: &Window, cx: &gpui::Context<Self>) -> AnyElement {
+        self.focus_scope(FocusScope::Preferences);
         let s = self.preference_settings();
         let fonts = self.pref_choices(
             "font",
@@ -11184,21 +11306,7 @@ impl Workspace {
             div()
                 .flex()
                 .gap(px(space::SM))
-                .child(self.pref_button(
-                    self.action_button(
-                        "keep-editing-preferences",
-                        "Keep Editing",
-                        Cmd::KeepEditingPreferences,
-                        ButtonKind::Primary,
-                        false,
-                        cx,
-                    ),
-                    "prefs-keep-editing",
-                    3,
-                    Cmd::KeepEditingPreferences,
-                    window,
-                    cx,
-                ))
+                // The filled default sits rightmost, as in every footer.
                 .child(self.pref_button(
                     self.action_button(
                         "discard-preferences",
@@ -11211,6 +11319,21 @@ impl Workspace {
                     "prefs-discard",
                     3,
                     Cmd::DiscardPreferences,
+                    window,
+                    cx,
+                ))
+                .child(self.pref_button(
+                    self.action_button(
+                        "keep-editing-preferences",
+                        "Keep Editing",
+                        Cmd::KeepEditingPreferences,
+                        ButtonKind::Primary,
+                        false,
+                        cx,
+                    ),
+                    "prefs-keep-editing",
+                    3,
+                    Cmd::KeepEditingPreferences,
                     window,
                     cx,
                 ))
@@ -11342,7 +11465,8 @@ impl Workspace {
         {
             format!(
                 "Checking duplicates · {} of {}",
-                scan.processed, scan.candidates
+                copy::count(scan.processed),
+                copy::count(scan.candidates)
             )
         } else {
             let exports = self
@@ -11439,21 +11563,37 @@ impl Workspace {
                     }),
                 )
             })
+            // The workspace description (selection, import or scan progress)
+            // always stays; a notice takes the space after it, behind a rule,
+            // and truncates first (R2-catalog-01).
             .child(
-                self.status_notice(cx)
-                    .filter(|_| self.dock_drag.is_none())
-                    .unwrap_or_else(|| {
-                        div()
-                            .id("workspace-status")
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_normal()
-                            .line_clamp(1)
-                            .child(context)
-                            .into_any_element()
-                    }),
+                div()
+                    .id("workspace-status")
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_normal()
+                    .line_clamp(1)
+                    .child(context),
+            )
+            .child(
+                match self.status_notice(cx).filter(|_| self.dock_drag.is_none()) {
+                    Some(notice) => div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(1.))
+                                .h(px(14.))
+                                .bg(self.c("border.variant", "#333333")),
+                        )
+                        .child(notice),
+                    None => div().flex_1(),
+                },
             )
             .when(
                 self.workspace_size.0 >= 1120.
@@ -11693,14 +11833,26 @@ impl Workspace {
         if self.mode == ViewMode::Grid {
             self.dock_override = [false; 2];
         }
-        if self.sidebar && !self.focus_mode && !library_fits {
+        let library_yields = self.sidebar && !self.focus_mode && !library_fits;
+        if library_yields {
+            let inspector_yields = self.inspector && !inspector_fits && !self.photos.is_empty();
             self.hint_once(
                 "catalog-yields",
-                &format!(
-                    "Sidebar hidden to give the photo room · {} shows it",
-                    shortcut("⌘B")
-                ),
+                &if inspector_yields {
+                    format!(
+                        "Library and inspector hidden to give the photos room · {} and I show them",
+                        shortcut("⌘B")
+                    )
+                } else {
+                    format!(
+                        "Library hidden to give the photo room · {} shows it",
+                        shortcut("⌘B")
+                    )
+                },
             );
+        } else {
+            // The panel is back (Catalog, a wider window): the hint is stale.
+            self.withdraw_notice("catalog-yields");
         }
         self.docks = ui::fit_docks(
             self.workspace_size.0,
@@ -11906,38 +12058,62 @@ impl Workspace {
             .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
             .child(body)
             .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
-        // Overlays fade in over 120 ms (`motion`); closing is instant.
+        // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
+        // tagged with its overlay (None: the system-modal quit prompt) so the
+        // one scrim goes directly beneath the topmost modal.
+        let mut layers: Vec<(Option<Overlay>, AnyElement)> = Vec::new();
         if self.add_host.is_some() {
-            root = root.child(self.overlay_in("add-host-in", self.add_host_view(cx)));
+            let view = self.overlay_in("add-host-in", self.add_host_view(cx));
+            layers.push((Some(Overlay::AddHost), view));
         }
         if self.rating_filter_open && !self.palette && !self.preferences && !self.import_ui.open {
-            root = root.child(self.overlay_in("rating-filter-in", self.rating_filter_menu(cx)));
+            let view = self.overlay_in("rating-filter-in", self.rating_filter_menu(cx));
+            layers.push((Some(Overlay::RatingFilter), view));
         }
         if self.preferences {
-            root = root.child(self.overlay_in("preferences-in", self.preferences_view(window, cx)));
+            let view = self.overlay_in("preferences-in", self.preferences_view(window, cx));
+            layers.push((Some(Overlay::Preferences), view));
         }
         if self.palette {
-            root = root.child(self.overlay_in("palette-in", self.palette_view(cx)));
+            let view = self.overlay_in("palette-in", self.palette_view(cx));
+            layers.push((Some(Overlay::Palette), view));
         }
         if self.getting_started {
-            root = root.child(self.overlay_in("getting-started-in", self.getting_started_view(cx)));
+            let view = self.overlay_in("getting-started-in", self.getting_started_view(cx));
+            layers.push((Some(Overlay::GettingStarted), view));
         }
         if self.image_context.is_some() {
-            root = root.child(self.overlay_in("image-context-in", self.image_context_view(cx)));
+            let menu = self.image_context_view(cx);
+            let view = self.overlay_in("image-context-in", menu);
+            layers.push((Some(Overlay::ImageContext), view));
         }
         if self.deletion.open() {
             let deletion = self.deletion_view(cx);
-            root = root.child(self.overlay_in("deletion-in", deletion));
+            let view = self.overlay_in("deletion-in", deletion);
+            layers.push((Some(Overlay::Deletion), view));
         }
         if self.folder_picker.is_some() {
-            root = root.child(self.overlay_in("picker-in", self.picker_view(cx)));
+            let view = self.overlay_in("picker-in", self.picker_view(cx));
+            layers.push((Some(Overlay::FolderPicker), view));
         }
-        // System feedback paints above every overlay so no scrim dims it.
-        let quit_prompt = self
-            .quit_prompt_view(cx)
-            .map(|prompt| self.overlay_in("quit-prompt-in", prompt));
+        // The quit prompt is system-modal: above every overlay, in the same
+        // dialog stack, so lower modals lose their tint like any other.
+        if let Some(prompt) = self.quit_prompt_view(window, cx) {
+            layers.push((None, self.overlay_in("quit-prompt-in", prompt)));
+        }
+        let tinted = if self.feedback.quit_prompt.is_some() {
+            Some(None)
+        } else {
+            self.top_modal().map(Some)
+        };
+        for (overlay, view) in layers {
+            if tinted == Some(overlay) {
+                root = root.child(self.modal_tint());
+            }
+            root = root.child(view);
+        }
+        // The error toast paints above every overlay so no scrim dims it.
         root = root
-            .children(quit_prompt)
             .children(self.error_toast(cx))
             .children(self.trace.probe());
         // A focused dialog control that is no longer drawn (its dialog closed
@@ -11945,6 +12121,8 @@ impl Workspace {
         if self.dialog_focus.borrow().focus_is_stale(window) {
             window.focus(&self.focus);
         }
+        // The quit prompt or Preferences on top owns keyboard focus (R2-a11y-01).
+        self.claim_dialog_focus(window, cx);
         self.trim_display_cache();
         if self.feedback.animating.take() {
             window.request_animation_frame();
@@ -12155,10 +12333,10 @@ pub fn run() -> Result<()> {
 mod ui_tests {
     use super::{
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
-        NoticeKind, Overlay, PaletteCache, PanDrag, PaneGeometry, SelectionSummary, SurveyKey,
-        SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
-        index_filtered_positions, is_quit_chord, item, label_index, retained_position, text_input,
-        thumbnail_size,
+        NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
+        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
+        index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
+        palette_step, retained_position, text_input, thumbnail_size,
     };
 
     #[test]
@@ -12407,10 +12585,13 @@ mod ui_tests {
                 .collect();
             if query.is_empty() {
                 expected.sort_by_key(|&(_, i)| {
-                    recent
-                        .iter()
-                        .position(|title| *title == cache.items[i].title)
-                        .unwrap_or(usize::MAX)
+                    (
+                        recent
+                            .iter()
+                            .position(|title| *title == cache.items[i].title)
+                            .unwrap_or(usize::MAX),
+                        palette_category_rank(&cache.items[i].detail),
+                    )
                 });
             } else {
                 expected.sort_by(|a, b| b.0.cmp(&a.0));
@@ -12420,6 +12601,60 @@ mod ui_tests {
                 expected.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn empty_palette_lists_recents_then_culling_before_files() {
+        let mut cache = PaletteCache {
+            items: vec![
+                item("Show Import Panel", "File", "", "drive", Cmd::Import),
+                item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+                item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
+                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item(
+                    "Quit",
+                    "App · finishes pending writes first",
+                    "",
+                    "close",
+                    Cmd::Quit,
+                ),
+                item("Pin", "Compare", "B", "pin", Cmd::Pin),
+            ],
+            ..PaletteCache::default()
+        };
+        cache.match_query("", &[]);
+        let titles: Vec<_> = cache
+            .matches
+            .iter()
+            .map(|&i| cache.items[i].title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Pick",
+                "Undo",
+                "Grid View",
+                "Pin",
+                "Show Import Panel",
+                "Quit"
+            ]
+        );
+        cache.query = None;
+        cache.match_query("", &["Quit".into()]);
+        assert_eq!(cache.items[cache.matches[0]].title, "Quit");
+        assert_eq!(cache.items[cache.matches[1]].title, "Pick");
+    }
+
+    #[test]
+    fn palette_arrows_wrap_and_pages_stop_at_the_ends() {
+        assert_eq!(palette_step(0, 5, "up"), 4);
+        assert_eq!(palette_step(4, 5, "down"), 0);
+        assert_eq!(palette_step(2, 5, "down"), 3);
+        assert_eq!(palette_step(9, 5, "up"), 3, "a stale index clamps first");
+        assert_eq!(palette_step(3, 40, "pageup"), 0);
+        assert_eq!(palette_step(30, 40, "pagedown"), 39);
+        assert_eq!(palette_step(0, 40, "pagedown"), PALETTE_PAGE);
+        assert_eq!(palette_step(0, 0, "down"), 0);
     }
 
     struct TestWake(std::sync::mpsc::Sender<()>);
@@ -12658,7 +12893,22 @@ mod ui_tests {
             ),
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
+            ("motion.rs", include_str!("desktop/motion.rs")),
+            ("prefetch.rs", include_str!("desktop/prefetch.rs")),
+            ("frame_trace.rs", include_str!("desktop/frame_trace.rs")),
         ];
+        // Every desktop module is checked: a new file must join the list.
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/desktop");
+        for entry in std::fs::read_dir(&directory).expect("src/desktop") {
+            let path = entry.expect("desktop module").path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                assert!(
+                    sources.iter().any(|(listed, _)| *listed == name),
+                    "src/desktop/{name} is missing from the quit-chord guard's sources"
+                );
+            }
+        }
         let root = sources[0].1;
         let body = &root[root
             .find("    fn key(&mut self, event: &KeyDownEvent")
@@ -12761,6 +13011,24 @@ mod ui_tests {
                 "{handler} must not claim the quit key"
             );
         }
+        // The quit prompt's Tab/arrow/Return handling and the guide's
+        // scrolling keys route after the chord and never claim Q.
+        for (file, handler) in [
+            ("feedback.rs", "fn quit_prompt_key("),
+            ("help.rs", "fn getting_started_key("),
+        ] {
+            let source = sources.iter().find(|(name, _)| *name == file).unwrap().1;
+            let start = source.find(handler).expect(handler);
+            let end = start + source[start..].find("\n    }\n").unwrap();
+            assert!(
+                !source[start..end].contains("\"q\""),
+                "{handler} must not claim the quit key"
+            );
+        }
+        let guide = body
+            .find("self.getting_started_key(event, window, cx)")
+            .expect("guide keyboard routing");
+        assert!(quit < guide, "guide keys route after quit");
     }
 
     #[test]

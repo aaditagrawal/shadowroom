@@ -41,7 +41,7 @@ impl ImageAction {
         match self {
             Self::Reveal => "Show in folder",
             Self::Review => "Show in review",
-            Self::Survey => "Survey burst",
+            Self::Survey => "Survey",
             Self::Compare => "Compare",
             Self::Pick => "Pick",
             Self::Reject => "Reject",

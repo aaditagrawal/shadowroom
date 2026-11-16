@@ -1,7 +1,7 @@
 //! Shared modal frame, dialog button kinds and keyboard focus for dialog controls.
 //!
-//! Every modal uses one scrim strength (`shadowroom.scrim.modal`), drawn only by
-//! the topmost modal so stacked dialogs never compound, one elevated surface and
+//! Every modal uses one scrim strength (`shadowroom.scrim.modal`), drawn once
+//! beneath the topmost modal so stacked dialogs never compound, one elevated surface and
 //! one 13 px title bar. Dialog controls that take keyboard focus register a
 //! persistent [`FocusHandle`] here; `Workspace::key` still sees every key first
 //! (focused children have no key handlers), so Ctrl+Q keeps quitting.
@@ -62,16 +62,68 @@ impl FocusTarget {
     }
 }
 
+/// One dialog's own Tab cycle: Preferences or the quit prompt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FocusScope {
+    #[default]
+    Preferences,
+    QuitPrompt,
+}
+
+/// A control registered this frame, in paint order, for the Tab cycle.
+struct TabStop {
+    key: SharedString,
+    tab_index: isize,
+    tab_stop: bool,
+    scope: FocusScope,
+}
+
 /// Persistent focus handles keyed by control, plus this frame's targets.
 #[derive(Default)]
 pub(super) struct DialogFocus {
     handles: HashMap<SharedString, FocusHandle>,
     targets: HashMap<SharedString, FocusTarget>,
+    /// This frame's controls in paint order, so Tab stays inside the topmost
+    /// dialog instead of walking the window (and the dock grips under it).
+    stops: Vec<TabStop>,
+    /// The dialog whose controls are being registered.
+    scope: FocusScope,
 }
 impl DialogFocus {
     /// Forget last frame's targets; `render` registers the visible ones again.
     pub fn begin_frame(&mut self) {
         self.targets.clear();
+        self.stops.clear();
+        self.scope = FocusScope::default();
+    }
+    /// The control Tab (or Shift+Tab with `back`) moves to inside `scope`:
+    /// ordered by tab index, then paint order, wrapping at both ends. With
+    /// nothing in the scope focused, Tab starts at the first stop.
+    pub fn cycle(&self, scope: FocusScope, back: bool, window: &Window) -> Option<FocusHandle> {
+        let mut stops: Vec<&TabStop> = self
+            .stops
+            .iter()
+            .filter(|stop| stop.scope == scope && stop.tab_stop)
+            .collect();
+        stops.sort_by_key(|stop| stop.tab_index);
+        let keys: Vec<&str> = stops.iter().map(|stop| stop.key.as_ref()).collect();
+        let current = keys.iter().position(|key| {
+            self.handles
+                .get(*key)
+                .is_some_and(|handle| handle.is_focused(window))
+        });
+        let next = cycle_index(current, keys.len(), back)?;
+        self.handles.get(keys[next]).cloned()
+    }
+    /// Whether a control of `scope` drawn this frame holds keyboard focus.
+    pub fn scope_focused(&self, scope: FocusScope, window: &Window) -> bool {
+        self.stops.iter().any(|stop| {
+            stop.scope == scope
+                && self
+                    .handles
+                    .get(&stop.key)
+                    .is_some_and(|handle| handle.is_focused(window))
+        })
     }
     /// The focused control rendered this frame, if any.
     pub fn focused(&self, window: &Window) -> Option<(SharedString, FocusTarget)> {
@@ -106,7 +158,62 @@ impl DialogFocus {
     }
 }
 
+/// The next position in a Tab cycle of `count` stops from `current`.
+fn cycle_index(current: Option<usize>, count: usize, back: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (current, back) {
+        (None, false) => 0,
+        (None, true) => count - 1,
+        (Some(i), false) => (i + 1) % count,
+        (Some(i), true) => (i + count - 1) % count,
+    })
+}
+
 impl Workspace {
+    /// Controls registered from here on belong to `scope`'s Tab cycle.
+    pub(super) fn focus_scope(&self, scope: FocusScope) {
+        self.dialog_focus.borrow_mut().scope = scope;
+    }
+
+    /// Tab / Shift+Tab inside the topmost dialog: focus wraps within it.
+    pub(super) fn cycle_dialog_focus(
+        &mut self,
+        scope: FocusScope,
+        back: bool,
+        window: &mut Window,
+    ) {
+        self.focus_visible = true;
+        let next = self.dialog_focus.borrow().cycle(scope, back, window);
+        if let Some(handle) = next {
+            window.focus(&handle);
+        }
+    }
+
+    /// Keyboard focus belongs to the topmost dialog: when the quit prompt or
+    /// Preferences is on top and none of its controls holds focus (it just
+    /// opened, or the focused control went away), its default control takes
+    /// it, so the first Tab moves from a known place.
+    pub(super) fn claim_dialog_focus(&self, window: &mut Window, cx: &App) {
+        let (scope, key, tab_index) = if self.feedback.quit_prompt.is_some() {
+            (FocusScope::QuitPrompt, "quit-retry".to_owned(), 1)
+        } else if self.top_modal() == Some(Overlay::Preferences) {
+            let index = preferences::SECTIONS
+                .iter()
+                .position(|(section, _)| *section == self.preferences_section)
+                .unwrap_or(0);
+            (FocusScope::Preferences, format!("prefs-tab-{index}"), 1)
+        } else {
+            return;
+        };
+        if self.dialog_focus.borrow().scope_focused(scope, window) {
+            return;
+        }
+        let handle = self.dialog_handle(&key, tab_index, cx);
+        window.focus(&handle);
+    }
+
     /// Keyboard focus ring. Themes may override it; otherwise it follows `border.focused`.
     pub(super) fn focus_ring(&self) -> Hsla {
         if self.theme.colors.contains_key("shadowroom.focus_ring") {
@@ -141,9 +248,9 @@ impl Workspace {
             .find(|overlay| !matches!(overlay, Overlay::RatingFilter | Overlay::ImageContext))
     }
 
-    /// Full-window layer behind a modal. Only the topmost modal tints it, so a
-    /// dialog opened over Preferences never doubles the scrim.
-    pub(super) fn modal_scrim(&self, overlay: Overlay) -> Div {
+    /// Full-window, untinted layer that centres a modal and blocks the
+    /// pointer beneath it. The tint is [`Self::modal_tint`], painted once.
+    pub(super) fn modal_scrim(&self, _overlay: Overlay) -> Div {
         div()
             .absolute()
             .inset_0()
@@ -151,9 +258,22 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .when(self.top_modal() == Some(overlay), |s| {
-                s.bg(self.c("shadowroom.scrim.modal", "#00000099"))
-            })
+    }
+
+    /// The one scrim, painted directly beneath the topmost modal so stacked
+    /// dialogs never compound. It keeps its element id while any modal is
+    /// open, so it fades in only when the first modal opens: a dialog opened
+    /// over Preferences fades its own surface while the tint holds steady.
+    pub(super) fn modal_tint(&self) -> AnyElement {
+        self.fade_in(
+            "modal-tint-in",
+            motion::OVERLAY,
+            0.3,
+            div()
+                .absolute()
+                .inset_0()
+                .bg(self.c("shadowroom.scrim.modal", "#00000099")),
+        )
     }
 
     /// The one dialog surface: elevated background, variant border and shadow.
@@ -339,10 +459,18 @@ impl Workspace {
         cx: &App,
     ) -> Stateful<Div> {
         let handle = self.dialog_handle(key, tab_index, cx).tab_stop(tab_stop);
-        self.dialog_focus
-            .borrow_mut()
-            .targets
-            .insert(SharedString::from(key.to_owned()), target);
+        {
+            let mut focus = self.dialog_focus.borrow_mut();
+            let key = SharedString::from(key.to_owned());
+            let scope = focus.scope;
+            focus.stops.push(TabStop {
+                key: key.clone(),
+                tab_index,
+                tab_stop,
+                scope,
+            });
+            focus.targets.insert(key, target);
+        }
         let ring = self.focus_visible && handle.is_focused(window);
         element
             .track_focus(&handle)
@@ -454,7 +582,8 @@ impl Workspace {
                             } else if *active == n {
                                 self.accent()
                             } else {
-                                self.border()
+                                // Text-field boundary: 3:1 (WCAG 1.4.11).
+                                self.control_border()
                             })
                             .bg(self.bg())
                             .overflow_hidden()
@@ -521,5 +650,23 @@ impl Workspace {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Explicit import: the parent glob carries gpui::test, which shadows #[test].
+    use super::cycle_index;
+
+    #[test]
+    fn dialog_tab_cycle_wraps_inside_the_dialog() {
+        // Nothing focused yet: Tab starts at the first stop, Shift+Tab at the last.
+        assert_eq!(cycle_index(None, 3, false), Some(0));
+        assert_eq!(cycle_index(None, 3, true), Some(2));
+        // Both ends wrap within the dialog instead of leaving it.
+        assert_eq!(cycle_index(Some(2), 3, false), Some(0));
+        assert_eq!(cycle_index(Some(0), 3, true), Some(2));
+        assert_eq!(cycle_index(Some(1), 3, false), Some(2));
+        assert_eq!(cycle_index(None, 0, false), None);
     }
 }
