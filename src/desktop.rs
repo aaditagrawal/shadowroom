@@ -1390,6 +1390,9 @@ impl SurveyKey {
 
 /// A batch decision this large asks for Enter first (CAT-11).
 const BULK_CONFIRM_AT: usize = 1000;
+/// Smallest window (logical px): fits a 200% display of 1920x1080 (960x540)
+/// and tablets; layouts below 1024x680 drop docks and bar items first.
+const MIN_WINDOW: (f32, f32) = (720., 480.);
 /// A batch decision this large is confirmed with a counted Undo notice.
 const BULK_NOTICE_AT: usize = 50;
 
@@ -12658,7 +12661,7 @@ pub fn run() -> Result<()> {
                     }),
                     window_decorations: Some(WindowDecorations::Client),
                     app_id: Some("app.shadowroom.Shadowroom".into()),
-                    window_min_size: Some(size(px(960.), px(640.))),
+                    window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
                     ..Default::default()
                 },
                 move |window, cx| {
