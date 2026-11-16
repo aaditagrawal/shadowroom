@@ -25,7 +25,7 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Alt/Option + arrows | Pan a zoomed photo by a third of the view |
 | `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
 | Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
-| Tab / Shift+Tab | Focus mode (hide side panels); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
+| Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip (notices appear at the top of the photo); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
 | Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
 | `F` | Toggle cyan focus peaking in Review and Compare |
 | `F1` | Open Getting Started |

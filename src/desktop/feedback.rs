@@ -591,7 +591,12 @@ impl Workspace {
     /// Where the error toast floats: centred over the centre column, above
     /// the decision bar and filmstrip so it never covers either.
     fn toast_insets(&self) -> (f32, f32, f32) {
-        let mut bottom = ui::STATUS_HEIGHT + space::SM;
+        let status = if self.chrome_visible() {
+            ui::STATUS_HEIGHT
+        } else {
+            0.
+        };
+        let mut bottom = status + space::SM;
         if !self.import_ui.open && !self.filtered.is_empty() {
             bottom += DECISION_HEIGHT;
             if self.mode != ViewMode::Grid {

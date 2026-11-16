@@ -9,6 +9,7 @@ mod help;
 mod ingest_ui;
 mod layout;
 mod ledger;
+mod loupe_aids;
 mod motion;
 mod preferences;
 mod prefetch;
@@ -3864,6 +3865,10 @@ impl Workspace {
             Cmd::RatingFilter => {
                 self.rating_filter_open = !self.rating_filter_open && !self.other_overlay_open();
                 self.rating_filter_index = self.min_rating;
+                // The menu hangs from the view toolbar, which Focus mode hides.
+                if self.rating_filter_open {
+                    self.focus_mode = false;
+                }
             }
             Cmd::Histogram => self.histogram = !self.histogram,
             Cmd::PreviewDetails => self.preview_details = !self.preview_details,
@@ -12198,18 +12203,25 @@ impl Workspace {
         } else {
             FILMSTRIP_HEIGHT
         };
+        // Focus mode hides every bar but the decision bar and filmstrip
+        // (REV-25); notices move onto the canvas (`focus_notices`).
+        let chrome = self.chrome_visible();
+        if !self.focus_mode {
+            // Its exit hint is stale once Focus mode ends, however it ended.
+            self.withdraw_notice("focus-mode");
+        }
         self.center_size = (
             self.docks.center,
             self.workspace_size.1
-                - TITLE_HEIGHT
-                - if self.import_ui.open {
+                - if chrome { TITLE_HEIGHT } else { 0. }
+                - if self.import_ui.open || !chrome {
                     0.
                 } else {
                     TOOLBAR_HEIGHT
                 }
                 - decision_height
                 - strip_height
-                - ui::STATUS_HEIGHT,
+                - if chrome { ui::STATUS_HEIGHT } else { 0. },
         );
         if self.mode == ViewMode::Grid && !self.import_ui.open {
             let columns = self.grid_cols();
@@ -12265,7 +12277,9 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.trace.timed("filters", self.filters(cx)))
+            .when(chrome, |main| {
+                main.child(self.trace.timed("filters", self.filters(cx)))
+            })
             .children(self.bulk_bar(cx))
             .child(
                 div()
@@ -12358,9 +12372,14 @@ impl Workspace {
             .line_height(px(ui::TEXT_LINE_HEIGHT))
             .text_color(self.text())
             .bg(self.bg())
-            .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
+            .when(chrome, |root| {
+                root.child(self.trace.timed("title_bar", self.title_bar(window, cx)))
+            })
             .child(body)
-            .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
+            .when(chrome, |root| {
+                root.child(self.trace.timed("status_bar", self.status_bar(window, cx)))
+            })
+            .children((!chrome).then(|| self.focus_notices(cx)).flatten());
         // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
         // tagged with its overlay (None: the system-modal quit prompt) so the
         // one scrim goes directly beneath the topmost modal.
@@ -13190,6 +13209,7 @@ mod ui_tests {
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
             ("layout.rs", include_str!("desktop/layout.rs")),
             ("ledger.rs", include_str!("desktop/ledger.rs")),
+            ("loupe_aids.rs", include_str!("desktop/loupe_aids.rs")),
             ("preferences.rs", include_str!("desktop/preferences.rs")),
             (
                 "review_actions.rs",
