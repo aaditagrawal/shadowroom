@@ -602,19 +602,17 @@ impl Workspace {
                 .child(body)
                 .child(
                     self.modal_footer()
-                        // Cancel is the default; Enter names the ringed button.
-                        .child(self.key_hints(&[
-                            ("Tab", "Switch"),
-                            (
-                                "Enter",
-                                if confirm_focused {
-                                    if c.permanent { "Delete" } else { "Move" }
-                                } else {
-                                    "Cancel"
-                                },
-                            ),
-                            ("Esc", "Cancel"),
-                        ]))
+                        // Cancel is the default; Enter names the ringed button,
+                        // and Esc is listed once it no longer repeats Enter.
+                        .child(self.key_hints(&if confirm_focused {
+                            vec![
+                                ("Tab", "Switch"),
+                                ("Enter", if c.permanent { "Delete" } else { "Move" }),
+                                ("Esc", "Cancel"),
+                            ]
+                        } else {
+                            vec![("Tab", "Switch"), ("Enter", "Cancel")]
+                        }))
                         .child(
                             div()
                                 .flex()
