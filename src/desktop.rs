@@ -303,7 +303,7 @@ struct PaletteCache {
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
-    availability: [bool; 7],
+    availability: [bool; 9],
     revision: u64,
 }
 
@@ -319,11 +319,16 @@ impl PaletteCache {
             .filter_map(|(i, item)| fuzzy_score(query, &item.search).map(|score| (score, i)))
             .collect();
         if query.is_empty() {
+            // Recent commands first, then culling before housekeeping.
             scored.sort_by_key(|&(_, i)| {
-                recent
-                    .iter()
-                    .position(|title| *title == self.items[i].title)
-                    .unwrap_or(usize::MAX)
+                let item = &self.items[i];
+                (
+                    recent
+                        .iter()
+                        .position(|title| *title == item.title)
+                        .unwrap_or(usize::MAX),
+                    palette_category_rank(&item.detail),
+                )
             });
         } else {
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -331,6 +336,50 @@ impl PaletteCache {
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
     }
+}
+
+/// Rows the palette shows at once; PageUp/PageDown move by this many.
+const PALETTE_PAGE: usize = 12;
+
+/// The palette selection after an arrow or page key: arrows wrap around
+/// the ends, pages stop at them.
+fn palette_step(index: usize, total: usize, key: &str) -> usize {
+    let last = total.saturating_sub(1);
+    let index = index.min(last);
+    match key {
+        "up" if index == 0 => last,
+        "up" => index - 1,
+        "down" if index >= last => 0,
+        "down" => index + 1,
+        "pageup" => index.saturating_sub(PALETTE_PAGE),
+        "pagedown" => (index + PALETTE_PAGE).min(last),
+        _ => index,
+    }
+}
+
+/// Empty-query order of palette categories (the detail's first segment):
+/// review decisions, then navigation and filtering, then file and app commands.
+fn palette_category_rank(detail: &str) -> usize {
+    const ORDER: [&str; 13] = [
+        "Review",
+        "Edit",
+        "View",
+        "Compare",
+        "Bursts",
+        "Filter",
+        "Library",
+        "Catalog",
+        "Layout",
+        "File",
+        "Help",
+        "App",
+        "Appearance",
+    ];
+    let category = detail.split(" · ").next().unwrap_or(detail);
+    ORDER
+        .iter()
+        .position(|&c| c == category)
+        .unwrap_or(ORDER.len())
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -4726,7 +4775,15 @@ impl Workspace {
             || self.save_state() == SaveState::Failed;
         let in_trash = self.filter == Filter::Trash;
         let grouped = self.duplicates_only || !self.groups.is_empty();
+        let (import_open, importing) = (self.import_ui.open, self.import_ui.active());
         items.retain(|i| match &i.command {
+            // Import controls appear only where they act: Start and Refresh on
+            // the open panel, Pause and Cancel while an import runs.
+            Cmd::Ingest(action) => match action.as_str() {
+                "start" | "plan" => import_open && !importing,
+                "pause" | "cancel_now" => importing,
+                _ => true,
+            },
             Cmd::CancelImport => self.busy,
             Cmd::RetryPreview => preview_failed,
             Cmd::CancelDuplicates => scanning,
@@ -4790,6 +4847,8 @@ impl Workspace {
             self.filter == Filter::Trash,
             self.duplicates_only || !self.groups.is_empty(),
             self.recovery_pending,
+            self.import_ui.open,
+            self.import_ui.active(),
         ];
         let mut cell = self.palette_cache.borrow_mut();
         if cell.as_ref().is_none_or(|cache| {
@@ -4921,15 +4980,15 @@ impl Workspace {
             return;
         }
         if self.palette {
+            let total = self.matches().matches.len();
+            // Home/End move the caret while there is a query to edit.
+            let list_ends = primary || self.palette_query.is_empty();
             match key {
-                "up" => {
-                    let last = self.matches().matches.len().saturating_sub(1);
-                    self.palette_index = self.palette_index.min(last).saturating_sub(1);
+                "up" | "down" | "pageup" | "pagedown" => {
+                    self.palette_index = palette_step(self.palette_index, total, key);
                 }
-                "down" => {
-                    let last = self.matches().matches.len().saturating_sub(1);
-                    self.palette_index = (self.palette_index + 1).min(last);
-                }
+                "home" if list_ends => self.palette_index = 0,
+                "end" if list_ends => self.palette_index = total.saturating_sub(1),
                 "enter" => {
                     let selected = {
                         let cache = self.matches();
@@ -10320,8 +10379,11 @@ impl Workspace {
         // Matches can shrink while the palette is open (busy, scan or theme
         // changes); never index or window past the current list.
         let selected = self.palette_index.min(total.saturating_sub(1));
-        let start = selected.saturating_sub(6);
-        let end = (start + 12).min(total);
+        // A full page of rows even when the selection wrapped to the end.
+        let start = selected
+            .saturating_sub(PALETTE_PAGE / 2)
+            .min(total.saturating_sub(PALETTE_PAGE));
+        let end = (start + PALETTE_PAGE).min(total);
         let mut results = div().flex().flex_col().py(px(space::XS));
         for (n, &index) in cache
             .matches
@@ -10403,7 +10465,9 @@ impl Workspace {
                         div()
                             .flex_shrink_0()
                             .text_size(px(11.))
-                            .text_color(if recent { self.accent() } else { self.muted() })
+                            // Blue marks only where you are; "Recent" is a
+                            // plain tag (and full text on the active row).
+                            .text_color(if active { self.text() } else { self.muted() })
                             .child(if recent {
                                 "Recent".to_string()
                             } else {
@@ -12155,10 +12219,10 @@ pub fn run() -> Result<()> {
 mod ui_tests {
     use super::{
         AddHostForm, BurstIndex, Cmd, CollectionCounts, DeferredSave, NAVIGATION_PERSIST, Notice,
-        NoticeKind, Overlay, PaletteCache, PanDrag, PaneGeometry, SelectionSummary, SurveyKey,
-        SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
-        index_filtered_positions, is_quit_chord, item, label_index, retained_position, text_input,
-        thumbnail_size,
+        NoticeKind, Overlay, PALETTE_PAGE, PaletteCache, PanDrag, PaneGeometry, SelectionSummary,
+        SurveyKey, SurveySummary, UiInbox, ViewMode, adjust_folder, clear_notice, grip_owns_key,
+        index_filtered_positions, is_quit_chord, item, label_index, palette_category_rank,
+        palette_step, retained_position, text_input, thumbnail_size,
     };
 
     #[test]
@@ -12407,10 +12471,13 @@ mod ui_tests {
                 .collect();
             if query.is_empty() {
                 expected.sort_by_key(|&(_, i)| {
-                    recent
-                        .iter()
-                        .position(|title| *title == cache.items[i].title)
-                        .unwrap_or(usize::MAX)
+                    (
+                        recent
+                            .iter()
+                            .position(|title| *title == cache.items[i].title)
+                            .unwrap_or(usize::MAX),
+                        palette_category_rank(&cache.items[i].detail),
+                    )
                 });
             } else {
                 expected.sort_by(|a, b| b.0.cmp(&a.0));
@@ -12420,6 +12487,60 @@ mod ui_tests {
                 expected.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn empty_palette_lists_recents_then_culling_before_files() {
+        let mut cache = PaletteCache {
+            items: vec![
+                item("Show Import Panel", "File", "", "drive", Cmd::Import),
+                item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+                item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
+                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item(
+                    "Quit",
+                    "App · finishes pending writes first",
+                    "",
+                    "close",
+                    Cmd::Quit,
+                ),
+                item("Pin", "Compare", "B", "pin", Cmd::Pin),
+            ],
+            ..PaletteCache::default()
+        };
+        cache.match_query("", &[]);
+        let titles: Vec<_> = cache
+            .matches
+            .iter()
+            .map(|&i| cache.items[i].title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Pick",
+                "Undo",
+                "Grid View",
+                "Pin",
+                "Show Import Panel",
+                "Quit"
+            ]
+        );
+        cache.query = None;
+        cache.match_query("", &["Quit".into()]);
+        assert_eq!(cache.items[cache.matches[0]].title, "Quit");
+        assert_eq!(cache.items[cache.matches[1]].title, "Pick");
+    }
+
+    #[test]
+    fn palette_arrows_wrap_and_pages_stop_at_the_ends() {
+        assert_eq!(palette_step(0, 5, "up"), 4);
+        assert_eq!(palette_step(4, 5, "down"), 0);
+        assert_eq!(palette_step(2, 5, "down"), 3);
+        assert_eq!(palette_step(9, 5, "up"), 3, "a stale index clamps first");
+        assert_eq!(palette_step(3, 40, "pageup"), 0);
+        assert_eq!(palette_step(30, 40, "pagedown"), 39);
+        assert_eq!(palette_step(0, 40, "pagedown"), PALETTE_PAGE);
+        assert_eq!(palette_step(0, 0, "down"), 0);
     }
 
     struct TestWake(std::sync::mpsc::Sender<()>);
