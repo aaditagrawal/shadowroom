@@ -6,7 +6,8 @@
     "r2": "e355fe4",
     "r3": "05c6fc1",
     "r4": "837512e",
-    "r5": "72b936e"
+    "r5": "72b936e",
+    "r6": "641979c"
   },
   "method": "docs/HUMAN_INTERFACE.md",
   "surfaces": {
@@ -1136,5 +1137,23 @@
         "unresolved": 5
       }
     }
+  },
+  "r6_verification": {
+    "method": "One reviewer checked every round-5 finding against r6 captures and code; surfaces were not re-scored.",
+    "round5_findings_status": {
+      "resolved": 36,
+      "partial": 2,
+      "unresolved": 5,
+      "regressed": 0
+    },
+    "verdicts": {
+      "design": "up, about +0.4",
+      "a11y": "up, about +6-8 points",
+      "review": "up, about +0.25",
+      "catalog": "up, about +0.3",
+      "io": "up, about +0.3",
+      "overlays": "up, about +0.4"
+    },
+    "new_findings": "3 minor, 8 polish; no blocker or major regression"
   }
 }
