@@ -71,7 +71,7 @@ fn guide_sections() -> Vec<(&'static str, String)> {
         (
             "Image actions",
             format!(
-                "Right-click an image, or press Shift+F10 or the Menu key, for {} (outside Review), Survey, Compare, Pick, Reject, Rating, Label, {}, {}, {} and {}. Right-click a selected Catalog photo to keep the batch, or another photo to target it instead. Up/Down and Enter choose an action; Escape closes the menu.",
+                "Right-click an image, or press Shift+F10 or the Menu key, for {} (outside Review), Survey, Compare, Pick, Reject, Rating, Label, {}, {}, then {} and {} at the bottom. Right-click a selected Catalog photo to keep the batch, or another photo to target it instead. Up/Down and Enter choose an action; Escape closes the menu.",
                 copy::OPEN_IN_REVIEW,
                 copy::RESET_DECISION,
                 reveal_label(),
@@ -287,6 +287,7 @@ mod tests {
         // Enter follows the outline, not the pointer (R2-catalog-08).
         assert!(!text.contains("hovered or active"));
         assert!(!text.contains(" ;"));
+        assert!(!text.contains("…."), "an ellipsis label must not end a sentence");
         // One platform's key names, never "Ctrl/Cmd" (OV-17).
         assert!(!text.contains("Ctrl/Cmd"));
         assert!(!text.contains("Alt/Option"));
