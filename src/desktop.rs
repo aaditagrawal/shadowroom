@@ -185,7 +185,10 @@ enum PreferencesSection {
 enum Cmd {
     Ingest(String),
     EjectDrive(PathBuf),
+    /// "Import from Card…": copy and verify into the library (Import view).
     Import,
+    /// "Open Folder…": index a folder where it is and cull it; nothing is copied.
+    OpenFolder,
     AddRemoteHost,
     SaveRemoteHost,
     RemoteAction(String, String, Option<String>),
@@ -327,7 +330,7 @@ struct PaletteCache {
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
-    availability: [bool; 10],
+    availability: [bool; 11],
     revision: u64,
 }
 
@@ -1212,6 +1215,11 @@ pub struct Workspace {
     quit: QuitState,
     import_ui: ingest_ui::ImportUi,
     pending_ingest_scope: Option<PathBuf>,
+    /// What the folder picker's choice does: Open Folder culls in place,
+    /// Import from Card copies through the Import view.
+    folder_intent: ingest_ui::FolderIntent,
+    /// The window has focus: desktop notifications are only for walk-away.
+    window_active: bool,
     export_jobs: Vec<ExportJob>,
     next_job_id: u64,
     duplicate_scan: Option<shadowroom::duplicates::DuplicateScanState>,
@@ -1701,6 +1709,8 @@ impl Workspace {
             quit: QuitState::Open,
             import_ui,
             pending_ingest_scope: None,
+            folder_intent: ingest_ui::FolderIntent::Import,
+            window_active: true,
             export_jobs: Vec::new(),
             next_job_id: 0,
             duplicate_scan: None,
@@ -2100,6 +2110,10 @@ impl Workspace {
         }
         // Imports publish verified groups atomically; let the active one finish (or
         // cancel a paused one, which rolls back only the in-flight group) before closing.
+        // Cards queued behind it are not started: nothing of theirs was written.
+        if !self.import_ui.queue.is_empty() {
+            self.enqueue(IoCommand::IngestClearQueue);
+        }
         match self.import_ui.progress.phase {
             Phase::Paused => {
                 self.enqueue(IoCommand::IngestCancel);
@@ -2203,16 +2217,22 @@ impl Workspace {
                     if self.settings.ingest_on_insert == "auto" {
                         self.import_ui.open = true;
                     }
-                    // The worker rejects a second job and reports it; never replace a
-                    // running job's progress with a placeholder.
-                    if self.settings.ingest_on_insert == "auto" && !self.import_ui.active() {
+                    // A second card is queued behind a running job by the worker;
+                    // never replace a running job's progress with a placeholder.
+                    // The card being copied coming back (after a pull) resumes
+                    // its own job and is not scanned again.
+                    let copying = self.import_ui.active()
+                        && self.import_ui.progress.source.as_ref() == Some(&path);
+                    let auto = self.settings.ingest_on_insert == "auto";
+                    if !copying && auto && !self.import_ui.active() {
                         self.import_ui.progress = shadowroom::ingest::Progress {
                             phase: Phase::Queued,
+                            source: Some(path.clone()),
                             ..Default::default()
                         };
                         self.import_ui.source = path;
-                    } else if self.settings.ingest_on_insert != "auto" {
-                        self.open_ingest(path);
+                    } else if !copying && !auto {
+                        self.scan_for_import(path);
                     }
                 }
                 IoEvent::RemoteProvider(provider) => self.media.set_remote_provider(provider),
@@ -3103,7 +3123,7 @@ impl Workspace {
         self.awaiting += 1;
         self.outbox.push_back(updates);
         self.drain_decisions();
-        if self.import_ui.scan.is_some() && !self.import_ui.active() {
+        if self.import_ui.scan.is_some() && !self.import_ui.job_here() {
             self.import_ui.invalidate_plan();
         }
         true
@@ -3359,6 +3379,9 @@ impl Workspace {
                     Some(true) if ids.is_empty() => "Export all catalog picks".into(),
                     Some(true) => format!("Export {}", plural(ids.len(), "pick", "picks")),
                     Some(false) => "Choose export destination".into(),
+                    None if self.folder_intent == ingest_ui::FolderIntent::Cull => {
+                        "Open folder to cull in place".into()
+                    }
                     None => "Import from card or folder".into(),
                 }
                 .into(),
@@ -3662,7 +3685,11 @@ impl Workspace {
             Cmd::EjectDrive(path) => {
                 self.enqueue(IoCommand::Eject(path));
             }
-            Cmd::Import => self.choose_folder(None, cx),
+            Cmd::Import => self.import_from_card(cx),
+            Cmd::OpenFolder => {
+                self.folder_intent = ingest_ui::FolderIntent::Cull;
+                self.choose_folder(None, cx);
+            }
             Cmd::ExportPicks => self.choose_folder(Some(true), cx),
             Cmd::ExportAllPicks => self.choose_export_all_picks(cx),
             Cmd::ExportXmp => self.choose_folder(Some(false), cx),
@@ -4453,10 +4480,17 @@ impl Workspace {
                 Cmd::Ingest("plan".into()),
             ),
             item(
-                "Import from Card/Folder…",
-                "File",
+                "Open Folder…",
+                "File · cull where the files are; nothing is copied",
                 "⌘O",
                 "folder-opened",
+                Cmd::OpenFolder,
+            ),
+            item(
+                "Import from Card…",
+                "File · copy and verify into your library",
+                "⌘⇧I",
+                "import",
                 Cmd::Import,
             ),
             item(
@@ -4986,12 +5020,13 @@ impl Workspace {
         let in_trash = self.filter == Filter::Trash;
         let grouped = self.duplicates_only || !self.groups.is_empty();
         let (import_open, importing) = (self.import_ui.open, self.import_ui.active());
+        let importing_here = self.import_ui.job_here();
         items.retain(|i| match &i.command {
             Cmd::ClearReviewSubset => self.review_subset.is_some(),
             // Import controls appear only where they act: Start and Refresh on
             // the open panel, Pause and Cancel while an import runs.
             Cmd::Ingest(action) => match action.as_str() {
-                "start" | "plan" => import_open && !importing,
+                "start" | "plan" => import_open && !importing_here,
                 "pause" | "cancel_now" => importing,
                 _ => true,
             },
@@ -5064,6 +5099,7 @@ impl Workspace {
             self.recovery_pending,
             self.import_ui.open,
             self.import_ui.active(),
+            self.import_ui.job_here(),
             self.review_subset.is_some(),
         ];
         let mut cell = self.palette_cache.borrow_mut();
@@ -5376,7 +5412,7 @@ impl Workspace {
                 C::ToggleHistogram => Cmd::Histogram,
                 C::ToggleInspector => Cmd::Inspector,
                 C::ToggleAutoAdvance => Cmd::AutoAdvance,
-                C::OpenFolder => Cmd::Import,
+                C::OpenFolder => Cmd::OpenFolder,
                 C::Settings => Cmd::Preferences,
                 C::ExportXmp => Cmd::ExportXmp,
                 C::ExportPicks => Cmd::ExportPicks,
@@ -5387,7 +5423,8 @@ impl Workspace {
         let command = if primary {
             match key {
                 "q" => Some(Cmd::Quit),
-                "o" => Some(Cmd::Import),
+                "o" => Some(Cmd::OpenFolder),
+                "i" if modifiers.shift => Some(Cmd::Import),
                 "b" => Some(if modifiers.alt {
                     Cmd::Inspector
                 } else {
@@ -6689,8 +6726,8 @@ impl Workspace {
                     .child(
                         self.button(
                             "catalog-add-photos",
-                            "Add photos",
-                            "add",
+                            "Import from Card…",
+                            "import",
                             Cmd::Import,
                             false,
                             cx,
@@ -6702,7 +6739,7 @@ impl Workspace {
                         .border_1()
                         .border_color(self.c("border.variant", "#333333"))
                         .bg(self.c("element.background", "#222222"))
-                        .tooltip(self.tip("Add a folder to the catalog", "⌘O")),
+                        .tooltip(self.tip("Copy and verify photos into your library", "⌘⇧I")),
                     ),
             )
             .child(self.section("Library"));
@@ -6882,8 +6919,8 @@ impl Workspace {
         }
         body = body.child(
             self.section("Folders").child(
-                self.compact_button("sidebar-open", "", "add", Cmd::Import, false, cx)
-                    .tooltip(self.tip("Open folder…", "⌘O")),
+                self.compact_button("sidebar-open", "", "add", Cmd::OpenFolder, false, cx)
+                    .tooltip(self.tip("Open Folder… · cull in place, nothing is copied", "⌘O")),
             ),
         );
         if self.folders.is_empty() {
@@ -6891,12 +6928,14 @@ impl Workspace {
                 row(
                     "sidebar-open-empty".into(),
                     "folder-opened",
-                    "Open folder…".into(),
+                    "Open Folder…".into(),
                     None,
                     false,
                 )
                 .text_color(self.muted())
-                .on_click(cx.listener(|this, _, window, cx| this.execute(Cmd::Import, window, cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.execute(Cmd::OpenFolder, window, cx)),
+                ),
             );
         }
         for (n, (path, count)) in self.folders.iter().enumerate() {
@@ -7006,17 +7045,16 @@ impl Workspace {
                 row(
                     ("drive", n).into(),
                     "drive",
-                    if drive.path == self.import_ui.source && self.import_ui.scan.is_some() {
-                        format!("{} · {} new", drive.name, self.import_ui.new_count)
-                    } else {
-                        drive.name.clone()
+                    match self.import_ui.drive_state(&drive.path) {
+                        Some(state) => format!("{} · {state}", drive.name),
+                        None => drive.name.clone(),
                     },
                     None,
                     importing && drive.path == self.import_ui.source,
                 )
                 .tooltip(self.tip("Import from drive", ""))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_ingest(path.clone());
+                    this.scan_for_import(path.clone());
                     cx.notify();
                 }))
                 // Eject lives on the drive's own row; occlude keeps the row click from firing.
@@ -10858,7 +10896,7 @@ impl Workspace {
                     return Err("Close the current dialog before opening the rating filter".into());
                 }
                 let command = match p["name"].as_str().ok_or("Command required")? {
-                    "open_folder_picker" => Cmd::Import,
+                    "open_folder_picker" => Cmd::OpenFolder,
                     "open_theme_picker" => Cmd::ImportTheme,
                     "next_unreviewed" => Cmd::Unreviewed(1),
                     "previous_unreviewed" => Cmd::Unreviewed(-1),
@@ -12038,8 +12076,14 @@ impl Workspace {
         } else if self.import_ui.active() {
             if self.import_ui.cancel_pending() {
                 "Cancel the import? Click Cancel again · verified photos stay imported".into()
-            } else {
+            } else if self.import_ui.queue.is_empty() {
                 copy::import_progress(&self.import_ui.progress)
+            } else {
+                format!(
+                    "{} · {} queued",
+                    copy::import_progress(&self.import_ui.progress),
+                    copy::count(self.import_ui.queue.len())
+                )
             }
         } else if self.import_ui.scanning() {
             "Scanning import…".into()
@@ -12120,18 +12164,21 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(self.compact_button(
-                    "ingest-status-pause",
-                    if self.import_ui.progress.phase == Phase::Paused {
-                        "Resume"
-                    } else {
-                        "Pause"
-                    },
-                    "",
-                    Cmd::Ingest("pause".into()),
-                    false,
-                    cx,
-                ))
+                // While the card is out the job resumes on reinsertion.
+                .when(!self.import_ui.progress.source_missing, |s| {
+                    s.child(self.compact_button(
+                        "ingest-status-pause",
+                        if self.import_ui.progress.phase == Phase::Paused {
+                            "Resume"
+                        } else {
+                            "Pause"
+                        },
+                        "",
+                        Cmd::Ingest("pause".into()),
+                        false,
+                        cx,
+                    ))
+                })
                 .child(
                     self.compact_button(
                         "ingest-status-cancel",
@@ -12913,6 +12960,7 @@ pub fn run() -> Result<()> {
                         // Leaving the window is a natural checkpoint for the
                         // throttled selection/position write.
                         cx.observe_window_activation(window, |this: &mut Workspace, window, _| {
+                            this.window_active = window.is_window_active();
                             if !window.is_window_active() {
                                 this.flush_navigation();
                                 this.drain_settings();

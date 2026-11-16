@@ -37,7 +37,8 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | Shift+F10 or the Menu key | Open the image menu for the current photo |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
-| Ctrl+O or Cmd+O | Open a folder |
+| Ctrl+O or Cmd+O | Open Folder…: cull a folder where it is; nothing is copied |
+| Ctrl+Shift+I or Cmd+Shift+I | Import from Card…: copy and verify into the library (the mounted card, else a chosen folder) |
 | Ctrl+, or Cmd+, | Settings |
 | Ctrl+Q or Cmd+Q | Quit from any view, field, menu or dialog; waits for pending saves, exports and imports. With unsaved decisions it asks first; a second press quits anyway from the recovery journal |
 | Escape | Dismiss the error notice when one is showing (nothing else that press); in an Import field, leave the field; otherwise close the topmost menu, dialog or Import, then cancel a held batch decision, collapse a Catalog multi-selection, return zoom to Fit and leave Focus mode, one step per press |

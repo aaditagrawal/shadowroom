@@ -997,7 +997,11 @@ enum FromCommitter {
 }
 enum Settled {
     Committed(CommittedGroup),
-    Failed { path: PathBuf, error: String },
+    Failed {
+        id: usize,
+        path: PathBuf,
+        error: String,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1011,6 +1015,7 @@ enum CommitState {
 fn fail_pending(mut pending: PendingGroup, error: &str) -> Settled {
     let cleanup = pending.rollback.cleanup().err();
     Settled::Failed {
+        id: pending.group.group.id,
         path: pending.group.group.primary.path.clone(),
         error: format!(
             "{error}{}",
@@ -1188,7 +1193,16 @@ mod batch_tests {
 }
 
 /// Folds settled groups into the report; returns whether any failed.
-fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
+/// Folds settled groups into the report. Returns whether a commit batch
+/// failed (the copier must resynchronize counters). A group that failed
+/// because the source vanished (`lost`) is not counted: its scan ID goes to
+/// `deferred` and it is copied again once the source returns.
+fn fold(
+    settled: Vec<Settled>,
+    report: &mut Report,
+    lost: &dyn Fn(&Path) -> bool,
+    deferred: &mut Vec<usize>,
+) -> bool {
     let mut failed = false;
     for item in settled {
         match item {
@@ -1213,9 +1227,14 @@ fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
                 }
                 report.records.push(record);
             }
-            Settled::Failed { path, error } => {
+            Settled::Failed { id, path, error } => {
                 failed = true;
+                if lost(&path) {
+                    deferred.push(id);
+                    continue;
+                }
                 report.progress.failed += 1;
+                report.progress.failed_ids.push(id);
                 report
                     .progress
                     .errors
@@ -1224,6 +1243,21 @@ fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
         }
     }
     failed
+}
+
+/// Whether the job's source is still the one that was scanned: its root
+/// lists, the folder holding `file` exists, and the volume identity is
+/// unchanged. A pulled card (or an unmounted static mount point) fails these;
+/// a single unreadable or deleted file does not, and fails on its own.
+fn source_present(plan: &IngestPlan, file: &Path) -> bool {
+    fs::read_dir(&plan.source).is_ok()
+        && file
+            .parent()
+            .is_none_or(|parent| fs::symlink_metadata(parent).is_ok())
+        && plan
+            .groups
+            .first()
+            .is_none_or(|g| super::volume_identity(&plan.source) == g.group.volume)
 }
 
 pub fn execute(
@@ -1268,6 +1302,7 @@ pub fn execute_with(
             total: plan.groups.len(),
             total_bytes: plan.bytes,
             library_root: Some(roots[0].clone()),
+            source: Some(plan.source.clone()),
             destinations: roots
                 .iter()
                 .map(|p| format!("{}: pending verification", p.display()))
@@ -1309,17 +1344,33 @@ pub fn execute_with(
             let mut moved = 0u64;
             let mut handled = 0u64;
             state = catalog.ingest_sequences()?;
-            for planned in &plan.groups {
+            // A group that failed because the source vanished is retried, in
+            // plan order, once the same source is back.
+            let index_of: HashMap<usize, usize> = plan
+                .groups
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (planned.group.id, index))
+                .collect();
+            // Also after a cancel: a photo the vanished card failed was not
+            // imported, but it is not a failure either.
+            let lost = |path: &Path| !source_present(plan, path);
+            let mut deferred: Vec<usize> = Vec::new();
+            let mut retry = std::collections::VecDeque::<usize>::new();
+            let mut next = 0;
+            let mut resync = false;
+            // Deferred groups whose bytes already left the bar.
+            let mut uncounted = HashSet::new();
+            loop {
                 if control.is_cancelled() {
                     break;
                 }
-                let mut batch_failed = false;
                 for message in settled.try_iter() {
                     if let FromCommitter::Settled(list) = message {
-                        batch_failed |= fold(list, &mut report);
+                        resync |= fold(list, &mut report, &lost, &mut deferred);
                     }
                 }
-                if batch_failed {
+                if resync {
                     // Wait until every group named after the failed batch is settled,
                     // then continue from the counters the catalog actually holds.
                     to_committer
@@ -1328,14 +1379,102 @@ pub fn execute_with(
                     for message in settled.iter() {
                         match message {
                             FromCommitter::Settled(list) => {
-                                fold(list, &mut report);
+                                fold(list, &mut report, &lost, &mut deferred);
                             }
                             FromCommitter::Resynced => break,
                         }
                     }
                     state = catalog.ingest_sequences()?;
                     session = report.progress.completed as u64;
+                    resync = false;
                 }
+                if !deferred.is_empty() {
+                    // The card was pulled (or its reader unplugged): hold, paused,
+                    // with everything verified so far committed, and continue by
+                    // ourselves when the same source returns. Nothing counts as
+                    // failed and no error piles up per remaining photo.
+                    let probe = index_of
+                        .get(&deferred[0])
+                        .map(|&index| plan.groups[index].group.primary.path.clone())
+                        .unwrap_or_else(|| plan.source.clone());
+                    control.lose_source();
+                    report.progress.phase = Phase::Paused;
+                    report.progress.source_missing = true;
+                    update(&report.progress);
+                    let mut reported = Instant::now();
+                    let mut back = false;
+                    while !control.is_cancelled() {
+                        for message in settled.try_iter() {
+                            if let FromCommitter::Settled(list) = message {
+                                resync |= fold(list, &mut report, &lost, &mut deferred);
+                                update(&report.progress);
+                            }
+                        }
+                        if source_present(plan, &probe) {
+                            back = true;
+                            break;
+                        }
+                        if reported.elapsed() >= Duration::from_secs(1) {
+                            // Repeated so a dropped event cannot hide the pause.
+                            update(&report.progress);
+                            reported = Instant::now();
+                        }
+                        control.wait(Duration::from_millis(200));
+                    }
+                    if !back {
+                        break;
+                    }
+                    control.regain_source();
+                    report.progress.source_missing = false;
+                    report.progress.phase = Phase::Copying;
+                    update(&report.progress);
+                    let mut again: Vec<usize> = retry
+                        .drain(..)
+                        .chain(
+                            deferred
+                                .drain(..)
+                                .filter_map(|id| index_of.get(&id).copied()),
+                        )
+                        .collect();
+                    again.sort_unstable();
+                    again.dedup();
+                    retry.extend(again);
+                    continue;
+                }
+                let index = if let Some(index) = retry.pop_front() {
+                    // A group the committer failed still counts in the bar.
+                    if !uncounted.remove(&index) {
+                        handled = handled.saturating_sub(plan.groups[index].group.bytes());
+                    }
+                    index
+                } else if next < plan.groups.len() {
+                    next += 1;
+                    next - 1
+                } else {
+                    // Everything handed to the committer settles before the job
+                    // ends, so a batch the vanished source failed is retried too.
+                    to_committer
+                        .send(ToCommitter::Resync)
+                        .map_err(|_| anyhow::anyhow!("Import committer stopped"))?;
+                    let mut failed = false;
+                    for message in settled.iter() {
+                        match message {
+                            FromCommitter::Settled(list) => {
+                                failed |= fold(list, &mut report, &lost, &mut deferred);
+                            }
+                            FromCommitter::Resynced => break,
+                        }
+                    }
+                    if failed {
+                        state = catalog.ingest_sequences()?;
+                        session = report.progress.completed as u64;
+                    }
+                    if deferred.is_empty() {
+                        break;
+                    }
+                    continue;
+                };
+                let planned = &plan.groups[index];
                 control.checkpoint()?;
                 if let Some(record) = catalog.ingest_previous(&planned.group)? {
                     let same_roots = record.files.len() == planned.files.len()
@@ -1442,7 +1581,16 @@ pub fn execute_with(
                         if control.is_cancelled() {
                             break;
                         }
+                        if lost(&named.group.primary.path) {
+                            // Not handled: the bar gives its bytes back until the retry.
+                            handled = group_start;
+                            report.progress.transferred = handled;
+                            uncounted.insert(index);
+                            deferred.push(named.group.id);
+                            continue;
+                        }
                         report.progress.failed += 1;
+                        report.progress.failed_ids.push(named.group.id);
                         report
                             .progress
                             .errors
@@ -1466,9 +1614,13 @@ pub fn execute_with(
         // Groups already verified and published commit even after cancellation,
         // exactly as when each group committed on its own.
         drop(to_committer);
+        // Groups the vanished source failed after the copier stopped (on
+        // cancel) are left out, as never imported, rather than counted failed.
+        let mut abandoned = Vec::new();
+        let lost = |path: &Path| !source_present(plan, path);
         for message in settled.iter() {
             if let FromCommitter::Settled(list) = message {
-                fold(list, &mut report);
+                fold(list, &mut report, &lost, &mut abandoned);
             }
         }
         if let Err(panic) = committer.join() {

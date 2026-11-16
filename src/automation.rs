@@ -865,7 +865,7 @@ fn build_tool_definitions() -> Vec<Value> {
         "ingest_library_root":path,"ingest_folder_template":{"type":"string","maxLength":4096},"ingest_file_template":path,
         "ingest_backup_roots":{"type":"array","items":path,"maxItems":16},"ingest_job_codes":{"type":"array","items":{"type":"string"},"maxItems":20},
         "ingest_day_start_hour":{"type":"integer","minimum":0,"maximum":23},"ingest_collision":{"type":"string","enum":["suffix","skip"]},
-        "ingest_time_group_minutes":{"type":"integer","minimum":1,"maximum":1440},"eject_after_ingest":{"type":"boolean"},
+        "ingest_time_group_minutes":{"type":"integer","minimum":1,"maximum":1440},"eject_after_ingest":{"type":"boolean"},"ingest_notify":{"type":"boolean"},
         "ingest_include_videos":{"type":"boolean"},"ingest_volumes":{"type":"object"},"ingest_presets":{"type":"object"}
     });
     settings["properties"]

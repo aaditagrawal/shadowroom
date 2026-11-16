@@ -43,6 +43,7 @@ pub enum IoCommand {
     IngestPause,
     IngestResume,
     IngestCancel,
+    IngestClearQueue,
     IngestHistory(usize),
     IngestMarkImported(Vec<usize>),
     Eject(PathBuf),
@@ -435,6 +436,7 @@ fn run_catalog(
                 | IoCommand::IngestPause
                 | IoCommand::IngestResume
                 | IoCommand::IngestCancel
+                | IoCommand::IngestClearQueue
                 | IoCommand::IngestHistory(_)
                 | IoCommand::IngestMarkImported(_)
                 | IoCommand::Eject(_) => {
@@ -444,6 +446,7 @@ fn run_catalog(
                         IoCommand::IngestPause => Ingest::Pause,
                         IoCommand::IngestResume => Ingest::Resume,
                         IoCommand::IngestCancel => Ingest::Cancel,
+                        IoCommand::IngestClearQueue => Ingest::ClearQueue,
                         IoCommand::IngestHistory(limit) => Ingest::History(limit),
                         IoCommand::IngestMarkImported(ids) => Ingest::MarkImported(ids),
                         IoCommand::Eject(path) => Ingest::Eject(path),

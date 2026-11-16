@@ -211,8 +211,29 @@ pub(super) fn import_phase(phase: Phase) -> &'static str {
 
 /// The running job in one line: "Copying 37 of 612 · 8.4 of 48 GB ·
 /// 142 MB/s · about 4 min left". Paused jobs drop the rate and time left.
+/// The job's card or folder by name ("EOS_DIGITAL"), else "The card".
+pub(super) fn source_name(progress: &Progress) -> String {
+    progress
+        .source
+        .as_deref()
+        .and_then(|path| path.file_name())
+        .map_or_else(
+            || "The card".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+}
+
 pub(super) fn import_progress(progress: &Progress) -> String {
     let done = (progress.completed + progress.skipped + progress.failed).min(progress.total);
+    if progress.source_missing {
+        // Verified groups are safe; the rest waits for the same card.
+        return format!(
+            "{} was removed · {} of {} verified · reinsert the card to continue",
+            source_name(progress),
+            progress.completed + progress.skipped,
+            plural(progress.total, "photo", "photos")
+        );
+    }
     let mut line = format!(
         "{} {done} of {}",
         import_phase(progress.phase),
@@ -578,6 +599,24 @@ mod tests {
             "Import 612 photos · 3 videos · 48 GB"
         );
         assert_eq!(import_label(0, 1, 1_500_000_000), "Import 1 video · 1.5 GB");
+    }
+
+    #[test]
+    fn a_pulled_card_reads_as_safe_progress_and_a_way_to_continue() {
+        let progress = Progress {
+            phase: Phase::Paused,
+            completed: 118,
+            skipped: 2,
+            total: 612,
+            source: Some(std::path::PathBuf::from("/run/media/me/EOS_DIGITAL")),
+            source_missing: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_progress(&progress),
+            "EOS_DIGITAL was removed · 120 of 612 photos verified · reinsert the card to continue"
+        );
+        assert_eq!(source_name(&Progress::default()), "The card");
     }
 
     #[test]
