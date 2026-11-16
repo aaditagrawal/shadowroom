@@ -9,11 +9,13 @@ mod help;
 mod ingest_ui;
 mod layout;
 mod ledger;
+mod loupe_aids;
 mod motion;
 mod preferences;
 mod prefetch;
 mod review_actions;
 mod scrollbar;
+mod search;
 mod text_input;
 use anyhow::{Context as _, Result};
 use copy::plural;
@@ -189,6 +191,12 @@ enum Cmd {
     ExportAllPicks,
     ExportXmp,
     Palette,
+    /// Ctrl/Cmd+F: the palette for photo filenames only.
+    SearchPhotos,
+    /// A palette photo result: select it (widening the view if needed).
+    RevealPhoto(i64),
+    /// A palette folder result: scope the view to it.
+    ScopeFolder(String),
     Preferences,
     ApplyPreferences,
     ApplyClosePreferences,
@@ -218,6 +226,11 @@ enum Cmd {
     ZoomTo(f32),
     ZoomStep(i8),
     FocusPeaking,
+    /// J: paint blown highlights and crushed shadows on the photo.
+    Clipping,
+    /// Preferences → Culling: focus-peaking ink and edge threshold.
+    PeakingColor(shadowroom::peaking::PeakingColor),
+    PeakingSensitivity(shadowroom::peaking::PeakingSensitivity),
     ClearReviewSubset,
     Inspector,
     InspectorTab(bool),
@@ -302,7 +315,10 @@ struct PaletteItem {
 
 #[derive(Default)]
 struct PaletteCache {
+    /// Commands first (`command_count` of them), then this query's photo and
+    /// folder results.
     items: Vec<PaletteItem>,
+    command_count: usize,
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
@@ -338,6 +354,26 @@ impl PaletteCache {
         }
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
+    }
+    /// Adds photo and folder results after the commands whose title contains
+    /// the query and before the looser fuzzy matches; photo mode shows only them.
+    fn merge_found(&mut self, found: Vec<PaletteItem>, query: &str, photos_only: bool) {
+        let start = self.items.len();
+        let found_rows = start..start + found.len();
+        self.items.extend(found);
+        if photos_only {
+            self.matches = found_rows.collect();
+            return;
+        }
+        if found_rows.is_empty() {
+            return;
+        }
+        let query = query.trim().to_lowercase();
+        let (exact, loose): (Vec<usize>, Vec<usize>) = self
+            .matches
+            .iter()
+            .partition(|&&i| self.items[i].title.to_lowercase().contains(&query));
+        self.matches = exact.into_iter().chain(found_rows).chain(loose).collect();
     }
 }
 
@@ -1085,6 +1121,8 @@ pub struct Workspace {
     zoom_factor: f32,
     fit_scales: std::rc::Rc<std::cell::Cell<[f32; 2]>>,
     focus_peaking: bool,
+    /// Clipping overlay (J): blown highlights red, crushed shadows blue.
+    clipping: bool,
     navigation_direction: isize,
     preview_foreground: RefCell<Option<(Option<i64>, Option<i64>, PreviewKind, usize)>>,
     inspector: bool,
@@ -1107,6 +1145,8 @@ pub struct Workspace {
     sidebar: bool,
     title_drag: bool,
     palette: bool,
+    /// The palette was opened with Ctrl/Cmd+F: photo results only.
+    palette_photos: bool,
     palette_query: String,
     palette_edit: text_input::Edit,
     palette_index: usize,
@@ -1564,6 +1604,7 @@ impl Workspace {
             zoom_factor: 1.,
             fit_scales: std::rc::Rc::new(std::cell::Cell::new([1.; 2])),
             focus_peaking: false,
+            clipping: false,
             navigation_direction: 1,
             preview_foreground: RefCell::new(None),
             inspector,
@@ -1583,6 +1624,7 @@ impl Workspace {
             sidebar,
             title_drag: false,
             palette: false,
+            palette_photos: false,
             palette_query: String::new(),
             palette_edit: text_input::Edit::default(),
             palette_index: 0,
@@ -3425,6 +3467,9 @@ impl Workspace {
                 self.rebuild(id);
             }
             Cmd::ClearFilters => self.clear_filters(),
+            Cmd::SearchPhotos => self.open_photo_search(),
+            Cmd::RevealPhoto(id) => self.reveal_photo(id, cx),
+            Cmd::ScopeFolder(scope) => self.scope_folder(scope),
             Cmd::Trash(trashed) => {
                 if trashed {
                     self.request_deletion(false, cx);
@@ -3580,9 +3625,16 @@ impl Workspace {
                 // `focused_edit`/`ingest_key` defer to it while it is open).
                 self.getting_started = false;
                 self.import_ui.menu = None;
-                self.palette = !self.palette;
-                self.palette_query.clear();
-                self.palette_edit.focus("");
+                if self.palette && self.palette_photos {
+                    // From photo search, Ctrl/Cmd+K widens to everything and
+                    // keeps the query.
+                    self.palette_photos = false;
+                } else {
+                    self.palette = !self.palette;
+                    self.palette_photos = false;
+                    self.palette_query.clear();
+                    self.palette_edit.focus("");
+                }
                 self.palette_cache.borrow_mut().take();
                 self.palette_index = 0;
             }
@@ -3812,11 +3864,7 @@ impl Workspace {
                 }
                 self.read_ahead();
             }
-            Cmd::ZoomTo(factor) => {
-                self.zoom = true;
-                self.zoom_factor = factor.clamp(0.125, 8.);
-                self.read_ahead();
-            }
+            Cmd::ZoomTo(factor) => self.zoom_preset(factor),
             Cmd::ZoomStep(direction) => {
                 let current = if self.zoom {
                     self.zoom_factor
@@ -3833,13 +3881,19 @@ impl Workspace {
                 self.focus_peaking = !self.focus_peaking;
                 self.announce(
                     if self.focus_peaking {
-                        "Focus peaking on · cyan highlights fine edges · F toggles"
+                        format!(
+                            "Focus peaking on · {} marks sharp edges · F toggles",
+                            self.peaking_style().color.name().to_lowercase()
+                        )
                     } else {
-                        "Focus peaking off"
+                        "Focus peaking off".into()
                     },
                     Tone::Info,
                 );
             }
+            Cmd::Clipping => self.toggle_clipping(),
+            // Preferences-only: the open draft takes them before this match.
+            Cmd::PeakingColor(_) | Cmd::PeakingSensitivity(_) => {}
             Cmd::Inspector => {
                 let hidden = self.docks.inspector == 0.;
                 self.inspector = self.focus_mode || !self.inspector || hidden;
@@ -3864,6 +3918,10 @@ impl Workspace {
             Cmd::RatingFilter => {
                 self.rating_filter_open = !self.rating_filter_open && !self.other_overlay_open();
                 self.rating_filter_index = self.min_rating;
+                // The menu hangs from the view toolbar, which Focus mode hides.
+                if self.rating_filter_open {
+                    self.focus_mode = false;
+                }
             }
             Cmd::Histogram => self.histogram = !self.histogram,
             Cmd::PreviewDetails => self.preview_details = !self.preview_details,
@@ -4503,6 +4561,10 @@ impl Workspace {
             ),
             item("Zoom In", "View", "=", "zoom", Cmd::ZoomStep(1)),
             item("Zoom Out", "View", "-", "zoom-out", Cmd::ZoomStep(-1)),
+            item("Zoom to Fit", "View", "⌥0", "zoom-out", Cmd::ZoomTo(0.)),
+            item("Zoom to 100%", "View", "⌥1", "zoom", Cmd::ZoomTo(1.)),
+            item("Zoom to 200%", "View", "⌥2", "zoom", Cmd::ZoomTo(2.)),
+            item("Zoom to 400%", "View", "⌥4", "zoom", Cmd::ZoomTo(4.)),
             item(
                 "Thumbnail Size: Small",
                 "Catalog",
@@ -4526,10 +4588,24 @@ impl Workspace {
             ),
             item(
                 "Focus Peaking",
-                "View · cyan fine-detail highlights",
+                "View · mark sharp edges; color in Preferences → Culling",
                 "F",
                 "peaking",
                 Cmd::FocusPeaking,
+            ),
+            item(
+                "Show Clipping",
+                "View · blown highlights red, crushed shadows blue",
+                "J",
+                "histogram",
+                Cmd::Clipping,
+            ),
+            item(
+                "Find Photo by Filename",
+                "Library · whole library; type in this palette to search too",
+                "⌘F",
+                "search",
+                Cmd::SearchPhotos,
             ),
             item(
                 "Show Full Folder",
@@ -4893,7 +4969,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.remember_command(title);
+        // Photos and folders are results, not commands to offer again.
+        if !matches!(cmd, Cmd::RevealPhoto(_) | Cmd::ScopeFolder(_)) {
+            self.remember_command(title);
+        }
         self.palette = false;
         // Preferences already open beneath the palette: reveal them rather
         // than toggling them shut and discarding the draft.
@@ -4938,8 +5017,10 @@ impl Workspace {
                 || cache.grouping != self.settings.grouping_mode
                 || cache.revision != self.palette_revision
         }) {
+            let items = self.palette_items();
             *cell = Some(PaletteCache {
-                items: self.palette_items(),
+                command_count: items.len(),
+                items,
                 availability,
                 grouping: self.settings.grouping_mode.clone(),
                 revision: self.palette_revision,
@@ -4947,7 +5028,13 @@ impl Workspace {
             });
         }
         let cache = cell.as_mut().expect("palette cache");
-        cache.match_query(&self.palette_query, &self.palette_recent);
+        if cache.query.as_deref() != Some(self.palette_query.as_str()) {
+            // Photo and folder rows belong to one query; commands persist.
+            cache.items.truncate(cache.command_count);
+            cache.match_query(&self.palette_query, &self.palette_recent);
+            let found = self.search_items(&self.palette_query);
+            cache.merge_found(found, &self.palette_query, self.palette_photos);
+        }
         drop(cell);
         std::cell::Ref::map(self.palette_cache.borrow(), |cache| {
             cache.as_ref().expect("palette cache")
@@ -4995,6 +5082,10 @@ impl Workspace {
         }
         if primary && key == "k" {
             self.execute(Cmd::Palette, window, cx);
+            return;
+        }
+        if primary && key == "f" && !modifiers.shift && !modifiers.alt {
+            self.execute(Cmd::SearchPhotos, window, cx);
             return;
         }
         if key == "escape" {
@@ -5117,6 +5208,19 @@ impl Workspace {
             };
             self.execute(Cmd::PanStep(dx, dy), window, cx);
             return;
+        }
+        // Alt/Option+0/1/2/4: Fit, 100%, 200%, 400% (REV-22). Alt+digit never
+        // rates: only the bare digits decide.
+        if modifiers.alt && !primary && !modifiers.shift && key.len() == 1 {
+            if let Some(&(_, factor)) = loupe_aids::ZOOM_PRESETS.iter().find(|(k, _)| *k == key) {
+                if self.mode != ViewMode::Grid {
+                    self.execute(Cmd::ZoomTo(factor), window, cx);
+                }
+                return;
+            }
+            if key.as_bytes()[0].is_ascii_digit() {
+                return;
+            }
         }
         if !primary && !modifiers.alt && self.jump_key(key, modifiers.shift, cx) {
             return;
@@ -5261,6 +5365,7 @@ impl Workspace {
                 "s" => Some(Cmd::View(ViewMode::Survey)),
                 "z" | "f21" | "space" if self.mode != ViewMode::Grid => Some(Cmd::ZoomAtPointer),
                 "f" => Some(Cmd::FocusPeaking),
+                "j" => Some(Cmd::Clipping),
                 "+" | "=" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(1)),
                 "-" if self.mode == ViewMode::Grid => Some(Cmd::GridSizeStep(-1)),
                 "+" | "=" => Some(Cmd::ZoomStep(1)),
@@ -5477,7 +5582,9 @@ fn shortcut(keys: &str) -> String {
     if cfg!(target_os = "macos") {
         keys.to_owned()
     } else {
-        keys.replace('⌘', "Ctrl+").replace('⇧', "Shift+")
+        keys.replace('⌘', "Ctrl+")
+            .replace('⇧', "Shift+")
+            .replace('⌥', "Alt+")
     }
 }
 
@@ -6323,7 +6430,7 @@ impl Workspace {
                         self.button("palette-trigger", "", "search", Cmd::Palette, false, cx)
                             .h(px(ui::CONTROL_HEIGHT))
                             .w(px(ui::CONTROL_HEIGHT))
-                            .tooltip(self.tip("Search commands", palette_keys)),
+                            .tooltip(self.tip("Search photos, folders and commands", palette_keys)),
                     )
                     .child(
                         self.toggle_button(
@@ -6722,16 +6829,8 @@ impl Workspace {
             body = body.child(
                 row(("folder", n).into(), "folder", name, Some(*count), active)
                     .tooltip(self.tip(path, ""))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scope = Some(scope.clone());
-                        this.duplicates_only = false;
-                        this.label_filter = None;
-                        this.bursts_only = false;
-                        this.filter = Filter::All;
-                        this.settings.filter = "all".into();
-                        this.save_settings();
-                        this.rebuild(None);
-                        cx.notify();
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.execute(Cmd::ScopeFolder(scope.clone()), window, cx);
                     })),
             );
         }
@@ -7220,11 +7319,7 @@ impl Workspace {
             PreviewKind::Fit => 1,
             PreviewKind::Full => 2,
         };
-        let effect = if self.focus_peaking && kind != PreviewKind::Thumbnail {
-            4
-        } else {
-            0
-        };
+        let effect = self.display_effect(kind);
         let (mtime, size) = (preview_mtime(p), preview_size(p));
         self.textures
             .contains_key(&(p.id, tier + effect, mtime, size))
@@ -7296,8 +7391,9 @@ impl Workspace {
         // Display identity; preview_size hashes paths for companions/remotes.
         let (mtime, size) = (preview_mtime(p), preview_size(p));
         let mut fallback = None;
-        let peaking = self.focus_peaking && wanted != PreviewKind::Thumbnail;
-        let effect = if peaking { 4 } else { 0 };
+        // Peaking and clipping copies are separate cache entries (effect bits).
+        let effect = self.display_effect(wanted);
+        let style = self.peaking_style();
         let search_max = if desired == 1 { 2 } else { desired };
         for k in (0..=search_max).rev() {
             let key = (p.id, k + effect, mtime, size);
@@ -7319,8 +7415,8 @@ impl Workspace {
                 break;
             }
         }
-        // Keep the ordinary image visible while its peaking copy is prepared.
-        if fallback.is_none() && peaking {
+        // Keep the ordinary image visible while its overlay copy is prepared.
+        if fallback.is_none() && effect != 0 {
             for k in (0..=search_max).rev() {
                 let key = (p.id, k, mtime, size);
                 if let Some(texture) = self.textures.get(&key) {
@@ -7426,9 +7522,7 @@ impl Workspace {
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
-            if peaking {
-                shadowroom::peaking::highlight(&preview.rgba, &mut bgra, width, height);
-            }
+            Self::paint_effects(effect, style, &preview.rgba, &mut bgra, width, height);
             let buffer = image::RgbaImage::from_raw(width, height, bgra)
                 .expect("validated preview dimensions");
             (
@@ -7527,7 +7621,10 @@ impl Workspace {
             });
         let mut quality_note = None;
         let active = self.mode == ViewMode::Compare && self.reference_focused() == reference;
+        // Peaking at Fit marks a downscaled preview's edges: say so.
+        let fit_peaking = self.focus_peaking && !self.zoom;
         let show_quality = self.zoom
+            || fit_peaking
             || requested_error.is_some()
             || matches!(&texture, Some((.., source, _, _)) if source.note.is_some())
             || !matches!(&texture, Some((.., kind, ColorStatus::ConvertedToSrgb | ColorStatus::AssumedSrgb)) if *kind == PreviewKind::Fit || *kind == PreviewKind::Full);
@@ -7588,6 +7685,8 @@ impl Workspace {
                         .map(|e| e.message.clone())
                         .unwrap_or_else(|| "loading fit preview…".into())
                 )
+            } else if fit_peaking {
+                format!("Peaking on fit preview · Z for 100% · {w} × {h}{origin}")
             } else {
                 format!("Fit · {w} × {h}{origin}")
             };
@@ -9504,43 +9603,26 @@ impl Workspace {
             // A batch shows what its members carry, not the primary photo.
             body = body.child(self.selection_inspector(&summary, cx));
         } else if let Some(p) = self.review_photo() {
+            // The culling line (design R7): what a culler checks between burst
+            // frames, under the filename, in the order it is read.
             let mut facts = Vec::new();
             if p.width > 0 && p.height > 0 {
                 facts.push(format!("{} × {}", p.width, p.height));
             }
             facts.push(format!("{:.1} MB", p.size_bytes as f64 / 1_000_000.));
-            if p.companion_path.is_some() {
-                facts.push(
-                    if p.companion_path
-                        .as_deref()
-                        .is_some_and(shadowroom::heif::is_heif)
-                    {
-                        "RAW + HEIF"
-                    } else {
-                        "RAW + JPEG"
-                    }
-                    .into(),
-                );
-            }
-            // The exposure triangle is what distinguishes frames in a burst, so
-            // it leads, in one scannable line.
-            let shutter = p.shutter.trim();
-            let exposure: Vec<String> = [
-                (!shutter.is_empty()).then(|| {
-                    if shutter.ends_with('s') {
-                        shutter.to_string()
-                    } else {
-                        format!("{shutter} s")
-                    }
-                }),
-                p.aperture.map(|n| format!("ƒ/{n:.1}")),
-                p.iso.map(|n| format!("ISO {n}")),
-                p.focal_length.map(|n| format!("{n:.0} mm")),
+            facts.push(file_type(p));
+            let exposure = exposure_line(p);
+            let captured = p.capture_display();
+            let capture_line: Vec<String> = [
+                p.capture_short(),
+                Some(p.camera.clone()),
+                Some(p.lens.clone()),
             ]
             .into_iter()
             .flatten()
+            .map(|fact| fact.trim().to_owned())
+            .filter(|fact| !fact.is_empty())
             .collect();
-            let captured = p.capture_display();
             body = body
                 .child(
                     div()
@@ -9557,33 +9639,79 @@ impl Workspace {
                 .when(!exposure.is_empty(), |s| {
                     s.child(
                         div()
-                            .pt(px(space::SM))
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(space::XS))
-                            .children(exposure.into_iter().map(|fact| {
-                                div()
-                                    .px(px(space::XS))
-                                    .h(px(ui::COMPACT_CONTROL_HEIGHT))
-                                    .flex()
-                                    .items_center()
-                                    .bg(self.selected_bg())
-                                    .text_size(px(ui::text::BODY))
-                                    .child(fact)
-                            })),
+                            .id("inspector-exposure")
+                            .pt(px(space::XS))
+                            .text_size(px(ui::text::BODY))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(exposure.join("  "))
+                            .tooltip(self.tip("Shutter · aperture · ISO · focal length", "")),
+                    )
+                })
+                .when(!capture_line.is_empty(), |s| {
+                    // The lens is last, so it is what ellipsizes first.
+                    s.child(
+                        div()
+                            .id("inspector-capture")
+                            .pt(px(space::XS))
+                            .text_size(px(ui::text::LABEL))
+                            .text_color(self.muted())
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(capture_line.join(" · "))
+                            .tooltip(
+                                self.tip(
+                                    &[
+                                        (captured != "—").then(|| format!("Captured {captured}")),
+                                        (!p.camera.trim().is_empty()).then(|| p.camera.clone()),
+                                        (!p.lens.trim().is_empty()).then(|| p.lens.clone()),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                    "",
+                                ),
+                            ),
                     )
                 })
                 .child(
                     div()
-                        .pt(px(space::SM))
-                        .text_size(px(11.))
+                        .pt(px(space::XS))
+                        .text_size(px(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(facts.join(" · ")),
                 );
-            if self.inspector_info && !captured.is_empty() && captured != "—" {
+            if self.inspector_info {
                 body = body
-                    .child(self.inspector_section("File information"))
-                    .child(self.metadata_row("Captured", captured));
+                    .child(self.inspector_section("File"))
+                    .child(
+                        self.metadata_row(
+                            "Folder",
+                            copy::middle_path(
+                                &photo_folder(p),
+                                // Geist Mono advances 0.6 em; the label and gap take the rest.
+                                ((self.docks.inspector
+                                    - 2. * ui::PANEL_INSET
+                                    - 6. * 7.2
+                                    - space::MD)
+                                    / 7.2)
+                                    .max(8.) as usize,
+                            ),
+                        ),
+                    )
+                    .child(self.metadata_row("Type", file_type(p)))
+                    .child(self.metadata_row(
+                        "Size",
+                        format!("{:.1} MB", p.size_bytes as f64 / 1_000_000.),
+                    ));
+                if captured != "—" {
+                    body = body
+                        .child(self.inspector_section("Capture"))
+                        .child(self.metadata_row("Captured", captured));
+                }
             }
             if p.is_remote() {
                 body = body.child(
@@ -9651,8 +9779,30 @@ impl Workspace {
                         .text_size(px(ui::text::LABEL)),
                     )
                     .tooltip(self.tip("Histogram scale · log lifts shadows and highlights", ""));
+                let clipping = self
+                    .compact_toggle(
+                        "histogram-clipping",
+                        "",
+                        "warning",
+                        Cmd::Clipping,
+                        self.clipping,
+                        cx,
+                    )
+                    .tooltip(self.tip(
+                        "Show clipping on the photo · blown highlights red, crushed shadows blue",
+                        "J",
+                    ));
                 body = body
-                    .child(self.inspector_section("Histogram").child(scale))
+                    .child(
+                        self.inspector_section("Histogram").child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::XS))
+                                .child(clipping)
+                                .child(scale),
+                        ),
+                    )
                     .child(div().h(px(4.)));
                 if let Some(preview) = &preview {
                     body = body.child(crate::histogram::histogram_with(
@@ -9674,6 +9824,7 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
+                            label_warning: self.c("warning", "#e0b341").into(),
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
@@ -9720,30 +9871,6 @@ impl Workspace {
                             .child(div().text_color(self.text()).child(label_name)),
                     )
                     .child(labels);
-                body = body
-                    .child(self.inspector_section("Selection"))
-                    .child(
-                        self.metadata_row(
-                            "Flag",
-                            // Same words as the sidebar: no flag and no stars
-                            // is "Unreviewed"; stars without a flag, "No flag".
-                            match p.flag {
-                                Flag::Pick => "Pick",
-                                Flag::Reject => "Reject",
-                                Flag::None if p.rating == 0 => "Unreviewed",
-                                Flag::None => "No flag",
-                            }
-                            .into(),
-                        ),
-                    )
-                    .child(self.metadata_row(
-                        "Rating",
-                        if p.rating == 0 {
-                            "Unrated".into()
-                        } else {
-                            format!("{} / 5", p.rating)
-                        },
-                    ));
             }
             if self.inspector_info {
                 let gear: Vec<(&str, String)> =
@@ -9908,6 +10035,48 @@ impl Workspace {
     }
 }
 
+/// The exposure triangle and focal length, the facts that separate burst
+/// frames: "1/250 s", "ƒ/2.8", "ISO 400", "35 mm".
+fn exposure_line(p: &Photo) -> Vec<String> {
+    let shutter = p.shutter.trim();
+    [
+        (!shutter.is_empty()).then(|| {
+            if shutter.ends_with('s') {
+                shutter.to_string()
+            } else {
+                format!("{shutter} s")
+            }
+        }),
+        p.aperture.map(|n| format!("ƒ/{n:.1}")),
+        p.iso.map(|n| format!("ISO {n}")),
+        p.focal_length.map(|n| format!("{n:.0} mm")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+/// "JPEG", "CR3 + JPEG", "ARW + HEIF": the original's extension and its pair.
+fn file_type(p: &Photo) -> String {
+    let extension = |path: &Path| {
+        path.extension()
+            .map(|ext| ext.to_string_lossy().to_uppercase())
+            .map(|ext| if ext == "JPG" { "JPEG".to_owned() } else { ext })
+    };
+    let primary = extension(&p.path).unwrap_or_else(|| "File".into());
+    match p.companion_path.as_deref() {
+        Some(companion) if shadowroom::heif::is_heif(companion) => format!("{primary} + HEIF"),
+        Some(_) => format!("{primary} + JPEG"),
+        None => primary,
+    }
+}
+/// The folder an original lives in, as the Info tab shows it.
+fn photo_folder(p: &Photo) -> String {
+    if p.is_remote() {
+        format!("Remote · {}", p.folder)
+    } else {
+        p.folder.clone()
+    }
+}
 /// Whether this process talks to a Wayland compositor. The environment is
 /// fixed for the process lifetime, so render reads a cached answer instead of
 /// locking and scanning the environment twice per frame.
@@ -9991,6 +10160,8 @@ impl Workspace {
             Value::Null
         };
         state["focus_peaking"] = json!(self.focus_peaking);
+        state["clipping"] = json!(self.clipping);
+        state["peaking_style"] = json!({"color": self.peaking_style().color.key(), "sensitivity": self.peaking_style().sensitivity.key()});
         state["focus_mode"] = json!(self.focus_mode);
         state["grid_size"] = json!(["s", "m", "l"][self.grid_size.min(2)]);
         state["pending_bulk"] = json!(self.pending_bulk.as_ref().map(|bulk| bulk.count));
@@ -10347,9 +10518,9 @@ impl Workspace {
                     .map(|&i| &self.photos[i])
                     .map(|p| {
                         let display = [2u8, 1, 0].into_iter().find_map(|tier| {
-                            let effect = if self.focus_peaking { 4 } else { 0 };
+                            let effect = self.display_effect(PreviewKind::Fit);
                             self.textures.get(&(p.id, tier + effect, preview_mtime(p), preview_size(p)))
-                                .map(|texture| (texture, effect != 0))
+                                .map(|texture| (texture, Self::effect_peaks(effect)))
                                 .or_else(|| self.textures.get(&(p.id, tier, preview_mtime(p), preview_size(p))).map(|texture| (texture, false)))
                         }).map(|(t, peaking)| json!({"kind":t.kind,"width":t.width,"height":t.height,"peaking":peaking}));
                         let preview = self.media.best_photo(p).map(|v| json!({
@@ -10604,6 +10775,7 @@ impl Workspace {
                     "close_overlay" => Cmd::Close,
                     "getting_started" => Cmd::GettingStarted,
                     "toggle_focus_peaking" => Cmd::FocusPeaking,
+                    "toggle_clipping" => Cmd::Clipping,
                     "show_full_folder" => Cmd::ClearReviewSubset,
                     "reset_decision" => Cmd::ResetDecision,
                     "show_appearance" => Cmd::Appearance,
@@ -10787,6 +10959,24 @@ impl Workspace {
             )
         }
         if total == 0 {
+            let query = self.palette_query.trim();
+            let (title, hint) = match (self.palette_photos, query.is_empty()) {
+                (true, true) => (
+                    "Type part of a filename".to_owned(),
+                    format!(
+                        "“4512” finds IMG_4512.CR3 · {} also searches commands and folders",
+                        shortcut("⌘K")
+                    ),
+                ),
+                (true, false) => (
+                    format!("No photos match “{query}”"),
+                    "Filenames only, across the whole library · Esc closes".to_owned(),
+                ),
+                (false, _) => (
+                    format!("No commands, photos or folders match “{query}”"),
+                    "Try export, zoom or a filename · Esc closes".to_owned(),
+                ),
+            };
             results = results.child(
                 div()
                     .px(px(ui::PANEL_INSET))
@@ -10794,12 +10984,12 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(space::XS))
-                    .child(format!("No commands match “{}”", self.palette_query.trim()))
+                    .child(title)
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(self.muted())
-                            .child("Try export, zoom, trash or theme · Esc closes"),
+                            .child(hint),
                     ),
             );
         }
@@ -10836,7 +11026,11 @@ impl Workspace {
                                 self.input_field(
                                     &self.palette_edit,
                                     &self.palette_query,
-                                    "Execute a command…",
+                                    if self.palette_photos {
+                                        "Find a photo by filename…"
+                                    } else {
+                                        "Run a command, or find a photo or folder…"
+                                    },
                                     true,
                                     true,
                                 ),
@@ -11095,6 +11289,33 @@ impl Workspace {
                     s.trash_mode == "in_app",
                 ),
             ],
+            false,
+            window,
+            cx,
+        );
+        let peaking = loupe_aids::peaking_style_of(s);
+        let peaking_colors = self.pref_choices(
+            "peaking-color",
+            shadowroom::peaking::PeakingColor::ALL.map(|color| {
+                (
+                    color.name().to_string(),
+                    Cmd::PeakingColor(color),
+                    peaking.color == color,
+                )
+            }),
+            false,
+            window,
+            cx,
+        );
+        let peaking_levels = self.pref_choices(
+            "peaking-sensitivity",
+            shadowroom::peaking::PeakingSensitivity::ALL.map(|level| {
+                (
+                    level.name().to_string(),
+                    Cmd::PeakingSensitivity(level),
+                    peaking.sensitivity == level,
+                )
+            }),
             false,
             window,
             cx,
@@ -11361,6 +11582,8 @@ impl Workspace {
             .when(section == PreferencesSection::Culling, |body| body
             .child(self.preference_row("Auto-advance", "Move to the next photo after a decision", advance))
             .child(self.preference_row("Trash destination", "OS Trash moves files to the system Trash. In-app keeps files in place and supports Undo. You'll always be asked to confirm.", trash))
+            .child(self.preference_row("Peaking color", "Ink for focus peaking (F); pick one that stands out from the scene", peaking_colors))
+            .child(self.preference_row("Peaking sensitivity", "High also marks softer edges; Low only the crispest", peaking_levels))
             .child(self.preference_row("Grouping", "Keep bursts and similar frames together", groups))
             .child(self.preference_row("Burst gap", if gap_applies { "Maximum time between frames in a group" } else { "Applies when Grouping is on" }, gaps))
             .child(self.preference_row("Similarity", if similarity_applies { "How alike frames must look to group" } else { "Applies to Visual and Burst grouping" }, thresholds))
@@ -12151,18 +12374,25 @@ impl Workspace {
         } else {
             FILMSTRIP_HEIGHT
         };
+        // Focus mode hides every bar but the decision bar and filmstrip
+        // (REV-25); notices move onto the canvas (`focus_notices`).
+        let chrome = self.chrome_visible();
+        if !self.focus_mode {
+            // Its exit hint is stale once Focus mode ends, however it ended.
+            self.withdraw_notice("focus-mode");
+        }
         self.center_size = (
             self.docks.center,
             self.workspace_size.1
-                - TITLE_HEIGHT
-                - if self.import_ui.open {
+                - if chrome { TITLE_HEIGHT } else { 0. }
+                - if self.import_ui.open || !chrome {
                     0.
                 } else {
                     TOOLBAR_HEIGHT
                 }
                 - decision_height
                 - strip_height
-                - ui::STATUS_HEIGHT,
+                - if chrome { ui::STATUS_HEIGHT } else { 0. },
         );
         if self.mode == ViewMode::Grid && !self.import_ui.open {
             let columns = self.grid_cols();
@@ -12218,7 +12448,9 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.trace.timed("filters", self.filters(cx)))
+            .when(chrome, |main| {
+                main.child(self.trace.timed("filters", self.filters(cx)))
+            })
             .children(self.bulk_bar(cx))
             .child(
                 div()
@@ -12311,9 +12543,14 @@ impl Workspace {
             .line_height(px(ui::TEXT_LINE_HEIGHT))
             .text_color(self.text())
             .bg(self.bg())
-            .child(self.trace.timed("title_bar", self.title_bar(window, cx)))
+            .when(chrome, |root| {
+                root.child(self.trace.timed("title_bar", self.title_bar(window, cx)))
+            })
             .child(body)
-            .child(self.trace.timed("status_bar", self.status_bar(window, cx)));
+            .when(chrome, |root| {
+                root.child(self.trace.timed("status_bar", self.status_bar(window, cx)))
+            })
+            .children((!chrome).then(|| self.focus_notices(cx)).flatten());
         // Overlays fade in over 120 ms (`motion`); closing is instant. Each is
         // tagged with its overlay (None: the system-modal quit prompt) so the
         // one scrim goes directly beneath the topmost modal.
@@ -13143,12 +13380,14 @@ mod ui_tests {
             ("ingest_ui.rs", include_str!("desktop/ingest_ui.rs")),
             ("layout.rs", include_str!("desktop/layout.rs")),
             ("ledger.rs", include_str!("desktop/ledger.rs")),
+            ("loupe_aids.rs", include_str!("desktop/loupe_aids.rs")),
             ("preferences.rs", include_str!("desktop/preferences.rs")),
             (
                 "review_actions.rs",
                 include_str!("desktop/review_actions.rs"),
             ),
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
+            ("search.rs", include_str!("desktop/search.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
             ("motion.rs", include_str!("desktop/motion.rs")),
             ("prefetch.rs", include_str!("desktop/prefetch.rs")),
@@ -13249,6 +13488,11 @@ mod ui_tests {
             "\"b\" => Some(Cmd::SwapPanes)",
             "\"c\" => Some(Cmd::CompareSync)",
             "\"tab\" => Some(Cmd::Focus)",
+            // Inspection aids: the clipping overlay and Alt+digit zoom presets.
+            "\"j\" => Some(Cmd::Clipping)",
+            // Photo search (Ctrl/Cmd+F) opens the palette, after quit.
+            "if primary && key == \"f\"",
+            "loupe_aids::ZOOM_PRESETS.iter()",
         ] {
             let at = body
                 .find(routed)

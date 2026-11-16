@@ -24,7 +24,9 @@ pub(super) fn section_for(key: &str) -> PreferencesSection {
         | "grouping_mode"
         | "burst_gap_ms"
         | "visual_threshold"
-        | "auto_discover_drives" => PreferencesSection::Culling,
+        | "auto_discover_drives"
+        | "peaking_color"
+        | "peaking_sensitivity" => PreferencesSection::Culling,
         "memory_budget_mb" | "cache_budget_mb" => PreferencesSection::Performance,
         "show_getting_started" => PreferencesSection::Help,
         key if key.starts_with("ingest_") || key == "eject_after_ingest" => {
@@ -288,6 +290,22 @@ impl Workspace {
     }
 }
 
+/// Choosing the default for a setting that was never stored leaves it
+/// unstored, so the draft stays clean; anything else is written.
+fn set_default_aware(
+    extra: &mut std::collections::BTreeMap<String, Value>,
+    baseline: &std::collections::BTreeMap<String, Value>,
+    key: &str,
+    value: &str,
+    is_default: bool,
+) {
+    if is_default && !baseline.contains_key(key) {
+        extra.remove(key);
+    } else {
+        extra.insert(key.into(), json!(value));
+    }
+}
+
 impl Draft {
     pub fn new(settings: &Settings, themes: &[Theme]) -> Self {
         Self {
@@ -359,6 +377,20 @@ impl Draft {
                 s.extra.insert("reduce_motion".into(), json!(enabled));
             }
             Cmd::SetAutoDrives(enabled) => s.auto_discover_drives = *enabled,
+            Cmd::PeakingColor(color) => set_default_aware(
+                &mut s.extra,
+                &self.baseline.extra,
+                "peaking_color",
+                color.key(),
+                *color == Default::default(),
+            ),
+            Cmd::PeakingSensitivity(level) => set_default_aware(
+                &mut s.extra,
+                &self.baseline.extra,
+                "peaking_sensitivity",
+                level.key(),
+                *level == Default::default(),
+            ),
             Cmd::Font(font) => s.interface_font = font.clone(),
             Cmd::Group(mode) => s.grouping_mode = mode.clone(),
             Cmd::Gap(gap) => s.burst_gap_ms = *gap,
@@ -511,6 +543,36 @@ mod tests {
         assert_eq!(section_for("theme_mode"), PreferencesSection::Appearance);
         draft.edit(&Cmd::Font(active.interface_font.clone()), None);
         assert_eq!(draft.changed_count(), 2, "reverting an edit clears it");
+    }
+
+    #[test]
+    fn peaking_style_is_a_culling_preference_that_stays_clean_at_default() {
+        use shadowroom::peaking::{PeakingColor, PeakingSensitivity};
+        let active = Settings::default();
+        let mut draft = Draft::new(&active, &[]);
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Red), None);
+        draft.edit(&Cmd::PeakingSensitivity(PeakingSensitivity::Medium), None);
+        assert!(!draft.changed(), "the defaults are already in effect");
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Yellow), None);
+        draft.edit(&Cmd::PeakingSensitivity(PeakingSensitivity::High), None);
+        assert_eq!(
+            draft.patch(),
+            json!({"peaking_color":"yellow","peaking_sensitivity":"high"})
+        );
+        for key in draft.changed_keys() {
+            assert_eq!(section_for(&key), PreferencesSection::Culling);
+        }
+        let mut applied = active.clone();
+        applied
+            .extra
+            .insert("peaking_color".into(), json!("yellow"));
+        let style = super::super::loupe_aids::peaking_style_of(&applied);
+        assert_eq!(style.color, PeakingColor::Yellow);
+        assert_eq!(style.sensitivity, PeakingSensitivity::Medium);
+        // Back to Red from a stored Yellow is a real change.
+        let mut draft = Draft::new(&applied, &[]);
+        draft.edit(&Cmd::PeakingColor(PeakingColor::Red), None);
+        assert_eq!(draft.patch(), json!({"peaking_color":"red"}));
     }
 
     #[test]

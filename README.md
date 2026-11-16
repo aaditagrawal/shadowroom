@@ -85,7 +85,8 @@ drivers. Native package and AppImage instructions are in the [build guide](docs/
 Open a folder with **Cmd/Ctrl+O** or **Add photos** to plan a copy import. Passing a
 folder on the command line indexes it in place. Pick or rate frames as you review,
 then use **Export** to copy picks. Export XMP sidecars and other commands are in
-the command palette (**Cmd/Ctrl+K**).
+the command palette (**Cmd/Ctrl+K**), which also finds photos by filename and
+folders by name; **Cmd/Ctrl+F** opens it for photos only.
 
 | Key | Action |
 | --- | --- |
@@ -99,7 +100,8 @@ the command palette (**Cmd/Ctrl+K**).
 | `B` | Pin comparison reference |
 | Space or `Z` | Fit / 100% |
 | `+` / `−` | Increase / decrease zoom |
-| `F` | Toggle focus peaking |
+| `F` / `J` | Toggle focus peaking / clipping overlay |
+| Alt+`1` / `2` / `4`, Alt+`0` | 100% / 200% / 400% zoom, Fit |
 | `F1` | Getting Started guide |
 | Shift+`↓` / Shift+`↑` | Extend / shrink selection by a grid row |
 | `[` / `]` | Previous / next group |

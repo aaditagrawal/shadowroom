@@ -22,7 +22,7 @@
 
 use gpui::{
     AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Pixels, Rgba, Styled, Window,
-    canvas, div, fill, point, px, rgb, rgba, size,
+    canvas, div, fill, point, prelude::FluentBuilder, px, rgb, rgba, size,
 };
 use shadowroom::media::Histogram;
 use std::{
@@ -78,6 +78,8 @@ pub struct HistogramOptions {
     pub label: Rgba,
     /// Clip readout while a channel is clipped.
     pub label_strong: Rgba,
+    /// A clipped end above [`CLIP_WARNING`] of the frame (the theme's warning).
+    pub label_warning: Rgba,
     /// Plot plate, its outline and the quarter-tone guides. A light plate
     /// switches the curves to darker inks that hold up on white.
     pub plot: Rgba,
@@ -95,6 +97,7 @@ impl Default for HistogramOptions {
             labels: true,
             label: rgb(LABEL),
             label_strong: rgb(LABEL_STRONG),
+            label_warning: rgb(LABEL_WARNING),
             plot: rgb(PLOT_BG),
             plot_border: rgb(PLOT_BORDER),
             plot_grid: rgb(GRID),
@@ -116,12 +119,15 @@ const GRID: u32 = 0x1c1c1c;
 /// Standalone defaults (dark panel); the inspector passes theme colours.
 const LABEL: u32 = 0x9a9a9a;
 const LABEL_STRONG: u32 = 0xe6e6e6;
+const LABEL_WARNING: u32 = 0xe0b341;
 /// "No histogram data" sits on the dark plot plate in every theme.
 const EMPTY_LABEL: u32 = 0x9a9a9a;
 const AXIS_ROW: f32 = 14.;
 const NOTE_ROW: f32 = 14.;
 /// Share of samples in an end bin before that channel counts as clipped.
 const CLIP_THRESHOLD: f64 = 0.001;
+/// Share of the frame above which the clipping readout turns to the warning colour.
+pub const CLIP_WARNING: f64 = 0.005;
 
 // Band fills (straight alpha over #0f0f0f). Bands never overlap, so alpha only
 // mixes with the plot background.
@@ -173,7 +179,7 @@ pub fn histogram_with(
         HistogramSource::EmbeddedRaw => "Embedded JPEG, not RAW data",
         HistogramSource::RenderedRaw => "RAW render · 8-bit sRGB",
     };
-    let footer_right = data.clip_note();
+    let footer_right = data.clip_parts();
     let empty = data.is_empty();
 
     let painted = data.clone();
@@ -233,33 +239,41 @@ pub fn histogram_with(
                 _ => tick.left(px(x - 14.)).text_center(),
             });
         }
-        root = root.child(axis).child(
-            div()
-                .w(px(width))
-                .h(px(NOTE_ROW))
-                .flex()
-                .justify_between()
-                .gap(px(6.))
-                .text_size(px(10.))
-                .text_color(options.label)
-                .child(
-                    div()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(footer_left),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(if data.any_clipped() {
-                            options.label_strong
-                        } else {
-                            options.label
-                        })
-                        .child(footer_right),
-                ),
-        );
+        root =
+            root.child(axis).child(
+                div()
+                    .w(px(width))
+                    .h(px(NOTE_ROW))
+                    .flex()
+                    .justify_between()
+                    .gap(px(6.))
+                    .text_size(px(10.))
+                    .text_color(options.label)
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(footer_left),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .text_color(if data.any_clipped() {
+                                options.label_strong
+                            } else {
+                                options.label
+                            })
+                            .children(footer_right.into_iter().enumerate().map(
+                                |(i, (text, warn))| {
+                                    div()
+                                        .when(warn, |s| s.text_color(options.label_warning))
+                                        .child(if i == 0 { text } else { format!(" · {text}") })
+                                },
+                            )),
+                    ),
+            );
     }
     root.into_any_element()
 }
@@ -369,9 +383,11 @@ impl Prepared {
         self.clip_low != 0 || self.clip_high != 0
     }
 
-    fn clip_note(&self) -> String {
+    /// "Shadows 0.8%" / "Highlights 1.0%" for each clipped end, in plain
+    /// words, each flagged when it passes [`CLIP_WARNING`] of the frame.
+    fn clip_parts(&self) -> Vec<(String, bool)> {
         if self.is_empty() {
-            return String::new();
+            return Vec::new();
         }
         let pct = |share: f64| {
             if share >= 0.1 {
@@ -380,12 +396,23 @@ impl Prepared {
                 format!("{:.1}%", share * 100.)
             }
         };
-        match (self.clip_low != 0, self.clip_high != 0) {
-            (false, false) => "No clipping".into(),
-            (true, false) => format!("Clip ◀ {}", pct(self.low_share)),
-            (false, true) => format!("Clip ▶ {}", pct(self.high_share)),
-            (true, true) => format!("Clip ◀ {} ▶ {}", pct(self.low_share), pct(self.high_share)),
+        let mut parts = Vec::new();
+        if self.clip_low != 0 {
+            parts.push((
+                format!("Shadows {}", pct(self.low_share)),
+                self.low_share > CLIP_WARNING,
+            ));
         }
+        if self.clip_high != 0 {
+            parts.push((
+                format!("Highlights {}", pct(self.high_share)),
+                self.high_share > CLIP_WARNING,
+            ));
+        }
+        if parts.is_empty() {
+            parts.push(("No clipping".into(), false));
+        }
+        parts
     }
 
     /// Identity of a tessellated plot: its geometry and display values.
@@ -628,6 +655,39 @@ mod tests {
         assert_eq!(p.red[255], 1.);
         assert_eq!(p.clip_high, 0b111);
         assert_eq!(p.clip_low, 0);
+        let parts = p.clip_parts();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].0.starts_with("Highlights "), "{parts:?}");
+        assert!(parts[0].1, "a large share warns");
+    }
+
+    #[test]
+    fn clipping_readout_names_both_ends_and_warns_past_half_a_percent() {
+        // 0.8% crushed shadows, 0.2% blown highlights.
+        let h = hist(|i| match i {
+            0 => (800, 800, 800),
+            255 => (200, 200, 200),
+            _ => (390, 390, 390),
+        });
+        let parts = Prepared::new(&h, HistogramOptions::default()).clip_parts();
+        assert_eq!(
+            parts,
+            vec![
+                ("Shadows 0.8%".to_string(), true),
+                ("Highlights 0.2%".to_string(), false),
+            ]
+        );
+        let clean = hist(|i| {
+            if i == 0 || i == 255 {
+                (0, 0, 0)
+            } else {
+                (10, 10, 10)
+            }
+        });
+        assert_eq!(
+            Prepared::new(&clean, HistogramOptions::default()).clip_parts(),
+            vec![("No clipping".to_string(), false)]
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ fn guide_sections() -> Vec<(&'static str, String)> {
         (
             "4. Inspect fine detail",
             format!(
-                "Left/Right switches frames and preserves zoom and pan. Click the photo, or press Z or Space with the pointer on it, to see 100% right there; click again or press Esc for Fit. - and = change magnification, and {primary}+scroll zooms around the pointer. Drag, scroll, {alt}+arrows or the navigator inset move the view; Home re-centres it. B pins a reference and C compares: in Compare, B keeps the better frame as the reference and brings in the next one, Shift+B swaps the panes, Tab changes the active pane and Shift+C links or unlinks their pans. F toggles cyan focus peaking, a detail aid rather than a focus guarantee."
+                "Left/Right switches frames and preserves zoom and pan. Click the photo, or press Z or Space with the pointer on it, to see 100% right there; click again or press Esc for Fit. - and = change magnification, and {primary}+scroll zooms around the pointer. Drag, scroll, {alt}+arrows or the navigator inset move the view; Home re-centres it. B pins a reference and C compares: in Compare, B keeps the better frame as the reference and brings in the next one, Shift+B swaps the panes, Tab changes the active pane and Shift+C links or unlinks their pans. F toggles focus peaking (red by default; color and sensitivity in Preferences → Culling), a detail aid rather than a focus guarantee, and J shows clipped highlights in red and shadows in blue. {alt}+1, +2 and +4 jump to 100%, 200% and 400%; {alt}+0 returns to Fit."
             ),
         ),
         (
@@ -174,7 +174,7 @@ impl Workspace {
                                 shortcut("⇧B")
                             ))
                             .child(format!(
-                                "Z/Space or click Fit/100% · -/= Zoom · {}+arrows Pan · F Peaking · H Histogram",
+                                "Z/Space or click Fit/100% · -/= Zoom · {}+arrows Pan · F Peaking · J Clipping · H Histogram",
                                 alt()
                             ))
                             .child(

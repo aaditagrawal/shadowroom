@@ -848,6 +848,7 @@ fn build_tool_definitions() -> Vec<Value> {
     let mut settings = json!({"type":"object","additionalProperties":false,"properties":{
         "interface_font":{"type":"string","minLength":1,"maxLength":128},"theme":{"type":"string","minLength":1,"maxLength":256},
         "theme_mode":{"type":"string","enum":["manual","system","zed"]},"theme_light":{"type":"string","minLength":1,"maxLength":256},"theme_dark":{"type":"string","minLength":1,"maxLength":256},
+        "peaking_color":{"type":"string","enum":["red","cyan","yellow","white"]},"peaking_sensitivity":{"type":"string","enum":["low","medium","high"]},
         "grouping_mode":modes,"burst_gap_ms":{"type":"integer","minimum":1,"maximum":3600000},"visual_threshold":{"type":"integer","minimum":0,"maximum":64},
         "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"anyOf":[{"type":"integer","enum":[0]},{"type":"integer","minimum":64,"maximum":65536}]},"show_getting_started":{"type":"boolean"},"trash_mode":{"type":"string","enum":["system","in_app"]},
         "last_photo_id":{"type":["integer","null"],"minimum":1},"view_mode":{"type":"string","enum":["grid","loupe","compare","survey"]},"show_inspector":{"type":"boolean"},"show_sidebar":{"type":"boolean"},"sidebar_width":{"type":"integer","minimum":180,"maximum":480},"inspector_width":{"type":"integer","minimum":240,"maximum":480},"min_rating":rating,"filter":{"type":"string","enum":["all","picks","unrated","rejects","trash"]}
@@ -1188,7 +1189,7 @@ fn build_tool_definitions() -> Vec<Value> {
         tool(
             "command",
             "Execute an allowlisted workspace action; this is not a shell or arbitrary-command interface.",
-            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","open_folder_picker","open_theme_picker","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","show_full_folder","reset_decision"]}}),
+            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","open_folder_picker","open_theme_picker","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","toggle_clipping","show_full_folder","reset_decision"]}}),
             &["name"],
             false,
         ),

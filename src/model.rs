@@ -195,6 +195,31 @@ impl Photo {
         }
     }
 
+    /// Camera wall time for a culling line: "2026-06-14 18:42:07.31", with
+    /// hundredths only when the camera recorded sub-seconds (they separate
+    /// burst frames). The offset and its qualifier stay in
+    /// [`Photo::capture_display`].
+    pub fn capture_short(&self) -> Option<String> {
+        let timestamp = self
+            .captured_at
+            .and_then(chrono::DateTime::from_timestamp_millis)?;
+        let wall = match self
+            .captured_offset
+            .as_deref()
+            .filter(|_| self.capture_time_kind == "offset")
+            .and_then(parse_capture_offset)
+        {
+            Some(offset) => timestamp.with_timezone(&offset).naive_local(),
+            None => timestamp.naive_utc(),
+        };
+        let mut text = wall.format("%Y-%m-%d %H:%M:%S").to_string();
+        let centis = self.captured_at.unwrap_or(0).rem_euclid(1000) / 10;
+        if centis > 0 {
+            text.push_str(&format!(".{centis:02}"));
+        }
+        Some(text)
+    }
+
     pub fn capture_display(&self) -> String {
         let Some(timestamp) = self
             .captured_at
@@ -282,6 +307,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(photo.capture_display(), "2024-01-01 01:00:00.500 +01:00");
+        assert_eq!(
+            photo.capture_short().as_deref(),
+            Some("2024-01-01 01:00:00.50")
+        );
         photo.captured_offset = Some("-05:30".into());
         assert_eq!(photo.capture_display(), "2023-12-31 18:30:00.500 -05:30");
         photo.capture_time_kind = "camera_local".into();
@@ -290,6 +319,13 @@ mod tests {
             photo.capture_display(),
             "2024-01-01 00:00:00.500 (camera local)"
         );
+        photo.captured_at = Some(1704067200000);
+        assert_eq!(
+            photo.capture_short().as_deref(),
+            Some("2024-01-01 00:00:00"),
+            "whole seconds carry no fraction"
+        );
+        photo.captured_at = Some(1704067200500);
         photo.capture_time_kind.clear();
         assert!(photo.capture_display().ends_with("(offset unavailable)"));
         photo.captured_at = None;

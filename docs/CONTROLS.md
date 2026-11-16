@@ -21,14 +21,18 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `Z` or Space | Toggle fit / 100% zoom, centred on the point under the pointer when it rests on the photo |
 | Click the photo | At Fit, 100% centred where you clicked; when zoomed, back to Fit |
 | `=` / `-` | Zoom in / out; in Catalog, larger / smaller thumbnails |
+| Alt/Option + `0` / `1` / `2` / `4` | Fit / 100% / 200% / 400% in Review and Compare (Alt+digit never rates) |
 | Ctrl/Cmd + scroll | Zoom in / out around the pointer; plain scroll pans while zoomed |
 | Alt/Option + arrows | Pan a zoomed photo by a third of the view |
 | `B` | Pin the current photo as the Compare reference; in Compare, make the candidate the reference and bring in the next frame |
 | Shift+B / Shift+C | Compare: swap reference and candidate / link or unlink the panes' pan and zoom |
-| Tab / Shift+Tab | Focus mode (hide side panels); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
+| Tab / Shift+Tab | Focus mode: hide the side panels, title bar, view toolbar and status bar, keeping the bottom bar and filmstrip (notices appear at the top of the photo); in Compare, Tab changes the active pane and Shift+Tab is Focus mode |
 | Shift+P | In Review or Survey: pick this frame and reject the undecided frames of its burst (Survey: of what it shows) |
-| `F` | Toggle cyan focus peaking in Review and Compare |
+| `F` | Toggle focus peaking in Review and Compare (red by default; color and sensitivity in **Preferences → Culling**) |
+| `J` | Toggle the clipping overlay: blown highlights red, crushed shadows blue |
 | `F1` | Open Getting Started |
+| Ctrl+K or Cmd+K | Command palette; typing two or more characters also lists matching photos (filename) and folders, eight of each |
+| Ctrl+F or Cmd+F | Find a photo by filename across the whole library |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
@@ -44,6 +48,8 @@ The **cull ledger** is the thin track under the bar (along the filmstrip's top e
 
 Thumbnails show a rating as **★5**, a pick or reject glyph and a colour-label chip (the label's initial on its colour) on one plate at the photo's top-left, and a strip in the label colour along the bottom edge. The inspector's label swatches carry their keys (**6**–**9**; purple has none), and **1-5** after the stars in the bottom bar names the rating keys.
 
+The inspector's **Review** tab leads with what separates burst frames: the filename, then shutter, aperture, ISO and focal length on one line, then the capture time (with hundredths when the camera records them), camera and lens, then pixel size, file size and type. Flag and stars live in the bottom bar and on the photo, so the inspector does not repeat them. **Info** adds the folder, the full capture time with its UTC offset, equipment and preview details.
+
 A decision on 50 or more selected photos is confirmed in the status bar with its count and **Undo**. A decision on 1,000 or more photos first asks above the grid: Enter applies it and Escape cancels. With several photos selected the bar and inspector show what the photos share: a flag is highlighted only when every photo has it (a partial mark when some do), and stars read "mixed" when ratings differ.
 
 Flags and ratings never delete source media. Repeating the same rating, Pick or Reject keeps that decision. **R**, the **Reset** button and **Reset Rating and Flag** in the command palette clear stars and pick/reject together, preserving color labels. Reset never auto-advances, works on the selected Catalog photos or the active Review/Compare photo, and can be undone as one decision. A photo may leave the visible list if it no longer matches the current filter. Automatic advance, when enabled, moves after an explicit rating or flag decision; rotary rating changes should be checked with automatic advance off during calibration.
@@ -52,7 +58,8 @@ The loupe shows the current photo's flag, stars and label at its top-left, with 
 
 Zoom ranges from 12.5% to 800%; the zoom button shows the actual magnification
 at Fit (for example **Fit 45%**), the **−** and **+** buttons change it, and **Z**
-restores 100% or Fit. While zoomed, a navigator at the photo's bottom-right shows
+restores 100% or Fit; Alt/Option+1, +2 and +4 jump straight to 100%, 200% and
+400%, and Alt/Option+0 returns to Fit. While zoomed, a navigator at the photo's bottom-right shows
 where the view sits in the frame; click or drag it to move. Adjacent frames retain
 zoom and pan. In Compare, arrows skip the reference frame, so the two panes never
 show the same photo, and each pane is labelled on the picture with its role, file
@@ -65,8 +72,15 @@ burst, otherwise up to nine neighbouring frames (**Neighbours**), in the column 
 gives the largest frames; its header's
 **⇧P Keep this · reject undecided** button acts on exactly those frames. Focus peaking
 highlights abrupt luminance edges in the displayed preview, including both Compare
-panes. It is a visual aid, not an automatic sharpness verdict, and never changes
-the source or histogram.
+panes, in red by default; **Preferences → Culling** offers cyan, yellow and white
+and a Low / Medium / High sensitivity. At Fit the caption under the photo says
+peaking reads the fit preview (**Z** for 100%). The neighbouring frames' peaked
+copies are prepared ahead, so peaking does not pop in after each step. It is a
+visual aid, not an automatic sharpness verdict, and never changes the source or
+histogram. The clipping overlay (`J`, or the warning button by the inspector's
+histogram) paints pixels with a channel at 255 red and at 0 blue on the displayed
+preview; the histogram footer names the same ends in words (**Shadows 0.8% ·
+Highlights 1.0%**), in the warning colour above 0.5% of the frame.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
 Ctrl/Cmd-click toggles individual frames. In the Import grid a plain click or
@@ -87,6 +101,15 @@ and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
 right-clicking a different photo makes it the action target. The menu names the
 photo or selected count. Up/Down and Enter activate a menu action; Escape closes
 it.
+
+The command palette lists photos whose filename contains the query (so
+**4512** finds `IMG_4512.CR3`) and folders whose name or path contains it,
+after commands whose name contains the query and before looser command
+matches. Enter on a photo selects it, scrolling the Catalog to it or showing it
+in Review; a photo outside the current filter shows the whole library first, and
+the status bar says so. Enter on a folder scopes the view to it, as its sidebar
+row does. **Ctrl/Cmd+F** opens the palette for photos only (up to 50 rows);
+Trash is not searched.
 
 Delete uses **Preferences → Culling → Trash destination**: **OS Trash** by
 default, or optional **In-app** Trash. Shift+Delete always requests permanent
