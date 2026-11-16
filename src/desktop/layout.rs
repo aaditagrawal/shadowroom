@@ -26,6 +26,21 @@ pub(super) mod space {
 /// readable copy never goes below LABEL. Nothing is drawn below 11 px, even
 /// at 90%; every size passes through [`font`], so the Text size preference
 /// scales the whole scale.
+///
+/// Each role is one distinct (size, weight, colour) tuple, so roles that
+/// share the 11 px floor still differ by colour or weight:
+///
+/// | Role | Size | Weight | Colour |
+/// | --- | --- | --- | --- |
+/// | glyph (badge, keycap, tick) | MICRO 11 | regular or MEDIUM | on its plate or cap |
+/// | section header | LABEL 11 | MEDIUM | `text` |
+/// | field label, hint, caption | LABEL 11 | regular | `text.muted` |
+/// | body (rows, buttons, tabs) | BODY 12 | regular | `text` |
+/// | subhead (inspector filename) | TITLE 13 | MEDIUM | `text` |
+/// | dialog and empty-state title | DISPLAY 16 | MEDIUM | `text` |
+///
+/// MICRO and LABEL share 11 px because 11 px is the floor; MICRO stays a
+/// separate role so glyph text can move without touching copy.
 pub(super) mod text {
     /// Thumbnail badges, keycaps, histogram axis ticks.
     pub const MICRO: f32 = 11.;

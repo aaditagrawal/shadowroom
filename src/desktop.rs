@@ -6600,11 +6600,14 @@ impl Workspace {
     }
     /// The one section-header style (R2-design-04): LABEL size, MEDIUM,
     /// muted, sentence case. Callers add only spacing and rules.
+    /// The section role: LABEL size, MEDIUM, in `text`, so a header stands
+    /// apart from the muted field labels and hints beneath it by colour, not
+    /// only by a weight step that does not show at 11 px (R5-design-04).
     fn section_header(&self, label: impl Into<SharedString>) -> Div {
         div()
             .text_size(ui::font(ui::text::LABEL))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
+            .text_color(self.text())
             .child(label.into())
     }
     fn section(&self, label: &str) -> Div {

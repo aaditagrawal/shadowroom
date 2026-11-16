@@ -80,6 +80,12 @@ their 24/28 px boxes, which hold a 150% line, and spacing stays on the 4 px grid
 so layouts keep their shape while text grows; the image menu widens with the text.
 `SHADOWROOM_TEXT_SCALE=1.25` overrides the desktop factor for measurements.
 
+Type roles are distinct (size, weight, colour) tuples, so roles that share the
+11 px floor still read apart: section headers are 11 px MEDIUM in `text`; field
+labels, hints and captions 11 px regular in `text.muted`; body text 12 px;
+subheads 13 px MEDIUM; dialog and empty-state titles 16 px MEDIUM. Glyph text
+(badges, keycaps, histogram ticks) has its own role at the 11 px floor.
+
 ### High contrast
 
 **Shadowroom High Contrast Dark** and **Shadowroom High Contrast Light** are the
