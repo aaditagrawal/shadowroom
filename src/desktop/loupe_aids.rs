@@ -72,7 +72,7 @@ impl Workspace {
         }
         // Clipping paints last: an exposure warning outranks an edge.
         if effect & CLIPPING_BIT != 0 {
-            shadowroom::peaking::clipping(rgba, bgra);
+            shadowroom::peaking::clipping(rgba, bgra, width);
         }
     }
 
@@ -83,14 +83,114 @@ impl Workspace {
 
     pub(super) fn toggle_clipping(&mut self) {
         self.clipping = !self.clipping;
-        self.announce(
-            if self.clipping {
-                "Clipping shown · red marks blown highlights, blue crushed shadows · J toggles"
-            } else {
-                "Clipping hidden"
-            },
-            Tone::Info,
+        self.announce_aid(
+            CLIPPING_BIT,
+            self.clipping,
+            "clipping",
+            "Clipping shown · magenta stripes mark blown highlights, blue crushed shadows · J toggles"
+                .into(),
+            "Clipping hidden",
         );
+    }
+
+    pub(super) fn toggle_peaking(&mut self) {
+        self.focus_peaking = !self.focus_peaking;
+        let shown = format!(
+            "Focus peaking on · {} marks sharp edges · F toggles",
+            self.peaking_style().color.name().to_lowercase()
+        );
+        self.announce_aid(
+            PEAKING_BIT,
+            self.focus_peaking,
+            "focus peaking",
+            shown,
+            "Focus peaking off",
+        );
+    }
+
+    /// Says an aid is on only once its overlay is on the photo (R4-review-04):
+    /// until the background pass has painted the copy, the notice reads
+    /// "Preparing …" and [`Self::settle_aid`] swaps in the real text.
+    fn announce_aid(&mut self, bit: u8, on: bool, name: &str, shown: String, hidden: &str) {
+        if !on {
+            if self.pending_aid.as_ref().is_some_and(|(b, _)| *b == bit) {
+                self.pending_aid = None;
+            }
+            self.announce(hidden, Tone::Info);
+            return;
+        }
+        let photo_view = !self.import_ui.open
+            && !self.filtered.is_empty()
+            && matches!(self.mode, ViewMode::Loupe | ViewMode::Compare);
+        let ready = !photo_view
+            || self
+                .review_photo()
+                .is_some_and(|p| self.effect_ready(p, self.wanted_kind()));
+        if ready {
+            self.pending_aid = None;
+            self.announce(shown, Tone::Info);
+        } else {
+            self.announce(format!("Preparing {name}…"), Tone::Info);
+            self.pending_aid = Some((bit, shown));
+        }
+    }
+
+    /// The loupe's preview tier at the current zoom.
+    pub(super) fn wanted_kind(&self) -> PreviewKind {
+        if self.zoom {
+            PreviewKind::Full
+        } else {
+            PreviewKind::Fit
+        }
+    }
+
+    /// Whether the overlaid display copy the loupe wants for `p` is cached.
+    pub(super) fn effect_ready(&self, p: &Photo, kind: PreviewKind) -> bool {
+        let effect = self.display_effect(kind);
+        let (mtime, size) = (preview_mtime(p), preview_size(p));
+        effect == 0
+            || (1..=2u8).any(|tier| {
+                self.textures
+                    .contains_key(&(p.id, tier + effect, mtime, size))
+            })
+    }
+
+    /// Called by the loupe each frame: once the pending aid's overlay is on
+    /// the photo, the notice says so.
+    pub(super) fn settle_aid(&mut self, p: &Photo, kind: PreviewKind) {
+        let Some((bit, _)) = &self.pending_aid else {
+            return;
+        };
+        if (self.display_effect(kind) & bit == 0 || self.effect_ready(p, kind))
+            && let Some((_, shown)) = self.pending_aid.take()
+        {
+            self.announce(shown, Tone::Info);
+        }
+    }
+
+    /// The effect bits last shown for `id`, so a new overlay copy can keep the
+    /// old one on screen instead of dropping to the plain photo.
+    pub(super) fn shown_effect(&self, id: i64) -> Option<u8> {
+        self.shown_effects
+            .iter()
+            .find(|(shown, _)| *shown == id)
+            .map(|&(_, effect)| effect)
+    }
+
+    pub(super) fn remember_effect(&mut self, id: i64, effect: u8) {
+        if let Some(entry) = self
+            .shown_effects
+            .iter_mut()
+            .find(|(shown, _)| *shown == id)
+        {
+            entry.1 = effect;
+            return;
+        }
+        // Compare shows two photos; a few entries cover both and their neighbours.
+        if self.shown_effects.len() >= 4 {
+            self.shown_effects.remove(0);
+        }
+        self.shown_effects.push((id, effect));
     }
 
     /// Fit (0) or an exact magnification, from the presets or the palette.

@@ -80,10 +80,18 @@ and a Low / Medium / High sensitivity. At Fit the caption under the photo says
 peaking reads the fit preview (**Z** for 100%). The neighbouring frames' peaked
 copies are prepared ahead, so peaking does not pop in after each step. It is a
 visual aid, not an automatic sharpness verdict, and never changes the source or
-histogram. The clipping overlay (`J`, or the warning button by the inspector's
-histogram) paints pixels with a channel at 255 red and at 0 blue on the displayed
-preview; the histogram footer names the same ends in words (**Shadows 0.8% ·
-Highlights 1.0%**), in the warning colour above 0.5% of the frame.
+histogram. The clipping overlay (`J`, or the clipping button by the inspector's
+histogram) marks the displayed preview with one rule: crushed shadows (every
+channel at 2 or below) solid blue, and highlights in magenta stripes, wide where
+every channel is blown and thin where only one or two channels reach 254. A
+saturated colour with one channel at 0 (grass, a fuchsia dress) is not a shadow.
+The histogram footer names the same ends in words with the overlay's colours
+(**Shadows 0.8% · Highlights 1.0%**), measured on the preview the overlay paints,
+so the figures do not change while sharper previews load (**Measuring…** until
+then). They turn to the warning colour above 0.5% of the frame, or above 2% when
+only one or two channels clip. Pressing `J` or `F` says **Preparing clipping…**
+until the overlay is on the photo, and an overlay already shown stays visible
+while a new copy is painted.
 
 Catalog and import grids support anchored Shift+Arrow and Shift-click selection;
 Ctrl/Cmd-click toggles individual frames. In the Import grid a plain click or

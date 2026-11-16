@@ -128,8 +128,10 @@ impl AssetSource for Assets {
             "add" => Some(include_bytes!("../assets/icons/add.svg")),
             "external" => Some(include_bytes!("../assets/icons/link-external.svg")),
             "eject" => Some(include_bytes!("../assets/icons/shadowroom/eject.svg")),
-            "focus" => Some(include_bytes!("../assets/icons/screen-full.svg")),
+            "fullscreen" => Some(include_bytes!("../assets/icons/screen-full.svg")),
             "peaking" => Some(include_bytes!("../assets/icons/shadowroom/peaking.svg")),
+            "clipping" => Some(include_bytes!("../assets/icons/shadowroom/clipping.svg")),
+            "focus-mode" => Some(include_bytes!("../assets/icons/shadowroom/focus-mode.svg")),
             "reset" => Some(include_bytes!(
                 "../assets/icons/shadowroom/reset-decision.svg"
             )),
@@ -1133,6 +1135,11 @@ pub struct Workspace {
     zoom_factor: f32,
     fit_scales: std::rc::Rc<std::cell::Cell<[f32; 2]>>,
     focus_peaking: bool,
+    /// An aid switched on whose overlay copy is still being painted: its
+    /// effect bit and the notice to show once it is on the photo.
+    pending_aid: Option<(u8, String)>,
+    /// Effect bits last shown per photo (`loupe_aids::shown_effect`).
+    shown_effects: Vec<(i64, u8)>,
     /// Clipping overlay (J): blown highlights red, crushed shadows blue.
     clipping: bool,
     navigation_direction: isize,
@@ -1637,6 +1644,8 @@ impl Workspace {
             zoom_factor: 1.,
             fit_scales: std::rc::Rc::new(std::cell::Cell::new([1.; 2])),
             focus_peaking: false,
+            pending_aid: None,
+            shown_effects: Vec::new(),
             clipping: false,
             navigation_direction: 1,
             preview_foreground: RefCell::new(None),
@@ -3952,20 +3961,7 @@ impl Workspace {
                 self.zoom = true;
                 self.read_ahead();
             }
-            Cmd::FocusPeaking => {
-                self.focus_peaking = !self.focus_peaking;
-                self.announce(
-                    if self.focus_peaking {
-                        format!(
-                            "Focus peaking on · {} marks sharp edges · F toggles",
-                            self.peaking_style().color.name().to_lowercase()
-                        )
-                    } else {
-                        "Focus peaking off".into()
-                    },
-                    Tone::Info,
-                );
-            }
+            Cmd::FocusPeaking => self.toggle_peaking(),
             Cmd::Clipping => self.toggle_clipping(),
             // Preferences-only: the open draft takes them before this match.
             Cmd::PeakingColor(_) | Cmd::PeakingSensitivity(_) => {}
@@ -4772,7 +4768,7 @@ impl Workspace {
                 "Toggle Focus Mode",
                 "View · hide side panels",
                 "Shift Tab",
-                "focus",
+                "focus-mode",
                 Cmd::Focus,
             ),
             item(
@@ -7530,27 +7526,37 @@ impl Workspace {
                     texture.kind,
                     texture.color_status.clone(),
                 ));
+                if desired > 0 {
+                    self.remember_effect(p.id, effect);
+                }
                 if k >= desired {
                     return fallback;
                 }
                 break;
             }
         }
-        // Keep the ordinary image visible while its overlay copy is prepared.
-        if fallback.is_none() && effect != 0 {
-            for k in (0..=search_max).rev() {
-                let key = (p.id, k, mtime, size);
-                if let Some(texture) = self.textures.get(&key) {
-                    self.visible_textures.insert(key);
-                    fallback = Some((
-                        texture.image.clone(),
-                        texture.width,
-                        texture.height,
-                        texture.source.clone(),
-                        texture.kind,
-                        texture.color_status.clone(),
-                    ));
-                    break;
+        // While the overlay copy is painted, keep what was on screen: the
+        // photo's last overlay (toggling the other aid or changing the
+        // peaking style never drops the current one, R4-review-04), else the
+        // ordinary image.
+        let last = self.shown_effect(p.id).filter(|&last| last != effect);
+        if fallback.is_none() && (effect != 0 || last.is_some()) {
+            let previous = last.into_iter().chain((effect != 0).then_some(0));
+            'search: for shown in previous {
+                for k in (0..=search_max).rev() {
+                    let key = (p.id, k + shown, mtime, size);
+                    if let Some(texture) = self.textures.get(&key) {
+                        self.visible_textures.insert(key);
+                        fallback = Some((
+                            texture.image.clone(),
+                            texture.width,
+                            texture.height,
+                            texture.source.clone(),
+                            texture.kind,
+                            texture.color_status.clone(),
+                        ));
+                        break 'search;
+                    }
                 }
             }
         }
@@ -7727,6 +7733,12 @@ impl Workspace {
             self.media.request_photo(photo, kind);
         }
         let texture = self.texture(photo_index, kind, cx);
+        if !reference {
+            // "Clipping shown" only once the overlay is on the photo.
+            let photos = std::mem::take(&mut self.photos);
+            self.settle_aid(&photos[photo_index], kind);
+            self.photos = photos;
+        }
         let photo = &self.photos[photo_index];
         let context_photo_id = photo.id;
         let requested_error = self.media.photo_error(photo, kind);
@@ -9611,7 +9623,13 @@ impl Workspace {
                         self.focus_peaking,
                         cx,
                     )
-                    .tooltip(self.tip("Focus peaking · cyan fine-detail highlights", "F")),
+                    .tooltip(self.tip(
+                        &format!(
+                            "Focus peaking · {} marks sharp edges",
+                            self.peaking_style().color.name().to_lowercase()
+                        ),
+                        "F",
+                    )),
                 )
             })
             // Destructive action sits apart from rating, at the far edge.
@@ -9890,6 +9908,20 @@ impl Workspace {
             }
             if self.histogram && !self.inspector_info {
                 let preview = self.media.best_photo(p);
+                // The clipping readout follows the tier the overlay paints
+                // (Fit, or Full when only that is decoded), never the thumbnail,
+                // so its figures don't change as sharper previews arrive.
+                let clip = match self
+                    .media
+                    .get_photo(p, PreviewKind::Fit)
+                    .or_else(|| self.media.get_photo(p, PreviewKind::Full))
+                {
+                    Some(steady) => crate::histogram::ClipSource::Stable(steady.histogram.clip),
+                    None if self.media.photo_error(p, PreviewKind::Fit).is_some() => {
+                        crate::histogram::ClipSource::Plotted
+                    }
+                    None => crate::histogram::ClipSource::Measuring,
+                };
                 let scale = div()
                     .id("histogram-scale")
                     .flex()
@@ -9924,13 +9956,13 @@ impl Workspace {
                     .compact_toggle(
                         "histogram-clipping",
                         "",
-                        "warning",
+                        "clipping",
                         Cmd::Clipping,
                         self.clipping,
                         cx,
                     )
                     .tooltip(self.tip(
-                        "Show clipping on the photo · blown highlights red, crushed shadows blue",
+                        "Show clipping on the photo · blown highlights in magenta stripes, crushed shadows blue",
                         "J",
                     ));
                 body = body
@@ -9969,6 +10001,7 @@ impl Workspace {
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
+                            clip,
                             ..Default::default()
                         },
                     ));
