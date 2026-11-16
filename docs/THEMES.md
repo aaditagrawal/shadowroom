@@ -4,7 +4,7 @@ Shadowroom includes restrained **Shadowroom Dark** and **Shadowroom Light** pale
 
 ## Appearance controls
 
-Click the active theme name in the status bar, open **Preferences → Appearance**
+Click the theme icon in the status bar (its tooltip names the active theme), open **Preferences → Appearance**
 with **Cmd/Ctrl+,**, or search **Appearance & Themes** in **Cmd/Ctrl+K**. Appearance
 is the first preferences section. Culling, Performance, Controller and Help have their
 own sections so a large theme collection does not bury other settings.
@@ -44,7 +44,7 @@ immediately.
   theme file or settings are unavailable. Selecting a theme explicitly switches
   to Manual.
 
-The selected palette is named in Preferences; the status bar retains the active palette until Apply. Theme source
+The selected palette is named in Preferences; the window keeps the active palette until Apply. Theme source
 can also be changed through the palette's **Theme Source** commands.
 
 ### Motion

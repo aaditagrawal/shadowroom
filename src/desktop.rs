@@ -7155,18 +7155,32 @@ impl Workspace {
         }
         for (n, drive) in self.drives.iter().enumerate() {
             let path = drive.path.clone();
+            // The copy state is the row's right-hand column, like the counts
+            // above it: the name ellipsizes, the state never does (R4-catalog-02).
+            let state = self.import_ui.drive_state(&drive.path);
+            let tip = match &state {
+                Some(state) => format!("{} · {state} · import from this drive", drive.name),
+                None => format!("{} · import from this drive", drive.name),
+            };
             body = body.child(
                 row(
                     ("drive", n).into(),
                     "drive",
-                    match self.import_ui.drive_state(&drive.path) {
-                        Some(state) => format!("{} · {state}", drive.name),
-                        None => drive.name.clone(),
-                    },
+                    drive.name.clone(),
                     None,
                     importing && drive.path == self.import_ui.source,
                 )
-                .tooltip(self.tip("Import from drive", ""))
+                .when_some(state, |row, state| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .text_size(ui::font(11.))
+                            .text_color(self.muted())
+                            .child(state),
+                    )
+                })
+                .tooltip(self.tip(&tip, ""))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.scan_for_import(path.clone());
                     cx.notify();
@@ -12478,19 +12492,15 @@ impl Workspace {
             )
             .children(self.save_state_view(cx))
             .child(
+                // The theme's name lives in the tooltip: in the bar it cost
+                // ~130 px and truncated long names (R4-design-10).
                 div()
                     .id("appearance")
-                    .h(px(ui::COMPACT_CONTROL_HEIGHT))
-                    .max_w(px(if self.workspace_size.0 < 1120. {
-                        32.
-                    } else {
-                        160.
-                    }))
+                    .size(px(ui::COMPACT_CONTROL_HEIGHT))
                     .flex_shrink_0()
-                    .px(px(space::SM))
                     .flex()
                     .items_center()
-                    .gap(px(space::SM))
+                    .justify_center()
                     .occlude()
                     .cursor_pointer()
                     .hover({
@@ -12498,18 +12508,10 @@ impl Workspace {
                         move |style| style.bg(hover)
                     })
                     .child(icon("color-mode", self.icon_muted()))
-                    .when(self.workspace_size.0 >= 1120., |s| {
-                        s.child(
-                            div()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_normal()
-                                .line_clamp(1)
-                                .child(self.theme.name.clone()),
-                        )
-                    })
-                    .tooltip(self.tip("Appearance · themes, Zed sync and interface font", ""))
+                    .tooltip(self.tip(
+                        &format!("{} · Appearance, themes and fonts", self.theme.name),
+                        "",
+                    ))
                     .on_click(
                         cx.listener(|this, _, window, cx| {
                             this.execute(Cmd::Appearance, window, cx)

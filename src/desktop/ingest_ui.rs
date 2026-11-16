@@ -255,7 +255,7 @@ pub(super) struct ImportUi {
     /// Imports waiting for the running job (another card), in start order.
     pub queue: Vec<QueuedJob>,
     /// The card of the last job that completed: its sidebar row reads
-    /// "Done · safe to eject" until it is ejected or another job starts.
+    /// "Safe to eject" until it is ejected or another job starts.
     pub done_source: Option<PathBuf>,
     /// The failed job's error list is unfolded under its outcome.
     details_open: bool,
@@ -746,7 +746,7 @@ impl ImportUi {
             return Some("Queued".into());
         }
         if self.done_source.as_deref() == Some(path) {
-            return Some("Done · safe to eject".into());
+            return Some("Safe to eject".into());
         }
         (self.source == path && self.scan.is_some())
             .then(|| format!("{} new", copy::count(self.new_count)))
@@ -4963,7 +4963,7 @@ mod responsive_tests {
         state.done_source = Some(PathBuf::from("/media/A"));
         assert_eq!(
             state.drive_state(Path::new("/media/A")).as_deref(),
-            Some("Done · safe to eject")
+            Some("Safe to eject")
         );
     }
 
