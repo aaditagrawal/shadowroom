@@ -100,6 +100,18 @@ impl Purpose {
 }
 
 impl Workspace {
+    /// The native chooser's accept button: names the verb that opened it.
+    fn accept_label(&self, purpose: &Purpose) -> &'static str {
+        match (purpose, self.folder_intent) {
+            (Purpose::Workspace { export: None, .. }, super::ingest_ui::FolderIntent::Cull) => {
+                "Open to Cull"
+            }
+            (Purpose::Workspace { export: None, .. }, super::ingest_ui::FolderIntent::Import) => {
+                "Import"
+            }
+            _ => purpose.accept_label(),
+        }
+    }
     /// Asks for a folder (or a theme file) for `purpose`. The platform's own
     /// chooser opens first; the built-in picker is the fallback when the
     /// desktop has no file-chooser portal, when the app is driven by
@@ -134,7 +146,7 @@ impl Workspace {
             files,
             directories: !files,
             multiple: false,
-            prompt: Some(purpose.accept_label().into()),
+            prompt: Some(self.accept_label(&purpose).into()),
         });
         let photo_folders = self.export_photo_folders(&purpose);
         cx.spawn(async move |this, cx| {
@@ -574,6 +586,19 @@ impl Workspace {
                 )
             }
             Purpose::Theme(_) => (purpose.title().into(), None, "Use theme".into()),
+            // The two entry verbs share this purpose; say which one is running.
+            Purpose::Workspace { export: None, .. } => match self.folder_intent {
+                super::ingest_ui::FolderIntent::Cull => (
+                    "Open folder to cull in place".into(),
+                    Some("Photos stay where they are; nothing is copied.".into()),
+                    format!("Open “{target}”"),
+                ),
+                super::ingest_ui::FolderIntent::Import => (
+                    "Import from card or folder".into(),
+                    Some("Copies and verifies photos into your library; the source is never modified.".into()),
+                    format!("Import “{target}”"),
+                ),
+            },
             _ => (purpose.title().into(), None, format!("Use “{target}”")),
         }
     }

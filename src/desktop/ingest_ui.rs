@@ -3804,7 +3804,7 @@ impl Workspace {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(ui::text::LABEL))
+                                    .text_size(ui::font(ui::text::LABEL))
                                     .text_color(self.muted())
                                     .child(if skipped > 0 {
                                         format!(
@@ -3826,7 +3826,7 @@ impl Workspace {
                             .h(px(ui::COMPACT_CONTROL_HEIGHT))
                             .border_1()
                             .border_color(chip_color)
-                            .text_size(px(ui::text::LABEL))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(chip_color)
                             .when(chip == "Verified", |s| {
                                 s.child(icon("check", chip_color).size(px(12.)))
@@ -3850,7 +3850,7 @@ impl Workspace {
                     .pl(px(space::LG))
                     .pr(px(space::SM))
                     .pb(px(space::SM))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .children(paths.map(|(label, path)| {
                         div()
                             .overflow_hidden()
@@ -4157,7 +4157,7 @@ impl Workspace {
                     .px(px(space::SM))
                     .py(px(space::XS))
                     .gap(px(2.))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .border_1()
                     .border_color(self.border())
                     .children(outcome.errors.iter().enumerate().map(|(n, problem)| {
@@ -4189,7 +4189,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(space::SM))
                     .px(px(space::SM))
-                    .text_size(px(ui::text::LABEL))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(if missing { warning } else { self.muted() })
                     .child(icon(
                         if missing { "warning" } else { "import" },
