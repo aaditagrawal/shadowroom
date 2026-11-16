@@ -195,6 +195,19 @@ pub trait CopyHooks: Send + Sync {
     fn before_manifest_verify(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+    /// The volume holding `path` (`uuid:…` or `label:…`).
+    fn volume_identity(&self, path: &Path) -> String {
+        super::volume_identity(path)
+    }
+    /// Mount roots of removable drives currently carrying `volume`, so a card
+    /// that comes back at another mount point is still recognised.
+    fn volume_mounts(&self, volume: &str) -> Vec<PathBuf> {
+        crate::indexer::discover_drives()
+            .into_iter()
+            .filter(|drive| drive.removable && super::volume_identity(&drive.path) == volume)
+            .map(|drive| drive.path)
+            .collect()
+    }
 }
 pub struct DefaultHooks;
 impl CopyHooks for DefaultHooks {}
@@ -1215,6 +1228,9 @@ fn fold(
                 report.progress.errors.extend(cleanup_errors);
                 if creates_files {
                     report.progress.completed += 1;
+                    if group.group.kind == "video" {
+                        report.progress.completed_videos += 1;
+                    }
                 } else {
                     report.progress.skipped += 1;
                 }
@@ -1235,6 +1251,7 @@ fn fold(
                 }
                 report.progress.failed += 1;
                 report.progress.failed_ids.push(id);
+                report.progress.failed_sources.push(path.clone());
                 report
                     .progress
                     .errors
@@ -1245,19 +1262,148 @@ fn fold(
     failed
 }
 
-/// Whether the job's source is still the one that was scanned: its root
-/// lists, the folder holding `file` exists, and the volume identity is
-/// unchanged. A pulled card (or an unmounted static mount point) fails these;
-/// a single unreadable or deleted file does not, and fails on its own.
-fn source_present(plan: &IngestPlan, file: &Path) -> bool {
-    fs::read_dir(&plan.source).is_ok()
-        && file
-            .parent()
-            .is_none_or(|parent| fs::symlink_metadata(parent).is_ok())
-        && plan
-            .groups
-            .first()
-            .is_none_or(|g| super::volume_identity(&plan.source) == g.group.volume)
+/// How long a read error waits for the source to settle before it counts as
+/// a failure: on real hardware a pulled card returns EIO before the mount is
+/// torn down, and the mount table can still answer for a moment.
+const LOSS_GRACE: Duration = Duration::from_millis(1500);
+const LOSS_PROBE: Duration = Duration::from_millis(250);
+
+/// Where the job's source is, and whether it is still the one that was
+/// scanned. A card that comes back at another mount point (a stale
+/// `/run/media/u/EOS_DIGITAL` makes the new one `EOS_DIGITAL1`) is found by
+/// its volume identity, and the remaining paths are read from there.
+pub(super) struct SourceWatch<'a> {
+    /// The scanned source; every planned path starts with it.
+    origin: PathBuf,
+    /// The removable mount root holding `origin` when the job started, when
+    /// the volume has a stable identity (relocation is off otherwise).
+    mount: Option<PathBuf>,
+    volume: Option<String>,
+    /// The source root now: `origin`, or the same place on the new mount.
+    current: std::cell::RefCell<PathBuf>,
+    /// When a grace period last ended with the source still present, so a
+    /// run of ordinary failures on a present card waits only once.
+    confirmed: std::cell::Cell<Option<Instant>>,
+    hooks: &'a dyn CopyHooks,
+    control: &'a Control,
+}
+impl<'a> SourceWatch<'a> {
+    pub(super) fn new(plan: &IngestPlan, hooks: &'a dyn CopyHooks, control: &'a Control) -> Self {
+        let volume = plan.groups.first().map(|g| g.group.volume.clone());
+        // Only a filesystem UUID identifies a card; a label or folder name
+        // could be another card with the same name.
+        let mount = volume
+            .as_deref()
+            .filter(|volume| volume.starts_with("uuid:"))
+            .and_then(|volume| {
+                hooks
+                    .volume_mounts(volume)
+                    .into_iter()
+                    .filter(|mount| plan.source.starts_with(mount))
+                    .max_by_key(|mount| mount.as_os_str().len())
+            });
+        Self {
+            origin: plan.source.clone(),
+            mount,
+            volume,
+            current: std::cell::RefCell::new(plan.source.clone()),
+            confirmed: std::cell::Cell::new(None),
+            hooks,
+            control,
+        }
+    }
+    /// `path` (planned under the scanned source) where it is now.
+    fn rebase(&self, path: &Path) -> PathBuf {
+        let current = self.current.borrow();
+        match path.strip_prefix(&self.origin) {
+            Ok(relative) if *current != self.origin => current.join(relative),
+            _ => path.to_path_buf(),
+        }
+    }
+    /// `group` with its source paths where they are now.
+    fn rebase_group(&self, group: &PlannedGroup) -> PlannedGroup {
+        let mut group = group.clone();
+        if *self.current.borrow() == self.origin {
+            return group;
+        }
+        let ingest = &mut group.group;
+        ingest.primary.path = self.rebase(&ingest.primary.path);
+        if let Some(companion) = ingest.companion.as_mut() {
+            companion.path = self.rebase(&companion.path);
+        }
+        for sidecar in &mut ingest.sidecars {
+            sidecar.path = self.rebase(&sidecar.path);
+        }
+        for file in &mut group.files {
+            file.source.path = self.rebase(&file.source.path);
+        }
+        group
+    }
+    /// One probe: the root lists, the folder holding `file` exists, and the
+    /// volume identity is unchanged. A pulled card (or an unmounted static
+    /// mount point) fails these; a single unreadable or deleted file does
+    /// not, and fails on its own.
+    pub(super) fn present(&self, file: &Path) -> bool {
+        let root = self.current.borrow().clone();
+        let file = self.rebase(file);
+        fs::read_dir(&root).is_ok()
+            && file
+                .parent()
+                .is_none_or(|parent| fs::symlink_metadata(parent).is_ok())
+            && self
+                .volume
+                .as_deref()
+                .is_none_or(|volume| self.hooks.volume_identity(&root) == volume)
+    }
+    /// Whether a group that failed reading `file` failed because the source
+    /// went away. The source must stay present for `LOSS_GRACE` before the
+    /// failure counts as the photo's own.
+    fn lost(&self, file: &Path) -> bool {
+        if !self.present(file) {
+            return true;
+        }
+        if self.control.is_cancelled()
+            || self
+                .confirmed
+                .get()
+                .is_some_and(|at| at.elapsed() < LOSS_GRACE * 2)
+        {
+            return false;
+        }
+        let deadline = Instant::now() + LOSS_GRACE;
+        while Instant::now() < deadline && !self.control.is_cancelled() {
+            self.control
+                .wait(LOSS_PROBE.min(deadline.saturating_duration_since(Instant::now())));
+            if !self.present(file) {
+                return true;
+            }
+        }
+        self.confirmed.set(Some(Instant::now()));
+        false
+    }
+    /// The same volume mounted somewhere else, holding `probe`: read from
+    /// there from now on. Returns whether the source moved.
+    pub(super) fn relocate(&self, probe: &Path) -> bool {
+        let (Some(mount), Some(volume)) = (&self.mount, &self.volume) else {
+            return false;
+        };
+        let Ok(inside) = self.origin.strip_prefix(mount) else {
+            return false;
+        };
+        for candidate in self.hooks.volume_mounts(volume) {
+            let root = candidate.join(inside);
+            if root == *self.current.borrow() {
+                continue;
+            }
+            let previous = self.current.replace(root);
+            if self.present(probe) {
+                self.confirmed.set(None);
+                return true;
+            }
+            self.current.replace(previous);
+        }
+        false
+    }
 }
 
 pub fn execute(
@@ -1313,6 +1459,7 @@ pub fn execute_with(
     };
     update(&report.progress);
     catalog.ingest_begin(&job, plan)?;
+    let watch = SourceWatch::new(plan, hooks, control);
     // Verified, published groups go to the committer; settled outcomes return.
     // The bound keeps the copier at most a few groups (and open files) ahead.
     let (to_committer, committer_incoming) = crossbeam_channel::bounded(8);
@@ -1354,7 +1501,7 @@ pub fn execute_with(
                 .collect();
             // Also after a cancel: a photo the vanished card failed was not
             // imported, but it is not a failure either.
-            let lost = |path: &Path| !source_present(plan, path);
+            let lost = |path: &Path| watch.lost(path);
             let mut deferred: Vec<usize> = Vec::new();
             let mut retry = std::collections::VecDeque::<usize>::new();
             let mut next = 0;
@@ -1402,6 +1549,7 @@ pub fn execute_with(
                     report.progress.source_missing = true;
                     update(&report.progress);
                     let mut reported = Instant::now();
+                    let mut relocate_at = Instant::now();
                     let mut back = false;
                     while !control.is_cancelled() {
                         for message in settled.try_iter() {
@@ -1410,9 +1558,17 @@ pub fn execute_with(
                                 update(&report.progress);
                             }
                         }
-                        if source_present(plan, &probe) {
+                        if watch.present(&probe) {
                             back = true;
                             break;
+                        }
+                        // The same card, mounted at another path.
+                        if relocate_at.elapsed() >= Duration::from_secs(1) {
+                            relocate_at = Instant::now();
+                            if watch.relocate(&probe) {
+                                back = true;
+                                break;
+                            }
                         }
                         if reported.elapsed() >= Duration::from_secs(1) {
                             // Repeated so a dropped event cannot hide the pause.
@@ -1474,7 +1630,7 @@ pub fn execute_with(
                     }
                     continue;
                 };
-                let planned = &plan.groups[index];
+                let planned = &watch.rebase_group(&plan.groups[index]);
                 control.checkpoint()?;
                 if let Some(record) = catalog.ingest_previous(&planned.group)? {
                     let same_roots = record.files.len() == planned.files.len()
@@ -1593,6 +1749,10 @@ pub fn execute_with(
                         report.progress.failed_ids.push(named.group.id);
                         report
                             .progress
+                            .failed_sources
+                            .push(named.group.primary.path.clone());
+                        report
+                            .progress
                             .errors
                             .push(format!("{}: {error:#}", named.group.primary.path.display()));
                     }
@@ -1617,7 +1777,7 @@ pub fn execute_with(
         // Groups the vanished source failed after the copier stopped (on
         // cancel) are left out, as never imported, rather than counted failed.
         let mut abandoned = Vec::new();
-        let lost = |path: &Path| !source_present(plan, path);
+        let lost = |path: &Path| watch.lost(path);
         for message in settled.iter() {
             if let FromCommitter::Settled(list) = message {
                 fold(list, &mut report, &lost, &mut abandoned);
@@ -1627,6 +1787,9 @@ pub fn execute_with(
             std::panic::resume_unwind(panic);
         }
     });
+    // A finished job waits for nothing: a cancel while the card was out
+    // ends the wait, and the terminal report must not read as paused.
+    report.progress.source_missing = false;
     report.progress.phase = if control.is_cancelled() {
         Phase::Cancelled
     } else if report.progress.errors.is_empty() {

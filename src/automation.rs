@@ -922,7 +922,28 @@ fn build_tool_definitions() -> Vec<Value> {
         ),
         tool(
             "ingest_cancel",
-            "Cancel the import/scan; keep committed groups and remove incomplete staging files.",
+            "Cancel the running import (or the scan when nothing copies); keep committed groups and remove incomplete staging files. The next queued import starts.",
+            json!({}),
+            &[],
+            false,
+        ),
+        tool(
+            "ingest_dequeue",
+            "Remove one queued import, by its source path, without touching the running import or other queued imports.",
+            json!({"path":path}),
+            &["path"],
+            false,
+        ),
+        tool(
+            "ingest_retry_failed",
+            "Import only the photos that failed in a card's last job (the shown card, a card whose result is kept while another is shown, or its latest failed History row): rescans the source when needed, checks exactly those photos and starts or queues the import. Poll ingest_status.",
+            json!({"source":path}),
+            &[],
+            false,
+        ),
+        tool(
+            "ingest_clear_queue",
+            "Drop every queued import; the running import continues.",
             json!({}),
             &[],
             false,
@@ -1435,7 +1456,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0]["error"]["code"], -32700);
         assert_eq!(lines[1]["result"]["protocolVersion"], PROTOCOLS[0]);
-        assert_eq!(lines[2]["result"]["tools"].as_array().unwrap().len(), 46);
+        assert_eq!(lines[2]["result"]["tools"].as_array().unwrap().len(), 49);
     }
     #[cfg(unix)]
     #[test]
@@ -1530,7 +1551,7 @@ mod tests {
             normalize_arguments("settings_set", json!({"settings":{"theme_mode":"unknown"}}))
                 .is_err()
         );
-        assert_eq!(tool_definitions().len(), 46);
+        assert_eq!(tool_definitions().len(), 49);
     }
     #[test]
     fn inherited_nonblocking_socket_handles_partial_input_and_large_reply() {

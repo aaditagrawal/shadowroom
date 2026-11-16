@@ -43,6 +43,9 @@ pub(super) struct State {
     request: u64,
     /// The address field's own caret, independent of any field beneath.
     edit: text_input::Edit,
+    /// Sidecars a picks export would copy beside the originals, once counted
+    /// (off the UI thread), so the header's file count matches the manifest.
+    sidecars: Option<usize>,
 }
 impl State {
     pub(super) fn focused_edit(&mut self) -> Option<&mut text_input::Edit> {
@@ -87,6 +90,24 @@ fn chooser_override() -> Option<Chooser> {
     }
 }
 
+/// Which chooser asks for `purpose`: a forced one, else the built-in picker
+/// for exports (their header and start folder matter) or when the native
+/// one is unavailable, else the platform's.
+fn chooser_for(purpose: &Purpose, forced: Option<Chooser>, native_unavailable: bool) -> Chooser {
+    let export = matches!(
+        purpose,
+        Purpose::Workspace {
+            export: Some(_),
+            ..
+        }
+    );
+    forced.unwrap_or(if native_unavailable || export {
+        Chooser::Builtin
+    } else {
+        Chooser::Native
+    })
+}
+
 impl Purpose {
     /// The native dialog's accept button.
     fn accept_label(&self) -> &'static str {
@@ -118,18 +139,22 @@ impl Workspace {
     /// automation (whose state must stay inspectable), and when a native
     /// choice breaks an in-app rule (an export inside a photo folder, a file
     /// that is not a theme): it then opens at that choice with the reason.
+    /// Exports always use the built-in picker: its header says what will be
+    /// written (count, files, size, verification) and it opens at the last
+    /// export folder, none of which the portal chooser can show through GPUI
+    /// (every directory request is titled "Open Folder" and has no start
+    /// folder).
     pub(super) fn show_path_picker(
         &mut self,
         purpose: Purpose,
         initial: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        let chooser =
-            chooser_override().unwrap_or(if self.native_chooser_failed || self.automation_driven {
-                Chooser::Builtin
-            } else {
-                Chooser::Native
-            });
+        let chooser = chooser_for(
+            &purpose,
+            chooser_override(),
+            self.native_chooser_failed || self.automation_driven,
+        );
         if chooser == Chooser::Native {
             self.prompt_native_path(purpose, initial, cx);
         } else {
@@ -275,9 +300,47 @@ impl Workspace {
             error: None,
             request: 0,
             edit: text_input::Edit::default(),
+            sidecars: None,
         });
+        self.count_export_sidecars(cx);
         self.picker_navigate(initial, cx);
         cx.notify();
+    }
+
+    /// Counts, off the UI thread, the sidecars a picks export would copy.
+    fn count_export_sidecars(&mut self, cx: &mut Context<Self>) {
+        let Some(Purpose::Workspace {
+            export: Some(true),
+            ids,
+        }) = self
+            .folder_picker
+            .as_ref()
+            .map(|state| state.purpose.clone())
+        else {
+            return;
+        };
+        let media: Vec<PathBuf> = self
+            .export_picks_in(&ids)
+            .into_iter()
+            .flat_map(|photo| {
+                std::iter::once(photo.path.clone()).chain(photo.companion_path.clone())
+            })
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let count = cx
+                .background_executor()
+                .spawn(async move {
+                    shadowroom::catalog::export_sidecar_count(media.iter().map(PathBuf::as_path))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.folder_picker.as_mut() {
+                    state.sidecars = Some(count);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn picker_navigate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -539,10 +602,9 @@ impl Workspace {
                 ids,
             } => {
                 let picks = self.export_picks_in(ids);
-                let files: usize = picks
-                    .iter()
-                    .map(|p| 1 + usize::from(p.companion_path.is_some()))
-                    .sum();
+                let pairs = picks.iter().filter(|p| p.companion_path.is_some()).count();
+                let sidecars = state.and_then(|state| state.sidecars).unwrap_or(0);
+                let files = picks.len() + pairs + sidecars;
                 let bytes: u64 = picks
                     .iter()
                     .map(|p| p.size_bytes + p.companion_size_bytes)
@@ -552,16 +614,25 @@ impl Workspace {
                 } else {
                     "in this view"
                 };
+                // Only the clauses that apply: "3 files (1 RAW+JPEG pair,
+                // 1 sidecar) · 4.1 MB"; no sidecars, no sidecar clause.
+                let mut parts = Vec::new();
+                if pairs > 0 {
+                    parts.push(plural(pairs, "RAW+JPEG pair", "RAW+JPEG pairs"));
+                }
+                if sidecars > 0 {
+                    parts.push(plural(sidecars, "sidecar", "sidecars"));
+                }
+                let detail = if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", parts.join(", "))
+                };
                 (
                     format!("Export {} {scope}", plural(picks.len(), "pick", "picks")),
                     Some(format!(
-                        "{}{} · {}, plus their sidecars. Originals are copied byte for byte and verified; nothing is modified.",
+                        "{}{detail} · {}. Originals are copied byte for byte and verified; nothing is modified.",
                         plural(files, "file", "files"),
-                        if files > picks.len() {
-                            " incl. RAW+JPEG pairs"
-                        } else {
-                            ""
-                        },
                         copy::fmt_bytes(bytes)
                     )),
                     format!("Export to “{target}”"),
@@ -962,5 +1033,44 @@ fn validate_choice(
         )
         .context("Choose a folder outside your photo folders, such as a new Exports folder")?;
         Ok((path, None))
+    }
+}
+
+#[cfg(test)]
+mod chooser_tests {
+    use super::{Chooser, Purpose, chooser_for};
+
+    #[test]
+    fn exports_keep_the_built_in_picker_and_entry_verbs_go_native() {
+        let picks = Purpose::Workspace {
+            export: Some(true),
+            ids: vec![1, 2],
+        };
+        let xmp = Purpose::Workspace {
+            export: Some(false),
+            ids: vec![1],
+        };
+        let open = Purpose::Workspace {
+            export: None,
+            ids: Vec::new(),
+        };
+        assert_eq!(chooser_for(&picks, None, false), Chooser::Builtin);
+        assert_eq!(chooser_for(&xmp, None, false), Chooser::Builtin);
+        assert_eq!(chooser_for(&open, None, false), Chooser::Native);
+        assert_eq!(
+            chooser_for(&Purpose::Ingest(0), None, false),
+            Chooser::Native
+        );
+        // No portal: everything falls back to the built-in picker.
+        assert_eq!(chooser_for(&open, None, true), Chooser::Builtin);
+        // SHADOWROOM_FILE_CHOOSER wins either way.
+        assert_eq!(
+            chooser_for(&picks, Some(Chooser::Native), false),
+            Chooser::Native
+        );
+        assert_eq!(
+            chooser_for(&open, Some(Chooser::Builtin), false),
+            Chooser::Builtin
+        );
     }
 }

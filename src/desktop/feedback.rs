@@ -305,9 +305,9 @@ impl Workspace {
             "⌘Z",
         );
     }
-    /// "Exported 4 files to Client-Picks" with a Reveal button.
+    /// "Exported 2 picks (3 files) to Client-Picks" with a Reveal button.
     pub(super) fn announce_export(&mut self, job: &ExportJob) {
-        let Some((destination, picks)) = job.target.clone() else {
+        let Some((destination, picks, photos)) = job.target.clone() else {
             self.notify_desktop("Export finished", &plural(job.completed, "file", "files"));
             self.announce(
                 format!(
@@ -323,8 +323,10 @@ impl Workspace {
             |name| name.to_string_lossy().into_owned(),
         );
         let text = if picks {
+            // Ties back to the picker's "Export 2 picks": picks, then files.
             format!(
-                "Exported {} to {folder}",
+                "Exported {} ({}) to {folder}",
+                plural(photos, "pick", "picks"),
                 plural(job.completed, "file", "files")
             )
         } else {
@@ -341,6 +343,27 @@ impl Workspace {
             Cmd::RevealPath(destination),
             "",
         );
+    }
+    /// A failed export reaches the desktop too while the window is in the
+    /// background (the in-window toast covers the rest).
+    pub(super) fn notify_export_failure(&mut self, job: &ExportJob) {
+        let what = match &job.target {
+            Some((destination, picks, photos)) => format!(
+                "{} to {}",
+                if *picks {
+                    plural(*photos, "pick", "picks")
+                } else {
+                    plural(*photos, "XMP sidecar", "XMP sidecars")
+                },
+                destination.file_name().map_or_else(
+                    || destination.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            ),
+            None => "Export".to_owned(),
+        };
+        let error = job.error.as_deref().unwrap_or("it could not finish");
+        self.notify_desktop("Export failed", &format!("{what} · {error}"));
     }
     /// Names the photos an undo or redo touched.
     pub(super) fn decisions_subject(&self, decisions: &[Decision]) -> String {

@@ -243,8 +243,18 @@ pub(super) struct ImportUi {
     suppress_resize_click: bool,
     /// Groups this session's job committed (and verified) from the current source.
     recent: HashSet<usize>,
-    /// What the last job did, shown above the footer until dismissed.
+    /// What the last job on the card shown did, above the footer until dismissed.
     outcome: Option<Outcome>,
+    /// Results of jobs on other cards than the one shown (newest last), so
+    /// card A's failures and Retry failed stay reachable while B is shown.
+    elsewhere: Vec<Outcome>,
+    /// The newest other-card result's error list is unfolded.
+    elsewhere_details: bool,
+    /// Tiles whose photo failed in the last job on this card, with the error.
+    failed: HashMap<usize, SharedString>,
+    /// "Retry failed" for a card not on screen: rescan it, then check exactly
+    /// these source files (by path relative to the source) and start.
+    retry_sources: Option<(PathBuf, HashSet<PathBuf>)>,
     /// An action waiting for its inline second click (Cancel, Mark as imported).
     confirm: Option<(IngestConfirm, Instant)>,
     /// Keyboard choice in an open confirmation: the safe button (Tab/arrows
@@ -287,6 +297,8 @@ pub(super) enum IngestConfirm {
 /// The last job's result, in the panel: what is safe, what is left.
 #[derive(Clone, Debug)]
 pub(super) struct Outcome {
+    /// The card or folder the job read.
+    source: PathBuf,
     tone: Tone,
     text: String,
     /// Offer to import the photos that are still selected.
@@ -298,8 +310,19 @@ pub(super) struct Outcome {
     errors: Vec<String>,
     /// Scan IDs of the photos that failed, for Retry failed.
     failed_ids: Vec<usize>,
+    /// Their source files, for Retry failed after the card was rescanned.
+    failed_sources: Vec<PathBuf>,
+    /// The scan group each error line names, when it names one: a click on
+    /// the line shows that tile.
+    error_groups: Vec<Option<usize>>,
     /// The job's verified manifest (exact paths and BLAKE3 digests).
     manifest: Option<PathBuf>,
+}
+impl Outcome {
+    /// Failed or cancelled with something left to do (not a success).
+    fn needs_attention(&self) -> bool {
+        self.tone != Tone::Success
+    }
 }
 impl ImportUi {
     pub fn new(settings: &Settings) -> Self {
@@ -366,6 +389,10 @@ impl ImportUi {
             suppress_resize_click: false,
             recent: HashSet::new(),
             outcome: None,
+            elsewhere: Vec::new(),
+            elsewhere_details: false,
+            failed: HashMap::new(),
+            retry_sources: None,
             confirm: None,
             confirm_keep: false,
             tokens_open: false,
@@ -748,6 +775,22 @@ impl ImportUi {
         if self.done_source.as_deref() == Some(path) {
             return Some("Safe to eject".into());
         }
+        // A job on this card that stopped short: what is left to do.
+        if let Some(outcome) = self
+            .outcome
+            .iter()
+            .chain(self.elsewhere.iter())
+            .find(|o| o.source == path && o.needs_attention())
+        {
+            let failed = outcome.failed_ids.len().max(outcome.failed_sources.len());
+            return Some(if failed > 0 {
+                format!("{} failed", copy::count(failed))
+            } else if outcome.tone == Tone::Info {
+                "Cancelled".into()
+            } else {
+                "Stopped".into()
+            });
+        }
         (self.source == path && self.scan.is_some())
             .then(|| format!("{} new", copy::count(self.new_count)))
     }
@@ -779,9 +822,209 @@ impl ImportUi {
             self.scan_state = ScanState::Failed;
         }
         self.error = Some(error);
+        self.retry_sources = None;
+    }
+    /// The scan group an error line ("<source path>: <reason>") names.
+    fn group_of_error(&self, line: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .find(|group| {
+                line.strip_prefix(group.primary.path.to_string_lossy().as_ref())
+                    .is_some_and(|rest| rest.starts_with(": "))
+            })
+            .map(|group| group.id)
+    }
+    /// Groups of the current scan whose primary file is one of `wanted`
+    /// (paths relative to the source, or bare file names).
+    fn groups_for_sources(&self, wanted: &HashSet<PathBuf>) -> Vec<usize> {
+        self.items
+            .iter()
+            .filter(|group| {
+                let relative = source_relative(&group.primary.path, &self.source);
+                wanted.contains(&relative)
+                    || group
+                        .primary
+                        .path
+                        .file_name()
+                        .is_some_and(|name| wanted.contains(Path::new(name)))
+            })
+            .map(|group| group.id)
+            .collect()
+    }
+    /// Checks exactly `ids` (the photos that failed) and starts once their
+    /// plan is ready; verified photos are never copied again.
+    fn retry_select(&mut self, ids: Vec<usize>) {
+        self.selected.clear();
+        self.photos = 0;
+        self.videos = 0;
+        self.bytes = 0;
+        for id in ids {
+            if let Some(&index) = self.lookup.get(&id)
+                && self.selected.insert(id)
+            {
+                let group = &self.items[index];
+                if group.kind == "video" {
+                    self.videos += 1;
+                } else {
+                    self.photos += 1;
+                }
+                self.bytes += group.bytes();
+            }
+        }
+        self.range_base = None;
+        self.timeline_counts();
+        self.outcome = None;
+        self.details_open = false;
+        self.changed();
+        self.start_when_planned = !self.selected.is_empty();
+    }
+    /// A scan finished: a pending "Retry failed" picks its photos, and a
+    /// result kept for this card finds its failed tiles in the new scan.
+    fn attach_outcome(&mut self) {
+        if let Some((source, wanted)) = self.retry_sources.take()
+            && source == self.source
+        {
+            let ids = self.groups_for_sources(&wanted);
+            self.retry_select(ids);
+            return;
+        }
+        let Some(outcome) = self.outcome.clone().filter(|o| o.source == self.source) else {
+            return;
+        };
+        let failed_ids = if outcome.failed_sources.is_empty() {
+            outcome.failed_ids.clone()
+        } else {
+            let wanted = outcome
+                .failed_sources
+                .iter()
+                .map(|path| source_relative(path, &outcome.source))
+                .collect();
+            self.groups_for_sources(&wanted)
+        };
+        let error_groups: Vec<_> = outcome
+            .errors
+            .iter()
+            .map(|line| self.group_of_error(line))
+            .collect();
+        self.failed = failed_ids
+            .iter()
+            .map(|&id| {
+                let error = outcome
+                    .errors
+                    .iter()
+                    .zip(&error_groups)
+                    .find(|(_, group)| **group == Some(id))
+                    .map_or_else(
+                        || "This photo failed to import".to_owned(),
+                        |(line, _)| line.clone(),
+                    );
+                (id, error.into())
+            })
+            .collect();
+        if let Some(outcome) = self.outcome.as_mut() {
+            outcome.failed_ids = failed_ids;
+            outcome.error_groups = error_groups;
+        }
     }
 }
+
+/// A queued card's name ("CARD_B").
+fn queued_name(job: &QueuedJob) -> String {
+    job.source.file_name().map_or_else(
+        || job.source.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// `path` relative to the scanned `source`, else its file name.
+fn source_relative(path: &Path, source: &Path) -> PathBuf {
+    path.strip_prefix(source).map_or_else(
+        |_| path.file_name().map(PathBuf::from).unwrap_or_default(),
+        Path::to_path_buf,
+    )
+}
+
+/// A failed History row as a result that "Retry failed" can act on: its
+/// source and the files that failed (rows from before failed files were
+/// recorded offer no retry).
+fn history_outcome(job: &Value) -> Option<Outcome> {
+    if job["verification"].as_str() != Some("failed") {
+        return None;
+    }
+    let failed_sources: Vec<PathBuf> = job["counts"]["failed_sources"]
+        .as_array()?
+        .iter()
+        .filter_map(|path| path.as_str().map(PathBuf::from))
+        .collect();
+    if failed_sources.is_empty() {
+        return None;
+    }
+    Some(Outcome {
+        source: PathBuf::from(job["source"].as_str()?),
+        tone: Tone::Warning,
+        text: String::new(),
+        remaining: false,
+        library: None,
+        errors: Vec::new(),
+        failed_ids: Vec::new(),
+        failed_sources,
+        error_groups: Vec::new(),
+        manifest: None,
+    })
+}
 impl Workspace {
+    /// "Retry failed" for a job's result: on the card shown, check exactly the
+    /// photos that failed; for another card (or a History row), rescan that
+    /// card first, then check them. Either way the import starts once planned
+    /// (or queues behind a running job).
+    fn retry_outcome(&mut self, outcome: &Outcome) {
+        let ui = &self.import_ui;
+        if ui.job_here()
+            || (ui.active() && ui.progress.source.as_ref() == Some(&outcome.source))
+            || ui.scanning()
+        {
+            return;
+        }
+        let wanted: HashSet<PathBuf> = outcome
+            .failed_sources
+            .iter()
+            .map(|path| source_relative(path, &outcome.source))
+            .collect();
+        if ui.source == outcome.source && ui.scan.is_some() {
+            let ids = if wanted.is_empty() {
+                outcome.failed_ids.clone()
+            } else {
+                ui.groups_for_sources(&wanted)
+            };
+            if ids.is_empty() {
+                return;
+            }
+            self.import_ui.open = true;
+            self.import_ui.retry_select(ids);
+            return;
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        if !outcome.source.exists() {
+            self.announce(
+                format!(
+                    "Insert {} to retry its failed photos",
+                    outcome.source.file_name().map_or_else(
+                        || outcome.source.display().to_string(),
+                        |n| n.to_string_lossy().into_owned()
+                    )
+                ),
+                Tone::Warning,
+            );
+            return;
+        }
+        self.import_ui
+            .elsewhere
+            .retain(|o| o.source != outcome.source);
+        self.import_ui.retry_sources = Some((outcome.source.clone(), wanted));
+        self.scan_for_import(outcome.source.clone());
+    }
     /// A desktop notification for a finished import or export, only while the
     /// window is in the background (the in-window notice covers the rest) and
     /// unless turned off in Preferences → Import.
@@ -863,6 +1106,11 @@ impl Workspace {
         }
         self.scope = None;
         self.mode = ViewMode::Grid;
+        // The next Open Folder starts here.
+        self.settings
+            .extra
+            .insert("last_open_dir".into(), json!(path.to_string_lossy()));
+        self.save_settings();
         self.pending_ingest_scope = Some(path);
         self.ingest_scope_arrived();
         self.announce(
@@ -917,7 +1165,26 @@ impl Workspace {
             Event::Scanning(path) => {
                 self.import_ui.clear_items();
                 self.import_ui.recent.clear();
-                self.import_ui.outcome = None;
+                self.import_ui.failed.clear();
+                // The card leaving the view keeps an unfinished result in
+                // the footer; a card coming back gets its own result again.
+                if let Some(outcome) = self.import_ui.outcome.take()
+                    && outcome.needs_attention()
+                    && outcome.source != path
+                {
+                    self.import_ui
+                        .elsewhere
+                        .retain(|o| o.source != outcome.source);
+                    self.import_ui.elsewhere.push(outcome);
+                }
+                if let Some(index) = self
+                    .import_ui
+                    .elsewhere
+                    .iter()
+                    .position(|o| o.source == path)
+                {
+                    self.import_ui.outcome = Some(self.import_ui.elsewhere.remove(index));
+                }
                 self.import_ui.scan = None;
                 self.import_ui.plan = None;
                 self.import_ui.source = path;
@@ -932,6 +1199,7 @@ impl Workspace {
             Event::Scanned(scan) => {
                 self.import_ui
                     .scanned(scan, self.settings.ingest_time_group_minutes);
+                self.import_ui.attach_outcome();
             }
             Event::Plan(plan) => {
                 if self.import_ui.expected_plan.as_ref() == Some(&plan.plan.options)
@@ -978,7 +1246,7 @@ impl Workspace {
                     {
                         progress.phase = Phase::Paused;
                     }
-                    if progress.source_missing {
+                    if progress.source_missing && !progress.phase.is_terminal() {
                         progress.phase = Phase::Paused;
                     }
                     self.import_ui.progress = progress;
@@ -994,96 +1262,80 @@ impl Workspace {
                 let here = self.import_ui.job_of(&self.import_ui.source.clone());
                 let card = copy::source_name(p);
                 // The open Import view on this card already says so in its footer.
-                if p.source_missing && !was_missing && !(here && self.import_ui.open) {
+                if p.source_missing && !was_missing {
                     let text = copy::import_progress(p);
-                    self.announce_action(
-                        text,
-                        Tone::Warning,
-                        "Show Import",
-                        Cmd::Ingest("show".into()),
-                        "",
+                    // The moment a walk-away photographer most needs to know.
+                    self.notify_desktop(
+                        "Import paused",
+                        &format!(
+                            "{card} was removed · {} of {} verified · reinsert it to continue",
+                            copy::count(p.completed + p.skipped),
+                            copy::count(p.total)
+                        ),
                     );
+                    if !(here && self.import_ui.open) {
+                        self.announce_action(
+                            text,
+                            Tone::Warning,
+                            "Show Import",
+                            Cmd::Ingest("show".into()),
+                            "",
+                        );
+                    }
                 } else if was_missing && !p.source_missing && p.phase.is_active() {
+                    self.notify_desktop("Import continues", &format!("{card} is back"));
                     self.announce(format!("{card} is back · import continues"), Tone::Info);
                 }
-                let destinations = p.destinations.len().max(1);
-                let verified = if destinations > 1 {
-                    format!("verified on {destinations} destinations")
-                } else {
-                    "verified".to_owned()
-                };
                 self.status = if p.phase == Phase::Completed {
-                    format!(
-                        "Imported {}{} · {verified}{}",
-                        plural(p.photos, "photo", "photos"),
-                        if p.videos > 0 {
-                            format!(", {}", plural(p.videos, "video", "videos"))
-                        } else {
-                            String::new()
-                        },
-                        if p.skipped > 0 {
-                            format!(" · {} already in library", copy::count(p.skipped))
-                        } else {
-                            String::new()
-                        }
-                    )
+                    copy::import_result(p)
                 } else {
                     copy::import_progress(p)
                 };
                 // The job's result stays in the panel: what is safe, what is left.
                 if was_active && p.phase.is_terminal() {
-                    let imported = plural(p.completed, "photo", "photos");
-                    let skipped = (p.skipped > 0).then(|| {
-                        format!(
-                            " · {} already in the library (identical, skipped)",
-                            p.skipped
-                        )
-                    });
                     let remaining = if here {
                         self.import_ui.selected.len()
                     } else {
                         0
                     };
-                    let outcome = match p.phase {
+                    let source = p.source.clone().unwrap_or_default();
+                    let mut outcome = match p.phase {
                         Phase::Completed => Outcome {
+                            source,
                             tone: Tone::Success,
-                            text: format!(
-                                "Imported {imported} · {verified}{}",
-                                skipped.unwrap_or_default()
-                            ),
+                            text: copy::import_result(p),
                             remaining: false,
                             library: p.library_root.clone(),
                             errors: Vec::new(),
                             failed_ids: Vec::new(),
+                            failed_sources: Vec::new(),
+                            error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
                         Phase::Cancelled => Outcome {
+                            source,
                             tone: Tone::Info,
-                            text: format!(
-                                "Cancelled · {} of {} imported and verified · {} still selected",
-                                p.completed,
-                                plural(p.total, "photo", "photos"),
-                                remaining
-                            ),
+                            text: if remaining > 0 {
+                                format!(
+                                    "{} · {} still selected",
+                                    copy::import_result(p),
+                                    copy::count(remaining)
+                                )
+                            } else {
+                                copy::import_result(p)
+                            },
                             remaining: remaining > 0,
                             library: None,
                             errors: Vec::new(),
                             failed_ids: Vec::new(),
+                            failed_sources: Vec::new(),
+                            error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
                         _ => Outcome {
+                            source,
                             tone: Tone::Warning,
-                            text: format!(
-                                "Import stopped · {} of {} imported and verified{} · {}",
-                                p.completed,
-                                plural(p.total, "photo", "photos"),
-                                skipped.unwrap_or_default(),
-                                if p.failed > 0 {
-                                    format!("{} failed", p.failed)
-                                } else {
-                                    "it could not finish".to_owned()
-                                }
-                            ),
+                            text: copy::import_result(p),
                             remaining: remaining > 0 && p.failed_ids.is_empty(),
                             library: None,
                             errors: if p.errors.is_empty() {
@@ -1095,6 +1347,8 @@ impl Workspace {
                                 p.errors.clone()
                             },
                             failed_ids: p.failed_ids.clone(),
+                            failed_sources: p.failed_sources.clone(),
+                            error_groups: Vec::new(),
                             manifest: p.manifest.clone(),
                         },
                     };
@@ -1111,14 +1365,42 @@ impl Workspace {
                         &format!("{card} · {summary}"),
                     );
                     if here {
-                        self.import_ui.outcome = Some(outcome);
-                        self.import_ui.details_open = false;
-                        self.import_ui.confirm = None;
-                        // Committed groups left the selection; plan what remains.
-                        if self.import_ui.plan.is_none() {
-                            self.import_ui.expected_plan = None;
-                            self.import_ui.dirty_at = Some(Instant::now());
+                        // Failed tiles carry the error, and each error line
+                        // knows its tile.
+                        let ui = &mut self.import_ui;
+                        ui.failed.clear();
+                        outcome.error_groups = outcome
+                            .errors
+                            .iter()
+                            .map(|line| ui.group_of_error(line))
+                            .collect();
+                        for &id in &outcome.failed_ids {
+                            let error = outcome
+                                .errors
+                                .iter()
+                                .zip(&outcome.error_groups)
+                                .find(|(_, group)| **group == Some(id))
+                                .map_or_else(
+                                    || "This photo failed to import".to_owned(),
+                                    |(line, _)| line.clone(),
+                                );
+                            ui.failed.insert(id, error.into());
                         }
+                        ui.outcome = Some(outcome);
+                        ui.details_open = false;
+                        ui.confirm = None;
+                        // Committed groups left the selection; plan what remains.
+                        if ui.plan.is_none() {
+                            ui.expected_plan = None;
+                            ui.dirty_at = Some(Instant::now());
+                        }
+                    } else if outcome.needs_attention() {
+                        // Another card is on screen: keep this card's result
+                        // (Details, Retry failed) in the footer until dismissed.
+                        let ui = &mut self.import_ui;
+                        ui.elsewhere.retain(|o| o.source != outcome.source);
+                        ui.elsewhere.push(outcome);
+                        ui.elsewhere_details = false;
                     }
                     if p.phase == Phase::Failed && (!here || !self.import_ui.open) {
                         // The panel holds the grouped errors; outside it, one
@@ -1192,7 +1474,7 @@ impl Workspace {
                     self.announce(
                         format!(
                             "Queued {} from {name} · starts when the current import finishes",
-                            plural(job.photos + job.videos, "photo", "photos")
+                            copy::media_count(job.photos, job.videos)
                         ),
                         Tone::Info,
                     );
@@ -1355,6 +1637,7 @@ impl Workspace {
                     source: Some(self.import_ui.source.clone()),
                     ..Default::default()
                 };
+                self.import_ui.failed.clear();
                 if !self.enqueue(IoCommand::IngestStart) {
                     self.import_ui.progress.phase = Phase::Failed;
                     return Err("Import was not queued".into());
@@ -1368,12 +1651,42 @@ impl Workspace {
                 let limit = params["limit"].as_u64().unwrap_or(100).min(1000) as usize;
                 let items: Vec<_> = self.import_ui.items.iter().skip(start).take(limit).map(|g| json!({"id":g.id,"path":g.primary.path,"filename":g.photo.filename,"kind":g.kind,"size":g.bytes(),"capture_ms":g.capture_ms,"capture_kind":g.capture_kind,"selected":self.import_ui.selected.contains(&g.id),"seen":g.seen,"warning":g.warning,"companion":g.companion,"sidecars":g.sidecars})).collect();
                 let plan = self.import_ui.plan.as_ref().map(|s| json!({"ready":s.ready,"error":s.error,"photos":s.plan.photos,"videos":s.plan.videos,"files":s.plan.files,"bytes":s.plan.bytes,"example":s.plan.example,"space":s.space,"options":s.plan.options,"examples":s.plan.groups.iter().take(5).map(|g| &g.files).collect::<Vec<_>>()}));
+                let outcome = |o: &Outcome| json!({"source":o.source,"text":o.text,"failed_ids":o.failed_ids,"failed_sources":o.failed_sources,"errors":o.errors});
                 return Ok(
-                    json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"queue":self.import_ui.queue,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock)}),
+                    json!({"scanning":self.import_ui.scanning(),"source":self.import_ui.source,"total":self.import_ui.items.len(),"items":items,"plan":plan,"progress":self.import_ui.progress,"queue":self.import_ui.queue,"error":self.import_ui.error,"history":self.import_ui.history.as_ref(),"warnings":self.import_ui.scan.as_ref().map(|s| &s.warnings),"clock":self.import_ui.scan.as_ref().map(|s| s.clock),
+                        "outcome":self.import_ui.outcome.as_ref().map(outcome),"elsewhere":self.import_ui.elsewhere.iter().map(outcome).collect::<Vec<_>>(),"failed_tiles":self.import_ui.failed.keys().collect::<Vec<_>>()}),
                 );
             }
             "ingest_cancel" => {
                 self.enqueue(IoCommand::IngestCancel);
+            }
+            // Retry failed for a card: its result in the view, kept for
+            // another card, or its latest failed History row.
+            "ingest_retry_failed" => {
+                let source = params["source"].as_str().map(PathBuf::from);
+                let ui = &self.import_ui;
+                let outcome = ui
+                    .outcome
+                    .iter()
+                    .chain(ui.elsewhere.iter().rev())
+                    .find(|o| source.as_ref().is_none_or(|s| *s == o.source))
+                    .cloned()
+                    .or_else(|| {
+                        ui.history["jobs"].as_array()?.iter().find_map(|job| {
+                            history_outcome(job)
+                                .filter(|o| source.as_ref().is_none_or(|s| *s == o.source))
+                        })
+                    })
+                    .ok_or("No failed import to retry")?;
+                self.retry_outcome(&outcome);
+            }
+            "ingest_dequeue" => {
+                self.enqueue(IoCommand::IngestDequeue(PathBuf::from(
+                    params["path"].as_str().ok_or("path required")?,
+                )));
+            }
+            "ingest_clear_queue" => {
+                self.enqueue(IoCommand::IngestClearQueue);
             }
             "ingest_pause" => {
                 self.enqueue(IoCommand::IngestPause);
@@ -1439,39 +1752,47 @@ impl Workspace {
             "details" => self.import_ui.details_open = !self.import_ui.details_open,
             // Import exactly the photos that failed; verified ones stay skipped.
             "retry_failed" => {
-                let failed: Vec<usize> = self
-                    .import_ui
-                    .outcome
-                    .as_ref()
-                    .map(|o| o.failed_ids.clone())
-                    .unwrap_or_default();
-                if self.import_ui.active() || failed.is_empty() {
-                    return;
+                if let Some(outcome) = self.import_ui.outcome.clone() {
+                    self.retry_outcome(&outcome);
                 }
-                let ui = &mut self.import_ui;
-                ui.selected.clear();
-                ui.photos = 0;
-                ui.videos = 0;
-                ui.bytes = 0;
-                for id in failed {
-                    if let Some(&index) = ui.lookup.get(&id) {
-                        let group = &ui.items[index];
-                        if ui.selected.insert(id) {
-                            if group.kind == "video" {
-                                ui.videos += 1;
-                            } else {
-                                ui.photos += 1;
-                            }
-                            ui.bytes += group.bytes();
-                        }
-                    }
+            }
+            // The other card's result in the footer.
+            "elsewhere:retry" => {
+                if let Some(outcome) = self.import_ui.elsewhere.last().cloned() {
+                    self.retry_outcome(&outcome);
                 }
-                ui.range_base = None;
-                ui.timeline_counts();
-                ui.outcome = None;
-                ui.details_open = false;
-                ui.changed();
-                ui.start_when_planned = !ui.selected.is_empty();
+            }
+            "elsewhere:details" => {
+                self.import_ui.elsewhere_details = !self.import_ui.elsewhere_details;
+            }
+            "elsewhere:dismiss" => {
+                self.import_ui.elsewhere.pop();
+                self.import_ui.elsewhere_details = false;
+            }
+            action if action.starts_with("history_retry:") => {
+                let id = &action["history_retry:".len()..];
+                let job = self.import_ui.history["jobs"]
+                    .as_array()
+                    .and_then(|jobs| jobs.iter().find(|job| job["id"].as_str() == Some(id)))
+                    .cloned();
+                if let Some(outcome) = job.as_ref().and_then(history_outcome) {
+                    self.import_ui.show_history = false;
+                    self.retry_outcome(&outcome);
+                }
+            }
+            // A Details line: show the tile it names.
+            action if action.starts_with("show_group:") => {
+                if let Ok(id) = action["show_group:".len()..].parse::<usize>()
+                    && let Some(position) = self
+                        .import_ui
+                        .visible
+                        .iter()
+                        .position(|&index| self.import_ui.items[index].id == id)
+                {
+                    self.import_ui.panel = ImportPanel::Photos;
+                    self.import_ui.select_position(position, GridPick::Focus);
+                    self.ingest_scroll_to_group(Some(id));
+                }
             }
             action if action.starts_with("history_row:") => {
                 let id = action["history_row:".len()..].to_owned();
@@ -1767,6 +2088,36 @@ impl Workspace {
                     self.enqueue(IoCommand::IngestCancel);
                 } else if self.import_ui.active() {
                     self.import_ui.arm(IngestConfirm::Cancel);
+                }
+            }
+            // The card is out and another waits: give up on this card (its
+            // verified photos stay imported) and start the next one now.
+            "skip" => {
+                if self.import_ui.active()
+                    && self.import_ui.progress.source_missing
+                    && let Some(next) = self.import_ui.queue.first()
+                {
+                    let next = queued_name(next);
+                    let card = copy::source_name(&self.import_ui.progress);
+                    self.import_ui.confirm = None;
+                    self.enqueue(IoCommand::IngestCancel);
+                    self.announce(
+                        format!(
+                            "Skipped {card} · its verified photos stay imported · {next} starts"
+                        ),
+                        Tone::Info,
+                    );
+                }
+            }
+            action if action.starts_with("dequeue:") => {
+                let source = PathBuf::from(&action["dequeue:".len()..]);
+                if self.import_ui.queued(&source) {
+                    self.enqueue(IoCommand::IngestDequeue(source));
+                }
+            }
+            "clear_queue" => {
+                if !self.import_ui.queue.is_empty() {
+                    self.enqueue(IoCommand::IngestClearQueue);
                 }
             }
             "eject" => {
@@ -2082,7 +2433,31 @@ impl Workspace {
                                 // success check at full strength. Imported before:
                                 // a dated chip on a receded tile.
                                 let recent = this.import_ui.recent.contains(&cell.id);
-                                if recent {
+                                let failed = this.import_ui.failed.get(&cell.id).cloned();
+                                if let Some(error) = failed.clone() {
+                                    // Failed in the last job: never mistaken for a
+                                    // new photo, with the reason on hover.
+                                    // Photo-overlay ink: legible on the scrim in
+                                    // every theme.
+                                    let ink = this.c("shadowroom.scrim.reject", "#e07a7a");
+                                    image = image.child(
+                                        div()
+                                            .id(("ingest-failed", index))
+                                            .absolute()
+                                            .top(px(3.))
+                                            .left(px(4.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(2.))
+                                            .px(px(space::XS))
+                                            .bg(this.scrim())
+                                            .text_color(ink)
+                                            .text_size(ui::font(ui::text::MICRO))
+                                            .child(icon("warning", ink).size(px(12.)))
+                                            .child("Failed")
+                                            .tooltip(this.shared_tip(error)),
+                                    );
+                                } else if recent {
                                     image = image.child(
                                         div()
                                             .absolute()
@@ -2128,7 +2503,11 @@ impl Workspace {
                                         // A hairline either way: the checkbox, text and
                                         // image strength say "included"; the accent marks
                                         // only the current tile.
-                                        .border_color(this.border())
+                                        .border_color(if failed.is_some() {
+                                            this.c("error", "#d46a6a")
+                                        } else {
+                                            this.border()
+                                        })
                                         .when(cell.seen && !recent, |s| s.opacity(0.45))
                                         .cursor_pointer()
                                         .tooltip(this.shared_tip(cell.tip))
@@ -3275,8 +3654,10 @@ impl Workspace {
                 .p(px(ui::PANEL_INSET))
                 .gap(px(space::MD))
                 .child(
+                    // Title and Close on one row, centred, as in the Import header.
                     div()
                         .flex()
+                        .items_center()
                         .justify_between()
                         .child("Import History")
                         .child(self.button(
@@ -3713,8 +4094,32 @@ impl Workspace {
         let volume = std::path::Path::new(source)
             .file_name()
             .map_or_else(|| source.to_owned(), |n| n.to_string_lossy().into_owned());
-        let photos = count("photos") + count("videos");
-        let mut amount = plural(photos.max(count("completed")), "photo", "photos");
+        let verification = job["verification"].as_str().unwrap_or_default();
+        let live = (verification == "running" || verification == "finalizing")
+            && self.import_ui.active()
+            && self.import_ui.progress.job_id == id;
+        let mut amount = if live {
+            // The running job: how far it is, never "0 photos".
+            let p = &self.import_ui.progress;
+            format!(
+                "{} of {}",
+                copy::count(p.completed + p.skipped + p.failed),
+                plural(p.total, "photo", "photos")
+            )
+        } else if matches!(verification, "running" | "finalizing") {
+            format!(
+                "{} of {}",
+                copy::count(count("completed")),
+                plural(count("total"), "photo", "photos")
+            )
+        } else if counts.get("completed_videos").is_some() {
+            let videos = count("completed_videos").min(count("completed"));
+            copy::media_count(count("completed") - videos, videos)
+        } else {
+            // Rows written before videos were counted apart.
+            let photos = count("photos") + count("videos");
+            plural(photos.max(count("completed")), "photo", "photos")
+        };
         if let Some(bytes) = job["bytes"].as_u64().filter(|b| *b > 0) {
             amount.push_str(&format!(" · {}", copy::fmt_bytes(bytes)));
         }
@@ -3749,7 +4154,7 @@ impl Workspace {
             .collect();
         let success = self.c("success", "#7fbf7f");
         let error = self.c("error", "#d46a6a");
-        let (chip, chip_color) = match job["verification"].as_str().unwrap_or_default() {
+        let (chip, chip_color) = match verification {
             "completed" => ("Verified".to_owned(), success),
             "failed" if count("failed") > 0 => (format!("Failed · {}", count("failed")), error),
             "failed" => ("Failed".to_owned(), error),
@@ -3758,6 +4163,15 @@ impl Workspace {
         };
         let skipped = count("skipped");
         let manifest = counts["manifest"].as_str().map(PathBuf::from);
+        // A later verified job from the same source already retried it.
+        let superseded = self.import_ui.history["jobs"]
+            .as_array()
+            .is_some_and(|jobs| {
+                jobs.iter().take(n).any(|newer| {
+                    newer["source"] == job["source"] && newer["verification"] == "completed"
+                })
+            });
+        let retry = !superseded && history_outcome(job).is_some();
         let toggle = format!("history_row:{id}");
         let hover = self.hover_bg();
         let mut row = div()
@@ -3898,14 +4312,30 @@ impl Workspace {
                                 s.child(
                                     self.action_button(
                                         ("ingest-history-manifest", n),
-                                        "Open manifest",
+                                        "Show manifest",
                                         Cmd::RevealPath(manifest),
                                         ButtonKind::Secondary,
                                         false,
                                         cx,
                                     )
                                     .tooltip(self.tip(
-                                        "Show the job's manifest: exact paths and BLAKE3 digests",
+                                        "Show the job's manifest (exact paths and BLAKE3 digests) in the file manager",
+                                        "",
+                                    )),
+                                )
+                            })
+                            .when(retry, |s| {
+                                s.child(
+                                    self.action_button(
+                                        ("ingest-history-retry", n),
+                                        "Retry failed",
+                                        Cmd::Ingest(format!("history_retry:{id}")),
+                                        ButtonKind::Secondary,
+                                        self.import_ui.scanning(),
+                                        cx,
+                                    )
+                                    .tooltip(self.tip(
+                                        "Scan this card again and import only the photos that failed",
                                         "",
                                     )),
                                 )
@@ -3997,6 +4427,337 @@ impl Workspace {
                 if keep { "Esc" } else { "Enter" },
             ))
     }
+    /// The failed photos are exactly what is checked: the primary button
+    /// retries them, and the result offers no second button for it.
+    fn retry_is_primary(&self) -> bool {
+        let ui = &self.import_ui;
+        ui.outcome.as_ref().is_some_and(|outcome| {
+            !outcome.failed_ids.is_empty()
+                && !ui.active()
+                && outcome.failed_ids.len() == ui.selected.len()
+                && outcome.failed_ids.iter().all(|id| ui.selected.contains(id))
+        })
+    }
+    /// A job's result: this card's (`elsewhere` false) with its follow-ups,
+    /// or another card's unfinished one, named, with Details and Retry failed.
+    /// The error list unfolds under it, one line per problem; a line that
+    /// names a photo of this card shows its tile when clicked.
+    fn ingest_outcome_band(
+        &self,
+        outcome: &Outcome,
+        elsewhere: bool,
+        retry_is_primary: bool,
+        cx: &gpui::Context<Self>,
+    ) -> AnyElement {
+        let ui_state = &self.import_ui;
+        let warning = self.c("warning", "#e0b341");
+        let (glyph, color) = match outcome.tone {
+            Tone::Success => ("check", self.c("success", "#7fbf7f")),
+            Tone::Warning => ("warning", warning),
+            Tone::Info => ("check", self.icon_muted()),
+        };
+        let (prefix, details_open, details, retry, dismiss) = if elsewhere {
+            (
+                format!(
+                    "{} · ",
+                    outcome.source.file_name().map_or_else(
+                        || outcome.source.display().to_string(),
+                        |n| n.to_string_lossy().into_owned()
+                    )
+                ),
+                ui_state.elsewhere_details,
+                "elsewhere:details",
+                "elsewhere:retry",
+                "elsewhere:dismiss",
+            )
+        } else {
+            (
+                String::new(),
+                ui_state.details_open,
+                "details",
+                "retry_failed",
+                "dismiss_outcome",
+            )
+        };
+        let key = if elsewhere { "other" } else { "this" };
+        let row = div()
+            .id(SharedString::from(format!("ingest-outcome-{key}")))
+            .flex()
+            .items_center()
+            .gap(px(space::SM))
+            .px(px(space::SM))
+            .min_h(px(ui::CONTROL_HEIGHT))
+            .bg(self.c("elevated_surface.background", "#1b1b1b"))
+            .child(icon(glyph, color))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .whitespace_normal()
+                    .line_clamp(2)
+                    .child(format!("{prefix}{}", outcome.text)),
+            )
+            .when_some(outcome.library.clone().filter(|_| !elsewhere), |s, root| {
+                s.child(
+                    self.action_button(
+                        "ingest-outcome-reveal",
+                        "Reveal",
+                        Cmd::RevealPath(root),
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    )
+                    .tooltip(self.tip("Show the library folder in the file manager", "")),
+                )
+                .child(self.action_button(
+                    "ingest-outcome-cull",
+                    "Cull imported photos",
+                    Cmd::Ingest("close".into()),
+                    ButtonKind::Secondary,
+                    false,
+                    cx,
+                ))
+            })
+            .when(outcome.remaining && !elsewhere, |s| {
+                s.child(self.action_button(
+                    "ingest-remaining",
+                    "Import remaining",
+                    Cmd::Ingest("remaining".into()),
+                    ButtonKind::Secondary,
+                    self.ingest_blocker().is_some(),
+                    cx,
+                ))
+            })
+            .when(!outcome.errors.is_empty(), |s| {
+                s.child(
+                    self.action_button(
+                        SharedString::from(format!("ingest-outcome-details-{key}")),
+                        if details_open {
+                            "Hide details"
+                        } else {
+                            "Details"
+                        },
+                        Cmd::Ingest(details.into()),
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    )
+                    .tooltip(self.tip("List every problem with its file", "")),
+                )
+            })
+            .when(
+                (!outcome.failed_ids.is_empty() || (elsewhere && !outcome.failed_sources.is_empty()))
+                    && !retry_is_primary,
+                |s| {
+                    s.child(
+                        self.action_button(
+                            SharedString::from(format!("ingest-retry-failed-{key}")),
+                            "Retry failed",
+                            Cmd::Ingest(retry.into()),
+                            ButtonKind::Secondary,
+                            ui_state.job_here() || ui_state.scanning(),
+                            cx,
+                        )
+                        .tooltip(self.tip(
+                            if elsewhere {
+                                "Scan this card again and import only the photos that failed"
+                            } else {
+                                "Import only the photos that failed; verified photos are not copied again"
+                            },
+                            "",
+                        )),
+                    )
+                },
+            )
+            .when_some(
+                outcome
+                    .manifest
+                    .clone()
+                    .filter(|_| outcome.tone != Tone::Success),
+                |s, manifest| {
+                    s.child(
+                        self.action_button(
+                            SharedString::from(format!("ingest-show-manifest-{key}")),
+                            "Show manifest",
+                            Cmd::RevealPath(manifest),
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        )
+                        .tooltip(self.tip(
+                            "Show the job's manifest (exact paths and BLAKE3 digests) in the file manager",
+                            "",
+                        )),
+                    )
+                },
+            )
+            .child(
+                self.compact_button(
+                    SharedString::from(format!("ingest-outcome-dismiss-{key}")),
+                    "",
+                    "close",
+                    Cmd::Ingest(dismiss.into()),
+                    false,
+                    cx,
+                )
+                .tooltip(self.tip("Dismiss", "")),
+            );
+        if !(details_open && !outcome.errors.is_empty()) {
+            return row.into_any_element();
+        }
+        let hover = self.hover_bg();
+        let lines = outcome.errors.iter().enumerate().map(|(n, problem)| {
+            let group = outcome
+                .error_groups
+                .get(n)
+                .copied()
+                .flatten()
+                .filter(|_| !elsewhere);
+            div()
+                .id((SharedString::from(format!("ingest-outcome-error-{key}")), n))
+                .min_w(px(0.))
+                .whitespace_normal()
+                .child(problem.clone())
+                .when_some(group, |s, id| {
+                    s.cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .tooltip(self.tip("Show this photo", ""))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.ingest_action(&format!("show_group:{id}"), cx);
+                        }))
+                })
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(row)
+            .child(
+                div()
+                    .id(SharedString::from(format!("ingest-outcome-errors-{key}")))
+                    .flex()
+                    .flex_col()
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .px(px(space::SM))
+                    .py(px(space::XS))
+                    .gap(px(2.))
+                    .text_size(ui::font(ui::text::LABEL))
+                    .border_1()
+                    .border_color(self.border())
+                    .children(lines),
+            )
+            .into_any_element()
+    }
+    /// A job copying another card: what it does, and that this one waits.
+    fn ingest_other_job_band(&self) -> AnyElement {
+        let progress = &self.import_ui.progress;
+        let warning = self.c("warning", "#e0b341");
+        let missing = progress.source_missing;
+        let line = if missing {
+            copy::import_progress(progress)
+        } else {
+            format!(
+                "{} · {}",
+                copy::source_name(progress),
+                copy::import_progress(progress)
+            )
+        };
+        div()
+            .id("ingest-other-job")
+            .flex()
+            .items_center()
+            .gap(px(space::SM))
+            .px(px(space::SM))
+            .text_size(ui::font(ui::text::LABEL))
+            .text_color(if missing { warning } else { self.muted() })
+            .child(icon(
+                if missing { "warning" } else { "import" },
+                self.icon_muted(),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(line.clone()),
+            )
+            .child(
+                div()
+                    .w(px(72.))
+                    .h(px(4.))
+                    .flex_shrink_0()
+                    .bg(self.border())
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(copy::import_fraction(progress)))
+                            .bg(self.accent()),
+                    ),
+            )
+            .tooltip(self.tip(&line, ""))
+            .into_any_element()
+    }
+    /// The cards waiting behind this job: the next one with its ✕, and
+    /// "Clear queue" when more than one waits.
+    fn ingest_queue_band(&self, cx: &gpui::Context<Self>) -> AnyElement {
+        let queue = &self.import_ui.queue;
+        let next = &queue[0];
+        let mut line = format!(
+            "Next: {} · {} · {}",
+            queued_name(next),
+            copy::media_count(next.photos, next.videos),
+            copy::fmt_bytes(next.bytes)
+        );
+        if queue.len() > 1 {
+            line.push_str(&format!(" · {} more queued", copy::count(queue.len() - 1)));
+        }
+        div()
+            .id("ingest-queue")
+            .flex()
+            .items_center()
+            .gap(px(space::SM))
+            .px(px(space::SM))
+            .text_size(ui::font(ui::text::LABEL))
+            .text_color(self.muted())
+            .child(icon("import", self.icon_muted()).size(px(12.)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(line.clone()),
+            )
+            .when(queue.len() > 1, |s| {
+                s.child(
+                    self.action_button(
+                        "ingest-clear-queue",
+                        "Clear queue",
+                        Cmd::Ingest("clear_queue".into()),
+                        ButtonKind::Secondary,
+                        false,
+                        cx,
+                    )
+                    .tooltip(self.tip("Drop every queued card; the running import continues", "")),
+                )
+            })
+            .child(
+                self.compact_button(
+                    "ingest-dequeue-next",
+                    "",
+                    "close",
+                    Cmd::Ingest(format!("dequeue:{}", next.source.display())),
+                    false,
+                    cx,
+                )
+                .tooltip(self.tip(&format!("Remove {} from the queue", queued_name(next)), "")),
+            )
+            .into_any_element()
+    }
     /// Footer of the Import view: the last job's outcome, the plan problem,
     /// the guarantees, then either the running job's progress or the summary
     /// and the primary Import button.
@@ -4017,207 +4778,14 @@ impl Workspace {
             .p(px(ui::BAR_INSET))
             .border_t_1()
             .border_color(self.border());
-        if let Some(outcome) = ui_state.outcome.as_ref().filter(|_| !active) {
-            let (glyph, color) = match outcome.tone {
-                Tone::Success => ("check", self.c("success", "#7fbf7f")),
-                Tone::Warning => ("warning", warning),
-                Tone::Info => ("check", self.icon_muted()),
-            };
-            footer = footer.child(
-                div()
-                    .id("ingest-outcome")
-                    .flex()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .px(px(space::SM))
-                    .min_h(px(ui::CONTROL_HEIGHT))
-                    .bg(self.c("elevated_surface.background", "#1b1b1b"))
-                    .child(icon(glyph, color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_normal()
-                            .line_clamp(2)
-                            .child(outcome.text.clone()),
-                    )
-                    .when_some(outcome.library.clone(), |s, root| {
-                        s.child(
-                            self.action_button(
-                                "ingest-outcome-reveal",
-                                "Reveal",
-                                Cmd::RevealPath(root),
-                                ButtonKind::Secondary,
-                                false,
-                                cx,
-                            )
-                            .tooltip(self.tip("Show the library folder in the file manager", "")),
-                        )
-                        .child(self.action_button(
-                            "ingest-outcome-cull",
-                            "Cull imported photos",
-                            Cmd::Ingest("close".into()),
-                            ButtonKind::Secondary,
-                            false,
-                            cx,
-                        ))
-                    })
-                    .when(outcome.remaining, |s| {
-                        s.child(self.action_button(
-                            "ingest-remaining",
-                            "Import remaining",
-                            Cmd::Ingest("remaining".into()),
-                            ButtonKind::Secondary,
-                            self.ingest_blocker().is_some(),
-                            cx,
-                        ))
-                    })
-                    .when(!outcome.errors.is_empty(), |s| {
-                        s.child(
-                            self.action_button(
-                                "ingest-outcome-details",
-                                if ui_state.details_open {
-                                    "Hide details"
-                                } else {
-                                    "Details"
-                                },
-                                Cmd::Ingest("details".into()),
-                                ButtonKind::Secondary,
-                                false,
-                                cx,
-                            )
-                            .tooltip(self.tip("List every problem with its file", "")),
-                        )
-                    })
-                    .when(!outcome.failed_ids.is_empty(), |s| {
-                        s.child(
-                            self.action_button(
-                                "ingest-retry-failed",
-                                "Retry failed",
-                                Cmd::Ingest("retry_failed".into()),
-                                ButtonKind::Secondary,
-                                ui_state.active() || ui_state.scanning(),
-                                cx,
-                            )
-                            .tooltip(self.tip(
-                                "Import only the photos that failed; verified photos are not copied again",
-                                "",
-                            )),
-                        )
-                    })
-                    .when_some(
-                        outcome.manifest.clone().filter(|_| outcome.tone != Tone::Success),
-                        |s, manifest| {
-                            s.child(
-                                self.action_button(
-                                    "ingest-open-manifest",
-                                    "Open manifest",
-                                    Cmd::RevealPath(manifest),
-                                    ButtonKind::Secondary,
-                                    false,
-                                    cx,
-                                )
-                                .tooltip(self.tip(
-                                    "Show the job's manifest: exact paths and BLAKE3 digests",
-                                    "",
-                                )),
-                            )
-                        },
-                    )
-                    .child(
-                        self.compact_button(
-                            "ingest-outcome-dismiss",
-                            "",
-                            "close",
-                            Cmd::Ingest("dismiss_outcome".into()),
-                            false,
-                            cx,
-                        )
-                        .tooltip(self.tip("Dismiss", "")),
-                    ),
-            );
-        }
-        // The failed job's problems, one per line, folded until asked for.
-        if let Some(outcome) = ui_state
-            .outcome
-            .as_ref()
-            .filter(|o| !active && ui_state.details_open && !o.errors.is_empty())
-        {
-            footer = footer.child(
-                div()
-                    .id("ingest-outcome-errors")
-                    .flex()
-                    .flex_col()
-                    .max_h(px(160.))
-                    .overflow_y_scroll()
-                    .px(px(space::SM))
-                    .py(px(space::XS))
-                    .gap(px(2.))
-                    .text_size(ui::font(ui::text::LABEL))
-                    .border_1()
-                    .border_color(self.border())
-                    .children(outcome.errors.iter().enumerate().map(|(n, problem)| {
-                        div()
-                            .id(("ingest-outcome-error", n))
-                            .min_w(px(0.))
-                            .whitespace_normal()
-                            .child(problem.clone())
-                    })),
-            );
-        }
-        // A job copying another card: what it does, and that this one waits.
-        if ui_state.active() && !active {
-            let progress = &ui_state.progress;
-            let missing = progress.source_missing;
-            let line = if missing {
-                copy::import_progress(progress)
-            } else {
-                format!(
-                    "{} · {}",
-                    copy::source_name(progress),
-                    copy::import_progress(progress)
-                )
-            };
-            footer = footer.child(
-                div()
-                    .id("ingest-other-job")
-                    .flex()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .px(px(space::SM))
-                    .text_size(ui::font(ui::text::LABEL))
-                    .text_color(if missing { warning } else { self.muted() })
-                    .child(icon(
-                        if missing { "warning" } else { "import" },
-                        self.icon_muted(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(line.clone()),
-                    )
-                    .child(
-                        div()
-                            .w(px(72.))
-                            .h(px(4.))
-                            .flex_shrink_0()
-                            .bg(self.border())
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(copy::import_fraction(progress)))
-                                    .bg(self.accent()),
-                            ),
-                    )
-                    .tooltip(self.tip(&line, "")),
-            );
-        }
+        // At most two stacked bands above the action row, by importance: a
+        // plan problem, this card's result, the job copying another card,
+        // another card's unfinished result, this job's queue, then the
+        // guarantees. Whatever is left out stays in the status bar or History.
+        let retry_is_primary = self.retry_is_primary();
+        let mut bands: Vec<AnyElement> = Vec::new();
         if let Some(problem) = ui_state.error.as_ref().filter(|_| !active) {
-            footer = footer.child(
+            bands.push(
                 div()
                     .id("ingest-error")
                     .flex()
@@ -4234,33 +4802,54 @@ impl Workspace {
                             .line_clamp(2)
                             .child(problem.clone()),
                     )
-                    .tooltip(self.tip(problem, "")),
+                    .tooltip(self.tip(problem, ""))
+                    .into_any_element(),
             );
         }
-        // What the engine guarantees, said once where the decision is made.
-        footer = footer.child(
-            div()
-                .id("ingest-trust")
-                .flex()
-                .items_center()
-                .gap(px(space::XS))
-                .px(px(space::SM))
-                .text_size(ui::font(ui::text::LABEL))
-                .text_color(self.muted())
-                .child(icon("check", self.icon_muted()).size(px(12.)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .whitespace_normal()
-                        .line_clamp(2)
-                        .child("Copies are read back and checked · nothing on the card is changed · existing files are never overwritten"),
-                )
-                .tooltip(self.tip(
-                    "Every copy is verified with BLAKE3 after writing, on the library and each backup. The source is opened read-only, and names that are taken get a suffix (or are skipped).",
-                    "",
-                )),
-        );
+        if let Some(outcome) = ui_state.outcome.as_ref().filter(|_| !active) {
+            bands.push(self.ingest_outcome_band(outcome, false, retry_is_primary, cx));
+        }
+        if ui_state.active() && !active {
+            bands.push(self.ingest_other_job_band());
+        }
+        if let Some(outcome) = ui_state
+            .elsewhere
+            .last()
+            .filter(|o| o.source != ui_state.source)
+        {
+            bands.push(self.ingest_outcome_band(outcome, true, false, cx));
+        }
+        if active && !ui_state.queue.is_empty() {
+            bands.push(self.ingest_queue_band(cx));
+        }
+        if bands.len() < 2 {
+            // What the engine guarantees, said once where the decision is made.
+            bands.push(
+                div()
+                    .id("ingest-trust")
+                    .flex()
+                    .items_center()
+                    .gap(px(space::XS))
+                    .px(px(space::SM))
+                    .text_size(ui::font(ui::text::LABEL))
+                    .text_color(self.muted())
+                    .child(icon("check", self.icon_muted()).size(px(12.)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_normal()
+                            .line_clamp(2)
+                            .child("Copies are read back and checked · nothing on the card is changed · existing files are never overwritten"),
+                    )
+                    .tooltip(self.tip(
+                        "Every copy is verified with BLAKE3 after writing, on the library and each backup. The source is opened read-only, and names that are taken get a suffix (or are skipped).",
+                        "",
+                    ))
+                    .into_any_element(),
+            );
+        }
+        footer = footer.children(bands.into_iter().take(2));
         let mut row = div()
             .flex()
             .when(narrow, |s| s.flex_col())
@@ -4337,10 +4926,12 @@ impl Workspace {
                         div()
                             .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
-                            .child(if ui_state.queue.is_empty() {
-                                "Verified photos stay imported."
-                            } else {
-                                "Verified photos stay imported; queued cards are not started."
+                            .child(match ui_state.queue.first() {
+                                None => "Verified photos stay imported.".to_owned(),
+                                Some(next) => format!(
+                                    "Verified photos stay imported; {} starts next.",
+                                    queued_name(next)
+                                ),
                             }),
                     )
                     .child(self.confirm_button(
@@ -4383,6 +4974,30 @@ impl Workspace {
                             cx,
                         ))
                     })
+                    // The card is out and another waits: start that one now.
+                    .when_some(
+                        ui_state.queue.first().filter(|_| progress.source_missing),
+                        |s, next| {
+                            let card = copy::source_name(progress);
+                            let next = queued_name(next);
+                            s.child(
+                                self.action_button(
+                                    "ingest-skip",
+                                    &format!("Skip {card} · start {next}"),
+                                    Cmd::Ingest("skip".into()),
+                                    ButtonKind::Secondary,
+                                    false,
+                                    cx,
+                                )
+                                .tooltip(self.tip(
+                                    &format!(
+                                        "Stop waiting for {card}; its verified photos stay imported and {next} starts now"
+                                    ),
+                                    "",
+                                )),
+                            )
+                        },
+                    )
                     .child(
                         self.action_button(
                             "ingest-cancel",
@@ -4393,7 +5008,13 @@ impl Workspace {
                             cx,
                         )
                         .tooltip(self.tip(
-                            "Stop after the current photo; verified photos stay imported",
+                            &match ui_state.queue.first() {
+                                None => "Stop after the current photo; verified photos stay imported".to_owned(),
+                                Some(next) => format!(
+                                    "Stop this card after the current photo; verified photos stay imported and {} starts next",
+                                    queued_name(next)
+                                ),
+                            },
                             "",
                         )),
                     );
@@ -4450,13 +5071,21 @@ impl Workspace {
                             .child(summary),
                     ),
             );
-            // While another card copies, the same button queues this one.
+            // While another card copies, the same button queues this one;
+            // after a failure with exactly the failed photos checked, it is
+            // the one Retry button.
             let label = if ui_state.active() {
                 if ui_state.queued(&ui_state.source) {
                     format!("Queued · after {}", copy::source_name(&ui_state.progress))
                 } else {
                     format!("Queue {}", label.strip_prefix("Import ").unwrap_or(label))
                 }
+            } else if self.retry_is_primary() {
+                format!(
+                    "Retry {} · {}",
+                    copy::media_count(ui_state.photos, ui_state.videos),
+                    copy::fmt_bytes(ui_state.bytes)
+                )
             } else {
                 label.to_owned()
             };
@@ -4469,7 +5098,8 @@ impl Workspace {
                 None => label.clone(),
             };
             if ui_state.active() && ui_state.queued(&ui_state.source) {
-                // Queued: a statement in full ink, not a dimmed button.
+                // Queued: a statement in full ink, not a dimmed button, with
+                // its own ✕ inside it (apart from Close Import).
                 actions = actions.child(
                     div()
                         .id("ingest-queued")
@@ -4478,20 +5108,64 @@ impl Workspace {
                         .items_center()
                         .gap(px(space::SM))
                         .h(px(ui::CONTROL_HEIGHT + 4.))
-                        .px(px(space::MD))
+                        .pl(px(space::MD))
+                        .pr(px(space::XS))
                         .border_1()
                         .border_color(self.border())
                         .whitespace_nowrap()
                         .child(icon("check", self.icon_muted()))
-                        .child(format!(
-                            "Queued · starts after {}",
-                            copy::source_name(&ui_state.progress)
-                        ))
+                        .child(
+                            div()
+                                .id("ingest-queued-text")
+                                .child(format!(
+                                    "Queued · starts after {}",
+                                    copy::source_name(&ui_state.progress)
+                                ))
+                                .tooltip(self.tip(
+                                    "Starts by itself when the running import ends or is cancelled",
+                                    "",
+                                )),
+                        )
+                        .child(
+                            self.compact_button(
+                                "ingest-dequeue",
+                                "",
+                                "close",
+                                Cmd::Ingest(format!("dequeue:{}", ui_state.source.display())),
+                                false,
+                                cx,
+                            )
+                            .tooltip(self.tip("Remove this card from the queue", "")),
+                        ),
+                );
+                // The running card is out and this one is next: start it now.
+                if ui_state.progress.source_missing
+                    && ui_state
+                        .queue
+                        .first()
+                        .is_some_and(|next| next.source == ui_state.source)
+                {
+                    let card = copy::source_name(&ui_state.progress);
+                    actions = actions.child(
+                        self.action_button(
+                            "ingest-skip-to-this",
+                            &format!(
+                                "Skip {card} · start {}",
+                                queued_name(&ui_state.queue[0])
+                            ),
+                            Cmd::Ingest("skip".into()),
+                            ButtonKind::Secondary,
+                            false,
+                            cx,
+                        )
                         .tooltip(self.tip(
-                            "Cancel import stops the running import and drops the queue",
+                            &format!(
+                                "Stop waiting for {card}; its verified photos stay imported and this card starts now"
+                            ),
                             "",
                         )),
-                );
+                    );
+                }
             } else {
                 actions = actions.child(
                     self.ingest_primary(&label, blocker.is_some(), cx)
@@ -4694,7 +5368,7 @@ impl Workspace {
             ))
             .child(self.preference_row(
                 "Notify when done",
-                "A desktop notification when an import or export finishes while Shadowroom is in the background",
+                "A desktop notification when an import or export finishes or needs attention (a card was removed, an export failed) while Shadowroom is in the background",
                 self.pref_choices(
                     "pref-ingest-notify",
                     [
@@ -4816,6 +5490,8 @@ fn desktop_notification(summary: &str, body: &str) -> std::io::Result<()> {
         command
             .arg("--app-name=Shadowroom")
             .arg("--icon=app.shadowroom.Shadowroom")
+            // GNOME groups and attributes a post by its desktop entry.
+            .arg("--hint=string:desktop-entry:app.shadowroom.Shadowroom")
             .arg("--")
             .arg(summary)
             .arg(body);
@@ -4961,6 +5637,78 @@ mod responsive_tests {
             state.drive_state(Path::new("/media/A")).as_deref(),
             Some("Safe to eject")
         );
+    }
+
+    #[test]
+    fn a_failed_cards_result_finds_its_tiles_and_retry_checks_exactly_those() {
+        use super::{Outcome, Tone, source_relative};
+        use std::collections::HashSet;
+        use std::path::{Path, PathBuf};
+        let mut state = import_fixture();
+        let source = state.items[0].primary.path.parent().unwrap().to_path_buf();
+        state.source = source.clone();
+        let broken = state.items[3].clone();
+        let line = format!(
+            "{}: Input/output error (os error 5)",
+            broken.primary.path.display()
+        );
+        let outcome = Outcome {
+            source: source.clone(),
+            tone: Tone::Warning,
+            text: "Import stopped · 11 photos of 12 imported and verified · 1 failed".into(),
+            remaining: false,
+            library: None,
+            errors: vec![line.clone(), "Manifest: disk full".into()],
+            // Scan IDs from an older scan of this card: re-derived from paths.
+            failed_ids: vec![99],
+            failed_sources: vec![broken.primary.path.clone()],
+            error_groups: Vec::new(),
+            manifest: None,
+        };
+        // Another card is shown: the result stays reachable, and the card's
+        // sidebar row says what is left.
+        state.elsewhere.push(outcome.clone());
+        assert_eq!(state.drive_state(&source).as_deref(), Some("1 failed"));
+        // Back on this card: the failed tile and its error line find each other.
+        state.elsewhere.clear();
+        state.outcome = Some(outcome);
+        state.attach_outcome();
+        let attached = state.outcome.as_ref().unwrap();
+        assert_eq!(attached.failed_ids, vec![broken.id]);
+        assert_eq!(attached.error_groups, vec![Some(broken.id), None]);
+        assert_eq!(
+            state.failed.get(&broken.id).map(|e| e.to_string()),
+            Some(line)
+        );
+        assert_eq!(state.failed.len(), 1);
+        // Retry failed from another view or from History: after the rescan,
+        // exactly the failed photo is checked and the import starts once planned.
+        let wanted: HashSet<PathBuf> =
+            std::iter::once(source_relative(&broken.primary.path, &source)).collect();
+        assert_eq!(wanted.iter().next().unwrap(), Path::new("03.png"));
+        state.retry_sources = Some((source.clone(), wanted));
+        state.attach_outcome();
+        assert_eq!(state.selected, HashSet::from([broken.id]));
+        assert_eq!((state.photos, state.videos), (1, 0));
+        assert!(state.start_when_planned);
+        assert!(state.outcome.is_none());
+        assert!(state.retry_sources.is_none());
+    }
+
+    #[test]
+    fn history_rows_offer_retry_only_for_recorded_failed_files() {
+        use super::history_outcome;
+        let failed = serde_json::json!({"id":"j1","source":"/media/A","verification":"failed",
+            "counts":{"failed":1,"failed_sources":["/media/A/DCIM/IMG_0003.JPG"]}});
+        let outcome = history_outcome(&failed).unwrap();
+        assert_eq!(outcome.source, std::path::PathBuf::from("/media/A"));
+        assert_eq!(outcome.failed_sources.len(), 1);
+        // Older rows (no file list), verified and cancelled rows: no retry.
+        let old = serde_json::json!({"id":"j0","source":"/media/A","verification":"failed","counts":{"failed":1}});
+        assert!(history_outcome(&old).is_none());
+        let verified = serde_json::json!({"id":"j2","source":"/media/A","verification":"completed",
+            "counts":{"failed_sources":["/media/A/x.jpg"]}});
+        assert!(history_outcome(&verified).is_none());
     }
 
     /// Leaves nothing checked, as Uncheck all does.

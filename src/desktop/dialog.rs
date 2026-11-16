@@ -638,18 +638,21 @@ impl Workspace {
             active,
             edit,
             error,
+            connecting,
+            failed,
         }) = &self.add_host
         else {
             return div().into_any_element();
         };
         let error_color = self.c("error", "#d46a6a");
+        // What the host needs, said before the user hits a protocol error.
         let mut body = div()
             .p(px(ui::DIALOG_INSET))
             .flex()
             .flex_col()
             .gap(px(space::MD))
             .child(div().text_color(self.muted()).child(
-                "Use your existing SSH configuration. Tab changes fields; Enter checks the agent.",
+                "Connects through your SSH configuration (keys, aliases, jump hosts). The host needs shadowroom-remote installed and on its PATH.",
             ));
         for (n, label) in ["SSH alias or user@host", "Remote command (optional)"]
             .into_iter()
@@ -681,7 +684,11 @@ impl Workspace {
                             .child(self.input_field(
                                 edit,
                                 &fields[n],
-                                "",
+                                if n == 1 {
+                                    super::DEFAULT_REMOTE_COMMAND
+                                } else {
+                                    "studio"
+                                },
                                 *active == n,
                                 !self.palette,
                             ))
@@ -701,9 +708,29 @@ impl Workspace {
                                 .text_size(ui::font(ui::text::LABEL))
                                 .text_color(error_color)
                                 .child(icon("warning", error_color).size(px(12.)))
-                                .child(message.clone()),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .whitespace_normal()
+                                        .child(message.clone()),
+                                ),
                         )
                     }),
+            );
+        }
+        if let Some(host) = connecting {
+            body = body.child(
+                div()
+                    .id("host-connecting")
+                    .flex()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .text_color(self.muted())
+                    .child(icon("refresh", self.icon_muted()).size(px(12.)))
+                    .child(format!(
+                        "Connecting to {host}… checking that shadowroom-remote answers"
+                    )),
             );
         }
         self.modal_scrim(Overlay::AddHost)
@@ -731,10 +758,16 @@ impl Workspace {
                                 ))
                                 .child(self.action_button(
                                     "host-save",
-                                    "Add & connect",
+                                    if connecting.is_some() {
+                                        "Connecting…"
+                                    } else if failed.is_some() {
+                                        "Try again"
+                                    } else {
+                                        "Add & connect"
+                                    },
                                     Cmd::SaveRemoteHost,
                                     ButtonKind::Primary,
-                                    false,
+                                    connecting.is_some(),
                                     cx,
                                 )),
                         ),

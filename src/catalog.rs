@@ -1209,6 +1209,20 @@ impl SidecarCache {
     }
 }
 
+/// Sidecars (.xmp/.aae) a picks export copies beside these photos' originals
+/// and companions: the same discovery the export uses, so the picker's file
+/// count matches the manifest. Unreadable folders count none.
+pub fn export_sidecar_count<'a>(media: impl IntoIterator<Item = &'a Path>) -> usize {
+    let mut cache = SidecarCache::default();
+    let mut seen = HashSet::new();
+    for path in media {
+        for (sidecar, _) in cache.related(path).unwrap_or_default() {
+            seen.insert(sidecar);
+        }
+    }
+    seen.len()
+}
+
 fn group_members(photo: &Photo, cache: &mut SidecarCache) -> Result<Vec<GroupMember>> {
     let mut members = Vec::new();
     let mut seen = HashSet::new();
@@ -1946,6 +1960,9 @@ mod tests {
             .unwrap();
         let id = catalog.photos().unwrap()[0].id;
         catalog.set_flag(id, Flag::Pick).unwrap();
+        // The picker's header counts the same sidecars the export copies.
+        let (nef, jpg) = (source.join("capture.nef"), source.join("capture.jpg"));
+        assert_eq!(export_sidecar_count([nef.as_path(), jpg.as_path()]), 4);
         assert_eq!(catalog.export_picks(&destination).unwrap(), 6);
         assert!(!destination.join("capture.nef").exists());
         assert_eq!(
