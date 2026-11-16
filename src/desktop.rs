@@ -15,6 +15,7 @@ mod preferences;
 mod prefetch;
 mod review_actions;
 mod scrollbar;
+mod search;
 mod text_input;
 use anyhow::{Context as _, Result};
 use copy::plural;
@@ -190,6 +191,12 @@ enum Cmd {
     ExportAllPicks,
     ExportXmp,
     Palette,
+    /// Ctrl/Cmd+F: the palette for photo filenames only.
+    SearchPhotos,
+    /// A palette photo result: select it (widening the view if needed).
+    RevealPhoto(i64),
+    /// A palette folder result: scope the view to it.
+    ScopeFolder(String),
     Preferences,
     ApplyPreferences,
     ApplyClosePreferences,
@@ -308,7 +315,10 @@ struct PaletteItem {
 
 #[derive(Default)]
 struct PaletteCache {
+    /// Commands first (`command_count` of them), then this query's photo and
+    /// folder results.
     items: Vec<PaletteItem>,
+    command_count: usize,
     matches: Vec<usize>,
     query: Option<String>,
     grouping: String,
@@ -344,6 +354,26 @@ impl PaletteCache {
         }
         self.matches = scored.into_iter().map(|(_, i)| i).collect();
         self.query = Some(query.into());
+    }
+    /// Adds photo and folder results after the commands whose title contains
+    /// the query and before the looser fuzzy matches; photo mode shows only them.
+    fn merge_found(&mut self, found: Vec<PaletteItem>, query: &str, photos_only: bool) {
+        let start = self.items.len();
+        let found_rows = start..start + found.len();
+        self.items.extend(found);
+        if photos_only {
+            self.matches = found_rows.collect();
+            return;
+        }
+        if found_rows.is_empty() {
+            return;
+        }
+        let query = query.trim().to_lowercase();
+        let (exact, loose): (Vec<usize>, Vec<usize>) = self
+            .matches
+            .iter()
+            .partition(|&&i| self.items[i].title.to_lowercase().contains(&query));
+        self.matches = exact.into_iter().chain(found_rows).chain(loose).collect();
     }
 }
 
@@ -1115,6 +1145,8 @@ pub struct Workspace {
     sidebar: bool,
     title_drag: bool,
     palette: bool,
+    /// The palette was opened with Ctrl/Cmd+F: photo results only.
+    palette_photos: bool,
     palette_query: String,
     palette_edit: text_input::Edit,
     palette_index: usize,
@@ -1592,6 +1624,7 @@ impl Workspace {
             sidebar,
             title_drag: false,
             palette: false,
+            palette_photos: false,
             palette_query: String::new(),
             palette_edit: text_input::Edit::default(),
             palette_index: 0,
@@ -3434,6 +3467,9 @@ impl Workspace {
                 self.rebuild(id);
             }
             Cmd::ClearFilters => self.clear_filters(),
+            Cmd::SearchPhotos => self.open_photo_search(),
+            Cmd::RevealPhoto(id) => self.reveal_photo(id, cx),
+            Cmd::ScopeFolder(scope) => self.scope_folder(scope),
             Cmd::Trash(trashed) => {
                 if trashed {
                     self.request_deletion(false, cx);
@@ -3590,6 +3626,7 @@ impl Workspace {
                 self.getting_started = false;
                 self.import_ui.menu = None;
                 self.palette = !self.palette;
+                self.palette_photos = false;
                 self.palette_query.clear();
                 self.palette_edit.focus("");
                 self.palette_cache.borrow_mut().take();
@@ -4558,6 +4595,13 @@ impl Workspace {
                 Cmd::Clipping,
             ),
             item(
+                "Find Photo by Filename",
+                "Library · whole library; type in this palette to search too",
+                "⌘F",
+                "search",
+                Cmd::SearchPhotos,
+            ),
+            item(
                 "Show Full Folder",
                 "Review · leave selected subset",
                 "",
@@ -4919,7 +4963,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.remember_command(title);
+        // Photos and folders are results, not commands to offer again.
+        if !matches!(cmd, Cmd::RevealPhoto(_) | Cmd::ScopeFolder(_)) {
+            self.remember_command(title);
+        }
         self.palette = false;
         // Preferences already open beneath the palette: reveal them rather
         // than toggling them shut and discarding the draft.
@@ -4964,8 +5011,10 @@ impl Workspace {
                 || cache.grouping != self.settings.grouping_mode
                 || cache.revision != self.palette_revision
         }) {
+            let items = self.palette_items();
             *cell = Some(PaletteCache {
-                items: self.palette_items(),
+                command_count: items.len(),
+                items,
                 availability,
                 grouping: self.settings.grouping_mode.clone(),
                 revision: self.palette_revision,
@@ -4973,7 +5022,13 @@ impl Workspace {
             });
         }
         let cache = cell.as_mut().expect("palette cache");
-        cache.match_query(&self.palette_query, &self.palette_recent);
+        if cache.query.as_deref() != Some(self.palette_query.as_str()) {
+            // Photo and folder rows belong to one query; commands persist.
+            cache.items.truncate(cache.command_count);
+            cache.match_query(&self.palette_query, &self.palette_recent);
+            let found = self.search_items(&self.palette_query);
+            cache.merge_found(found, &self.palette_query, self.palette_photos);
+        }
         drop(cell);
         std::cell::Ref::map(self.palette_cache.borrow(), |cache| {
             cache.as_ref().expect("palette cache")
@@ -5021,6 +5076,10 @@ impl Workspace {
         }
         if primary && key == "k" {
             self.execute(Cmd::Palette, window, cx);
+            return;
+        }
+        if primary && key == "f" && !modifiers.shift && !modifiers.alt {
+            self.execute(Cmd::SearchPhotos, window, cx);
             return;
         }
         if key == "escape" {
@@ -6365,7 +6424,7 @@ impl Workspace {
                         self.button("palette-trigger", "", "search", Cmd::Palette, false, cx)
                             .h(px(ui::CONTROL_HEIGHT))
                             .w(px(ui::CONTROL_HEIGHT))
-                            .tooltip(self.tip("Search commands", palette_keys)),
+                            .tooltip(self.tip("Search photos, folders and commands", palette_keys)),
                     )
                     .child(
                         self.toggle_button(
@@ -6764,16 +6823,8 @@ impl Workspace {
             body = body.child(
                 row(("folder", n).into(), "folder", name, Some(*count), active)
                     .tooltip(self.tip(path, ""))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scope = Some(scope.clone());
-                        this.duplicates_only = false;
-                        this.label_filter = None;
-                        this.bursts_only = false;
-                        this.filter = Filter::All;
-                        this.settings.filter = "all".into();
-                        this.save_settings();
-                        this.rebuild(None);
-                        cx.notify();
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.execute(Cmd::ScopeFolder(scope.clone()), window, cx);
                     })),
             );
         }
@@ -10902,6 +10953,24 @@ impl Workspace {
             )
         }
         if total == 0 {
+            let query = self.palette_query.trim();
+            let (title, hint) = match (self.palette_photos, query.is_empty()) {
+                (true, true) => (
+                    "Type part of a filename".to_owned(),
+                    format!(
+                        "“4512” finds IMG_4512.CR3 · {} also searches commands and folders",
+                        shortcut("⌘K")
+                    ),
+                ),
+                (true, false) => (
+                    format!("No photos match “{query}”"),
+                    "Filenames only, across the whole library · Esc closes".to_owned(),
+                ),
+                (false, _) => (
+                    format!("No commands, photos or folders match “{query}”"),
+                    "Try export, zoom or a filename · Esc closes".to_owned(),
+                ),
+            };
             results = results.child(
                 div()
                     .px(px(ui::PANEL_INSET))
@@ -10909,12 +10978,12 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(space::XS))
-                    .child(format!("No commands match “{}”", self.palette_query.trim()))
+                    .child(title)
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(self.muted())
-                            .child("Try export, zoom, trash or theme · Esc closes"),
+                            .child(hint),
                     ),
             );
         }
@@ -10951,7 +11020,11 @@ impl Workspace {
                                 self.input_field(
                                     &self.palette_edit,
                                     &self.palette_query,
-                                    "Execute a command…",
+                                    if self.palette_photos {
+                                        "Find a photo by filename…"
+                                    } else {
+                                        "Run a command, or find a photo or folder…"
+                                    },
                                     true,
                                     true,
                                 ),
@@ -13308,6 +13381,7 @@ mod ui_tests {
                 include_str!("desktop/review_actions.rs"),
             ),
             ("scrollbar.rs", include_str!("desktop/scrollbar.rs")),
+            ("search.rs", include_str!("desktop/search.rs")),
             ("text_input.rs", include_str!("desktop/text_input.rs")),
             ("motion.rs", include_str!("desktop/motion.rs")),
             ("prefetch.rs", include_str!("desktop/prefetch.rs")),
@@ -13410,6 +13484,8 @@ mod ui_tests {
             "\"tab\" => Some(Cmd::Focus)",
             // Inspection aids: the clipping overlay and Alt+digit zoom presets.
             "\"j\" => Some(Cmd::Clipping)",
+            // Photo search (Ctrl/Cmd+F) opens the palette, after quit.
+            "if primary && key == \"f\"",
             "loupe_aids::ZOOM_PRESETS.iter()",
         ] {
             let at = body

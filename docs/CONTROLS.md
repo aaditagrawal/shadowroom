@@ -31,6 +31,8 @@ Shadowroom receives normal keyboard shortcuts from the focused application windo
 | `F` | Toggle focus peaking in Review and Compare (red by default; color and sensitivity in **Preferences → Culling**) |
 | `J` | Toggle the clipping overlay: blown highlights red, crushed shadows blue |
 | `F1` | Open Getting Started |
+| Ctrl+K or Cmd+K | Command palette; typing two or more characters also lists matching photos (filename) and folders, eight of each |
+| Ctrl+F or Cmd+F | Find a photo by filename across the whole library |
 | `H` / `I` | Toggle histogram / inspector |
 | Shift+A | Toggle automatic advance |
 | Ctrl+O or Cmd+O | Open a folder |
@@ -99,6 +101,15 @@ and deletion actions. Right-clicking a selected Catalog photo keeps that batch;
 right-clicking a different photo makes it the action target. The menu names the
 photo or selected count. Up/Down and Enter activate a menu action; Escape closes
 it.
+
+The command palette lists photos whose filename contains the query (so
+**4512** finds `IMG_4512.CR3`) and folders whose name or path contains it,
+after commands whose name contains the query and before looser command
+matches. Enter on a photo selects it, scrolling the Catalog to it or showing it
+in Review; a photo outside the current filter shows the whole library first, and
+the status bar says so. Enter on a folder scopes the view to it, as its sidebar
+row does. **Ctrl/Cmd+F** opens the palette for photos only (up to 50 rows);
+Trash is not searched.
 
 Delete uses **Preferences → Culling → Trash destination**: **OS Trash** by
 default, or optional **In-app** Trash. Shift+Delete always requests permanent
