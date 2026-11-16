@@ -6093,12 +6093,7 @@ impl Render for Tip {
             .border_1()
             .border_color(self.border)
             // The shared floating-surface elevation (toast, menus).
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
             .px(px(space::SM))
             .py(px(space::XS))
             .flex()

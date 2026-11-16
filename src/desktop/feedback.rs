@@ -758,12 +758,7 @@ impl Workspace {
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
             .bg(self.c("elevated_surface.background", "#1b1b1b"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
             .child(
                 div()
                     .absolute()

@@ -2910,20 +2910,14 @@ impl Workspace {
             .when(!label.is_empty(), |s| s.child(self.ingest_label(label)))
             .child(trigger);
         if open {
-            let mut list = div()
+            // The shared menu surface and its one shadow (R5-design-05).
+            let mut list = self
+                .menu_surface()
                 .id("ingest-menu")
                 .w(px(width))
                 .max_h(px(360.))
                 .overflow_y_scroll()
                 .mt(px(space::XS))
-                .p(px(space::XS))
-                .flex()
-                .flex_col()
-                .bg(self.c("elevated_surface.background", "#202020"))
-                .border_1()
-                .border_color(self.c("border.variant", "#333333"))
-                .shadow_lg()
-                .occlude()
                 .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     if this.import_ui.menu == Some(menu) {
                         this.import_ui.menu = None;

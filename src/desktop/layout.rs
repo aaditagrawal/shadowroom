@@ -98,6 +98,26 @@ pub(super) fn scaled(length: f32) -> f32 {
     (length * text_scale()).round()
 }
 
+/// The one elevation of floating surfaces (menus, tooltips, the error toast):
+/// flat chrome, one soft shadow, defined once so it cannot drift.
+pub(super) fn floating_shadow() -> Vec<gpui::BoxShadow> {
+    shadow(4., 14.)
+}
+
+/// Dialogs sit one step higher than menus.
+pub(super) fn dialog_shadow() -> Vec<gpui::BoxShadow> {
+    shadow(8., 24.)
+}
+
+fn shadow(offset: f32, blur: f32) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: gpui::hsla(0., 0., 0., 0.35),
+        offset: gpui::point(gpui::px(0.), gpui::px(offset)),
+        blur_radius: gpui::px(blur),
+        spread_radius: gpui::px(0.),
+    }]
+}
+
 pub(super) const CONTROL_HEIGHT: f32 = 28.;
 pub(super) const COMPACT_CONTROL_HEIGHT: f32 = 24.;
 pub(super) const ROW_HEIGHT: f32 = 32.;

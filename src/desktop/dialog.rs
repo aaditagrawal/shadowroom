@@ -290,12 +290,7 @@ impl Workspace {
             .bg(self.c("elevated_surface.background", "#202020"))
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(8.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::dialog_shadow())
     }
 
     /// 45 px title bar: a MEDIUM title in the TITLE role (13 px at 100%),
@@ -352,8 +347,9 @@ impl Workspace {
     }
 
     /// A floating menu's surface: elevated fill, hairline border, the shared
-    /// 4/14 px shadow tooltips use, and 4 px padding. Every popover menu draws
-    /// on it, so none sits flat on the grid (R4-catalog-05).
+    /// floating shadow tooltips use, and 4 px padding. Every popover menu
+    /// draws on it, the Import dropdowns included, so none sits flat on the
+    /// grid (R4-catalog-05, R5-design-05).
     pub(super) fn menu_surface(&self) -> Div {
         div()
             .occlude()
@@ -363,12 +359,7 @@ impl Workspace {
             .bg(self.c("elevated_surface.background", "#202020"))
             .border_1()
             .border_color(self.c("border.variant", "#333333"))
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., 0.35),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-            }])
+            .shadow(ui::floating_shadow())
     }
 
     /// The keyboard hints at the left of a dialog footer: boxed keys and the
