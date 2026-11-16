@@ -737,11 +737,7 @@ impl Workspace {
             .p(px(space::XL))
             .child(
                 self.modal_surface("add-host", DIALOG_SMALL)
-                    .child(self.modal_header(
-                        "Add network host",
-                        Some(("host-close", Cmd::Close)),
-                        cx,
-                    ))
+                    .child(self.modal_header(copy::ADD_HOST, Some(("host-close", Cmd::Close)), cx))
                     .child(body)
                     .child(
                         self.modal_footer().justify_end().child(
@@ -761,9 +757,9 @@ impl Workspace {
                                     if connecting.is_some() {
                                         "Connecting…"
                                     } else if failed.is_some() {
-                                        "Try again"
+                                        "Try Again"
                                     } else {
-                                        "Add & connect"
+                                        "Add & Connect"
                                     },
                                     Cmd::SaveRemoteHost,
                                     ButtonKind::Primary,

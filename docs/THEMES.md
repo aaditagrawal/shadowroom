@@ -32,7 +32,7 @@ with Off or Time) are dimmed and inert.
 
 The theme list groups Dark and Light palettes, with background/accent/text
 swatches and a separate bounded scroll area. Installed Zed themes are discovered
-automatically. **Import Zed theme…** accepts a Zed color-theme family JSON/JSONC
+automatically. **Import Zed Theme…** accepts a Zed color-theme family JSON/JSONC
 file and stages it in Manual mode. Apply saves a local copy and activates it.
 The explicit MCP `theme_import` tool installs and activates its requested family
 immediately.

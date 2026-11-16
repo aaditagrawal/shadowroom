@@ -933,7 +933,7 @@ impl Workspace {
             if self.min_rating > 0 {
                 actions = actions.child(self.action_button(
                     "empty-clear-rating",
-                    "Clear rating filter",
+                    "Clear Rating Filter",
                     Cmd::SetMinRating(0),
                     ButtonKind::Primary,
                     false,
@@ -942,7 +942,7 @@ impl Workspace {
             }
             actions = actions.child(self.action_button(
                 "empty-show-all",
-                "Show all photos",
+                "Show All Photos",
                 Cmd::ClearFilters,
                 ButtonKind::Secondary,
                 false,

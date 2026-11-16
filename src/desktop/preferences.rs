@@ -262,7 +262,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Import Zed Theme".into()),
+            prompt: Some(super::copy::IMPORT_ZED_THEME.into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = prompt.await {

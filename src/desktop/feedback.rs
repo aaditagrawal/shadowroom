@@ -601,7 +601,7 @@ impl Workspace {
                 "Widen the filter, or select more photos before comparing.",
                 self.button(
                     "compare-show-all",
-                    "Show all photos",
+                    "Show All Photos",
                     "library",
                     Cmd::ClearFilters,
                     false,

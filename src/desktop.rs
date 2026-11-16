@@ -488,10 +488,11 @@ fn palette_step(index: usize, total: usize, key: &str) -> usize {
 }
 
 /// Empty-query order of palette categories (the detail's first segment):
-/// review decisions, then navigation and filtering, then file and app commands.
+/// culling decisions, then navigation and filtering, then file and app
+/// commands. "Review" names only the one-photo view (R5-catalog-01).
 fn palette_category_rank(detail: &str) -> usize {
     const ORDER: [&str; 13] = [
-        "Review",
+        "Culling",
         "Edit",
         "View",
         "Compare",
@@ -4725,7 +4726,7 @@ impl Workspace {
                 Cmd::Import,
             ),
             item(
-                "Export Picks in This View…",
+                copy::EXPORT_PICKS,
                 "File · picks in the current view",
                 "⇧E",
                 "export",
@@ -4739,7 +4740,7 @@ impl Workspace {
                 Cmd::ExportAllPicks,
             ),
             item(
-                "Export XMP Sidecars…",
+                copy::EXPORT_XMP,
                 "File · selection or current view",
                 "",
                 "files",
@@ -4757,25 +4758,25 @@ impl Workspace {
             ),
             item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
             item("Redo", "Edit", "⌘⇧Z", "redo", Cmd::Redo),
-            item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
-            item("Reject", "Review", "X", "reject", Cmd::Flag(Flag::Reject)),
+            item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
+            item("Reject", "Culling", "X", "reject", Cmd::Flag(Flag::Reject)),
             item(
                 "Clear Flag",
-                "Review",
+                "Culling",
                 "U",
                 "unflagged",
                 Cmd::Flag(Flag::None),
             ),
             item(
                 copy::RESET_DECISION,
-                "Review · clear stars and pick/reject without advancing; keep color label",
+                "Culling · clear stars and pick/reject without advancing; keep color label",
                 "R",
                 "reset",
                 Cmd::ResetDecision,
             ),
             item(
                 copy::MOVE_TO_TRASH,
-                "Review · confirm configured Trash destination",
+                "Culling · confirm configured Trash destination",
                 "Delete",
                 "trash",
                 Cmd::Trash(true),
@@ -4789,7 +4790,7 @@ impl Workspace {
             ),
             item(
                 "Restore from Trash",
-                "Review · keep ratings and flags",
+                "Culling · keep ratings and flags",
                 "",
                 "restore",
                 Cmd::Trash(false),
@@ -4831,42 +4832,49 @@ impl Workspace {
             ),
             item(
                 "Next Unreviewed",
-                "Review",
+                "Culling",
                 "Shift →",
                 "next",
                 Cmd::Unreviewed(1),
             ),
             item(
                 "Previous Unreviewed",
-                "Review",
+                "Culling",
                 "Shift ←",
                 "previous",
                 Cmd::Unreviewed(-1),
             ),
             item(
                 "Toggle Auto-Advance",
-                "Review",
+                "Culling",
                 "Shift A",
                 "auto-advance",
                 Cmd::AutoAdvance,
             ),
-            item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+            // The view tabs' own names (R5-catalog-01).
             item(
-                "Review View",
+                "Catalog",
+                "View · every photo as thumbnails",
+                "G",
+                "grid",
+                Cmd::View(ViewMode::Grid),
+            ),
+            item(
+                "Review",
                 "View · one photo at a time",
                 "L",
                 "loupe",
                 Cmd::View(ViewMode::Loupe),
             ),
             item(
-                "Compare View",
-                "View",
+                "Compare",
+                "View · reference and candidate side by side",
                 "C",
                 "compare",
                 Cmd::View(ViewMode::Compare),
             ),
             item(
-                "Survey View",
+                "Survey",
                 "View · selection, burst or neighbours side by side",
                 "S",
                 "group",
@@ -4932,7 +4940,7 @@ impl Workspace {
             ),
             item(
                 copy::SHOW_FULL_FOLDER,
-                "Review · leave selected subset",
+                "View · leave the selected subset",
                 "",
                 "folder",
                 Cmd::ClearReviewSubset,
@@ -5097,7 +5105,7 @@ impl Workspace {
                 Cmd::Appearance,
             ),
             item(
-                "Import Zed Theme…",
+                copy::IMPORT_ZED_THEME_ELLIPSIS,
                 "Appearance",
                 "",
                 "folder-opened",
@@ -5151,9 +5159,9 @@ impl Workspace {
                     format!("Rate {}", "★".repeat(rating as usize))
                 },
                 &if rating == 0 {
-                    "Review · remove stars".to_string()
+                    "Culling · remove stars".to_string()
                 } else {
-                    format!("Review · {}", plural(rating as usize, "star", "stars"))
+                    format!("Culling · {}", plural(rating as usize, "star", "stars"))
                 },
                 &rating.to_string(),
                 "star",
@@ -5188,7 +5196,7 @@ impl Workspace {
                 } else {
                     format!("Label {label:?}")
                 },
-                "Review · the active label's key clears it",
+                "Culling · the active label's key clears it",
                 label_key(label),
                 "symbol-color",
                 Cmd::Label(label),
@@ -5213,7 +5221,7 @@ impl Workspace {
             ));
         }
         items.push(item(
-            "Add host…",
+            copy::ADD_HOST_ELLIPSIS,
             "Network · SSH alias and remote command",
             "",
             "add",
@@ -7587,7 +7595,7 @@ impl Workspace {
                     copy::duration(self.settings.burst_gap_ms)
                 ),
             ),
-            _ => (String::new(), "Group bursts".to_owned()),
+            _ => (String::new(), "Group Bursts".to_owned()),
         };
         div()
             .h(px(TOOLBAR_HEIGHT))
@@ -8983,7 +8991,7 @@ impl Workspace {
                 .when(!grouped, |s| {
                     s.child(self.action_button(
                         "survey-enable-bursts",
-                        "Group bursts",
+                        "Group Bursts",
                         Cmd::Group("burst".into()),
                         ButtonKind::Secondary,
                         false,
@@ -12360,7 +12368,7 @@ impl Workspace {
                     .justify_between()
                     .child(format!("Available themes · {}", self.preference_themes().len()))
                     .child(self.pref_button(
-                        self.button("import-theme", "Import Zed theme…", "folder-opened", Cmd::ImportTheme, false, cx),
+                        self.button("import-theme", copy::IMPORT_ZED_THEME_ELLIPSIS, "folder-opened", Cmd::ImportTheme, false, cx),
                         "import-theme",
                         2,
                         Cmd::ImportTheme,
@@ -12399,7 +12407,7 @@ impl Workspace {
                     )),
             ))
             .when(section == PreferencesSection::Help, |body| body
-                .child(self.preference_row("Startup guide", "Workflow, shortcuts, time groups, labels and caching", guide()))
+                .child(self.preference_row(copy::SHOW_AT_STARTUP, "Open Getting Started at launch: workflow, shortcuts, time groups, labels and caching", guide()))
                 .child(self.preference_row(
                     "Getting Started",
                     "Open the guide now; F1 opens it from anywhere",
@@ -13892,8 +13900,8 @@ mod ui_tests {
     fn palette_matches_preserve_stable_order_recents_and_query_cache() {
         let mut cache = PaletteCache {
             items: vec![
-                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
-                item("Reject", "Review", "X", "reject", Cmd::Flag(Flag::Reject)),
+                item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item("Reject", "Culling", "X", "reject", Cmd::Flag(Flag::Reject)),
                 item("Pin", "Compare", "B", "pin", Cmd::Pin),
             ],
             ..PaletteCache::default()
@@ -13956,7 +13964,7 @@ mod ui_tests {
             vec![
                 item(
                     "Label Red",
-                    "Review · the active label's key clears it",
+                    "Culling · the active label's key clears it",
                     "6",
                     "symbol-color",
                     Cmd::Label(ColorLabel::Red),
@@ -14030,9 +14038,9 @@ mod ui_tests {
         let mut cache = PaletteCache {
             items: vec![
                 item("Show Import Panel", "File", "", "drive", Cmd::Import),
-                item("Grid View", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
+                item("Catalog", "View", "G", "grid", Cmd::View(ViewMode::Grid)),
                 item("Undo", "Edit", "⌘Z", "undo", Cmd::Undo),
-                item("Pick", "Review", "P", "pick", Cmd::Flag(Flag::Pick)),
+                item("Pick", "Culling", "P", "pick", Cmd::Flag(Flag::Pick)),
                 item(
                     "Quit",
                     "App · finishes pending writes first",
@@ -14055,7 +14063,7 @@ mod ui_tests {
             [
                 "Pick",
                 "Undo",
-                "Grid View",
+                "Catalog",
                 "Pin",
                 "Show Import Panel",
                 "Quit"

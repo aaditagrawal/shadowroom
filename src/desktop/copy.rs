@@ -383,6 +383,19 @@ pub(super) const MOVE_TO_TRASH: &str = "Move to Trash…";
 pub(super) const DELETE_PERMANENTLY: &str = "Delete Permanently…";
 /// Leave a selected subset in Review and show the whole folder again.
 pub(super) const SHOW_FULL_FOLDER: &str = "Show Full Folder";
+/// Copy the picks in the current view to a folder.
+pub(super) const EXPORT_PICKS: &str = "Export Picks in This View…";
+/// Write XMP sidecars for the current view's decisions.
+pub(super) const EXPORT_XMP: &str = "Export XMP Sidecars…";
+/// The SSH host dialog: its title, and with an ellipsis the palette command.
+pub(super) const ADD_HOST: &str = "Add Network Host";
+pub(super) const ADD_HOST_ELLIPSIS: &str = "Add Network Host…";
+/// Choose a Zed theme file: the picker's title, and with an ellipsis the
+/// palette command and the Preferences button.
+pub(super) const IMPORT_ZED_THEME: &str = "Import Zed Theme";
+pub(super) const IMPORT_ZED_THEME_ELLIPSIS: &str = "Import Zed Theme…";
+/// The Getting Started checkbox, in the guide's footer and in Preferences.
+pub(super) const SHOW_AT_STARTUP: &str = "Show at startup";
 
 /// The Duplicates view with nothing to show, by scan state: what happened,
 /// what was checked, and the button that moves on (None while scanning).
