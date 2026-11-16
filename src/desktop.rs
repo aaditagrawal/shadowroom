@@ -1374,6 +1374,10 @@ pub struct Workspace {
     automation: Option<AutomationServer>,
     /// The platform file chooser failed once (no portal): use the built-in picker.
     native_chooser_failed: bool,
+    /// A platform chooser is open; a second request would stack another
+    /// dialog (and queue a second export) because the portal dialog is not
+    /// parented to this window.
+    native_chooser_open: bool,
     /// An automation client has sent a request this session.
     automation_driven: bool,
     _poll: Task<()>,
@@ -1875,6 +1879,7 @@ impl Workspace {
             last_media: 0,
             automation,
             native_chooser_failed: false,
+            native_chooser_open: false,
             automation_driven: false,
             _poll: poll,
             poll_wake,

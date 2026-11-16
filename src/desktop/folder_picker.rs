@@ -250,6 +250,12 @@ impl Workspace {
     }
 
     fn prompt_native_path(&mut self, purpose: Purpose, initial: PathBuf, cx: &mut Context<Self>) {
+        if self.native_chooser_open {
+            self.announce("A folder chooser is already open", Tone::Info);
+            cx.notify();
+            return;
+        }
+        self.native_chooser_open = true;
         self.palette = false;
         self.image_context = None;
         self.rating_filter_open = false;
@@ -281,6 +287,7 @@ impl Workspace {
                 Ok(Err(error)) => NativeAnswer::Unavailable(format!("{error:#}")),
                 Err(error) => NativeAnswer::Unavailable(error.to_string()),
             };
+            let _ = this.update(cx, |this, _| this.native_chooser_open = false);
             let path = match answer {
                 NativeAnswer::Chosen(path) => path,
                 NativeAnswer::Cancelled => {
