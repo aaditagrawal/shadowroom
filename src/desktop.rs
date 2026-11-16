@@ -406,6 +406,9 @@ const HISTOGRAM_PLOT: f32 = 94.;
 const PALETTE_LOOSE: usize = 3;
 /// The rating filter menu at 100% text: label, count and digit key.
 const RATING_MENU_WIDTH: f32 = 240.;
+/// The built-in dark `warning` (theme.rs), the one fallback for every
+/// warning lookup (R5-review-08).
+const WARNING_FALLBACK: &str = "#ce7629";
 
 /// How a palette title answers the query: 0 contains it, 1 matches its
 /// letters in order, 2 does not (the row matched through its description).
@@ -1967,6 +1970,11 @@ impl Workspace {
     }
     fn muted(&self) -> Hsla {
         self.c("text.muted", "#8c929e")
+    }
+    /// Warning colour; an imported theme without one gets the built-in
+    /// orange, never rating amber.
+    fn warning(&self) -> Hsla {
+        self.c("warning", WARNING_FALLBACK)
     }
     fn border(&self) -> Hsla {
         self.c("border", "#30343c")
@@ -5840,12 +5848,12 @@ fn label_roles(label: ColorLabel) -> Option<(&'static str, &'static str, &'stati
         ColorLabel::Blue => Some((
             "shadowroom.label.blue",
             "shadowroom.scrim.label.blue",
-            "#a3a6f0",
+            "#b8c3ff",
         )),
         ColorLabel::Purple => Some((
             "shadowroom.label.purple",
             "shadowroom.scrim.label.purple",
-            "#c497d0",
+            "#c79fc5",
         )),
     }
 }
@@ -7211,7 +7219,7 @@ impl Workspace {
         for (host_index, (id, host)) in self.remote_hosts.iter().enumerate() {
             let color = match host.state() {
                 HostState::Connected => self.c("success", "#7fbf7f"),
-                HostState::Connecting | HostState::Indexing => self.c("warning", "#e0b341"),
+                HostState::Connecting | HostState::Indexing => self.warning(),
                 HostState::Error => self.c("error", "#d46a6a"),
                 HostState::Offline => self.muted(),
             };
@@ -8419,12 +8427,12 @@ impl Workspace {
                         .gap(px(space::SM))
                         .text_size(ui::font(ui::text::LABEL))
                         .text_color(if requested_error.is_some() {
-                            self.c("warning", "#e0b341")
+                            self.warning()
                         } else {
                             self.muted()
                         })
                         .when(requested_error.is_some(), |s| {
-                            s.child(icon("warning", self.c("warning", "#e0b341")).size(px(12.)))
+                            s.child(icon("warning", self.warning()).size(px(12.)))
                         })
                         .child(
                             div()
@@ -10367,7 +10375,7 @@ impl Workspace {
                             },
                             label: self.muted().into(),
                             label_strong: self.text().into(),
-                            label_warning: self.c("warning", "#e0b341").into(),
+                            label_warning: self.warning().into(),
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
@@ -12321,7 +12329,7 @@ impl Workspace {
             .border_b_1()
             .border_color(self.border());
         let accent = self.accent();
-        let warning = self.c("warning", "#e0b341");
+        let warning = self.warning();
         let section_count = preferences::SECTIONS.len();
         for (index, (tab, label)) in preferences::SECTIONS.into_iter().enumerate() {
             let active = section == tab;
@@ -12792,7 +12800,7 @@ impl Workspace {
                         div()
                             .id("cache-usage")
                             .px(px(space::XS))
-                            .text_color(self.c("warning", "#e0b341"))
+                            .text_color(self.warning())
                             .child(format!(
                                 "{:.0} MB",
                                 (stats.memory_bytes + self.texture_bytes) as f64 / 1048576.

@@ -647,7 +647,11 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .border_1()
-                .border_color(if ring { self.text() } else { transparent_black() })
+                .border_color(if ring {
+                    self.text()
+                } else {
+                    transparent_black()
+                })
                 .cursor_pointer()
                 .when(on && !ring, |s| s.bg(self.selected_bg()))
                 .when(!on, |s| s.hover(|s| s.bg(self.hover_bg())))

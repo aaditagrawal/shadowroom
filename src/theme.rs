@@ -102,8 +102,8 @@ pub const PHOTO_OVERLAY: [(&str, &str); 13] = [
     ("shadowroom.scrim.label.red", "#e0918a"),
     ("shadowroom.scrim.label.yellow", "#d9bd72"),
     ("shadowroom.scrim.label.green", "#86bfa8"),
-    ("shadowroom.scrim.label.blue", "#a3a6f0"),
-    ("shadowroom.scrim.label.purple", "#c497d0"),
+    ("shadowroom.scrim.label.blue", "#b8c3ff"),
+    ("shadowroom.scrim.label.purple", "#c79fc5"),
     // Initial on a filled label chip (all five fills are light pastels).
     ("shadowroom.scrim.label.text", "#0f0f0f"),
 ];
@@ -142,9 +142,10 @@ impl Theme {
                 ("ghost_element.selected", "#ffffff12"),
                 ("success", "#7fbf7f"),
                 ("error", "#d46a6a"),
-                // Orange, 30° (OKLCH) from rating amber: a warning never
-                // reads as a star.
-                ("warning", "#e8893a"),
+                // Orange, 30° (OKLCH) from rating amber and darker than it,
+                // so a warning never reads as a star, protan and deutan
+                // vision included; 35° from error red.
+                ("warning", "#ce7629"),
                 ("info", "#5b9bd5"),
                 ("scrollbar.thumb.background", "#8a8a8a40"),
                 ("scrollbar.thumb.hover_background", "#8a8a8a80"),
@@ -161,10 +162,11 @@ impl Theme {
                 ("shadowroom.label.red", "#e0918a"),
                 ("shadowroom.label.yellow", "#d9bd72"),
                 ("shadowroom.label.green", "#86bfa8"),
-                // Periwinkle, 35° from the accent: a blue strip never reads
-                // as the "current" underline.
-                ("shadowroom.label.blue", "#a3a6f0"),
-                ("shadowroom.label.purple", "#c497d0"),
+                // Periwinkle, 29° from the accent and much lighter, so a blue
+                // strip never reads as the "current" underline in any colour
+                // vision; Purple leans magenta and darker, away from Blue.
+                ("shadowroom.label.blue", "#b8c3ff"),
+                ("shadowroom.label.purple", "#c79fc5"),
                 ("shadowroom.label.text", "#0f0f0f"),
                 // Cull ledger: the unreviewed hairline rail and reviewed
                 // (rated or labelled, unflagged) cells, 3:1+ apart.
@@ -206,7 +208,7 @@ impl Theme {
                 ("ghost_element.selected", "#3979b418"),
                 ("success", "#39734f"),
                 ("error", "#a53e42"),
-                ("warning", "#9a4d10"),
+                ("warning", "#985f3b"),
                 ("info", "#245c91"),
                 ("scrollbar.thumb.background", "#626c7c40"),
                 ("scrollbar.thumb.hover_background", "#626c7c80"),
@@ -220,12 +222,12 @@ impl Theme {
                 ("shadowroom.control_border", "#717a88"),
                 ("shadowroom.pick", "#2f6844"),
                 ("shadowroom.reject", "#a53e42"),
-                ("shadowroom.rating", "#765612"),
+                ("shadowroom.rating", "#5e4508"),
                 ("shadowroom.label.red", "#b3362e"),
                 ("shadowroom.label.yellow", "#7e6200"),
                 ("shadowroom.label.green", "#2a7560"),
-                ("shadowroom.label.blue", "#4c49b8"),
-                ("shadowroom.label.purple", "#8a3fa6"),
+                ("shadowroom.label.blue", "#5d55f3"),
+                ("shadowroom.label.purple", "#832692"),
                 ("shadowroom.label.text", "#ffffff"),
                 ("shadowroom.ledger.rail", "#c4c9d1"),
                 ("shadowroom.ledger.reviewed", "#626c7c"),
@@ -269,7 +271,7 @@ impl Theme {
                 ("ghost_element.selected", "#ffffff2e"),
                 ("success", "#8fe08f"),
                 ("error", "#ff8a8a"),
-                ("warning", "#ffa05a"),
+                ("warning", "#ea8e48"),
                 ("info", "#8cc4ff"),
                 ("scrollbar.thumb.background", "#cfcfcf80"),
                 ("scrollbar.thumb.hover_background", "#cfcfcfc0"),
@@ -286,8 +288,8 @@ impl Theme {
                 ("shadowroom.label.red", "#ffa59e"),
                 ("shadowroom.label.yellow", "#f0d58a"),
                 ("shadowroom.label.green", "#9fe0c4"),
-                ("shadowroom.label.blue", "#b4b6ff"),
-                ("shadowroom.label.purple", "#dcaee8"),
+                ("shadowroom.label.blue", "#8a8ef6"),
+                ("shadowroom.label.purple", "#d1a7d1"),
                 ("shadowroom.label.text", "#000000"),
                 // The rail stays dim even here: `border` (3:1 outlines) as the
                 // rail made reviewed vs unreviewed 1.98:1.
@@ -331,7 +333,7 @@ impl Theme {
                 ("ghost_element.selected", "#0a4a8529"),
                 ("success", "#1f5c36"),
                 ("error", "#8f1d22"),
-                ("warning", "#8a3a00"),
+                ("warning", "#924a02"),
                 ("info", "#0a4a85"),
                 ("scrollbar.thumb.background", "#3a445280"),
                 ("scrollbar.thumb.hover_background", "#3a4452c0"),
@@ -345,12 +347,12 @@ impl Theme {
                 ("shadowroom.control_border", "#3d4450"),
                 ("shadowroom.pick", "#1f5c36"),
                 ("shadowroom.reject", "#8f1d22"),
-                ("shadowroom.rating", "#5c4200"),
+                ("shadowroom.rating", "#3d2c00"),
                 ("shadowroom.label.red", "#9c2a22"),
                 ("shadowroom.label.yellow", "#5f4a00"),
                 ("shadowroom.label.green", "#1d5c4a"),
-                ("shadowroom.label.blue", "#4038a8"),
-                ("shadowroom.label.purple", "#6f2f88"),
+                ("shadowroom.label.blue", "#4d39e3"),
+                ("shadowroom.label.purple", "#6a126e"),
                 ("shadowroom.label.text", "#ffffff"),
                 ("shadowroom.ledger.rail", "#a0a6b0"),
                 ("shadowroom.ledger.reviewed", "#3a4452"),
@@ -959,6 +961,118 @@ pub(crate) fn normalize_jsonc(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cvd::Vision;
+
+    /// Colour-vision simulation (Machado, Oliveira & Fernandes 2009, severity
+    /// 1.0) and CIEDE2000, for palette tests.
+    mod cvd {
+        use super::Rgba;
+
+        #[derive(Clone, Copy, Debug)]
+        pub enum Vision {
+            Normal,
+            Protan,
+            Deutan,
+        }
+
+        fn lin(c: f64) -> f64 {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        fn unlin(v: f64) -> f64 {
+            let v = v.clamp(0., 1.);
+            if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1. / 2.4) - 0.055
+            }
+        }
+
+        fn simulate(c: Rgba, vision: Vision) -> [f64; 3] {
+            let rgb = [c.r, c.g, c.b].map(|v| f64::from(v) / 255.);
+            let m = match vision {
+                Vision::Normal => return rgb,
+                Vision::Protan => [
+                    [0.152_286, 1.052_583, -0.204_868],
+                    [0.114_503, 0.786_281, 0.099_216],
+                    [-0.003_882, -0.048_116, 1.051_998],
+                ],
+                Vision::Deutan => [
+                    [0.367_322, 0.860_646, -0.227_968],
+                    [0.280_085, 0.672_501, 0.047_413],
+                    [-0.011_820, 0.042_940, 0.968_881],
+                ],
+            };
+            let l = rgb.map(lin);
+            m.map(|row| unlin(row[0] * l[0] + row[1] * l[1] + row[2] * l[2]))
+        }
+
+        fn lab(rgb: [f64; 3]) -> [f64; 3] {
+            let [r, g, b] = rgb.map(lin);
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+            let f = |t: f64| {
+                if t > 216. / 24389. {
+                    t.cbrt()
+                } else {
+                    (24389. / 27. * t + 16.) / 116.
+                }
+            };
+            let (fx, fy, fz) = (f(x), f(y), f(z));
+            [116. * fy - 16., 500. * (fx - fy), 200. * (fy - fz)]
+        }
+
+        /// CIEDE2000 between two colours as seen with `vision`.
+        pub fn delta_e(a: Rgba, b: Rgba, vision: Vision) -> f64 {
+            let [l1, a1, b1] = lab(simulate(a, vision));
+            let [l2, a2, b2] = lab(simulate(b, vision));
+            let (c1, c2) = (a1.hypot(b1), a2.hypot(b2));
+            let cm = (c1 + c2) / 2.;
+            let g = 0.5 * (1. - (cm.powi(7) / (cm.powi(7) + 25f64.powi(7))).sqrt());
+            let (a1p, a2p) = ((1. + g) * a1, (1. + g) * a2);
+            let (c1p, c2p) = (a1p.hypot(b1), a2p.hypot(b2));
+            let h1p = b1.atan2(a1p).to_degrees().rem_euclid(360.);
+            let h2p = b2.atan2(a2p).to_degrees().rem_euclid(360.);
+            let (dlp, dcp) = (l2 - l1, c2p - c1p);
+            let mut dh = h2p - h1p;
+            if c1p * c2p == 0. {
+                dh = 0.;
+            } else if dh > 180. {
+                dh -= 360.;
+            } else if dh < -180. {
+                dh += 360.;
+            }
+            let dhp = 2. * (c1p * c2p).sqrt() * (dh / 2.).to_radians().sin();
+            let (lpm, cpm) = ((l1 + l2) / 2., (c1p + c2p) / 2.);
+            let hpm = if c1p * c2p == 0. {
+                h1p + h2p
+            } else if (h1p - h2p).abs() <= 180. {
+                (h1p + h2p) / 2.
+            } else if h1p + h2p < 360. {
+                (h1p + h2p + 360.) / 2.
+            } else {
+                (h1p + h2p - 360.) / 2.
+            };
+            let cos = |deg: f64| deg.to_radians().cos();
+            let t = 1. - 0.17 * cos(hpm - 30.) + 0.24 * cos(2. * hpm) + 0.32 * cos(3. * hpm + 6.)
+                - 0.20 * cos(4. * hpm - 63.);
+            let dtheta = 30. * (-((hpm - 275.) / 25.).powi(2)).exp();
+            let rc = 2. * (cpm.powi(7) / (cpm.powi(7) + 25f64.powi(7))).sqrt();
+            let sl = 1. + 0.015 * (lpm - 50.).powi(2) / (20. + (lpm - 50.).powi(2)).sqrt();
+            let (sc, sh) = (1. + 0.045 * cpm, 1. + 0.015 * cpm * t);
+            let rt = -(2. * dtheta).to_radians().sin() * rc;
+            ((dlp / sl).powi(2)
+                + (dcp / sc).powi(2)
+                + (dhp / sh).powi(2)
+                + rt * (dcp / sc) * (dhp / sh))
+                .sqrt()
+        }
+    }
 
     #[test]
     fn built_in_states_overlays_and_labels_hold_contrast() {
@@ -1068,6 +1182,38 @@ mod tests {
             assert!(
                 apart(hue("shadowroom.label.blue"), hue("shadowroom.focus_ring")) >= 25.,
                 "{name}: label blue vs accent"
+            );
+            // Errors never read as warnings: 25° apart and a different glyph
+            // (circle-x vs triangle) at every render site (R5-design-06).
+            assert!(
+                apart(hue("warning"), hue("error")) >= 25.,
+                "{name}: warning vs error"
+            );
+            // The same pairs hold apart by lightness too, so protan and deutan
+            // viewers still tell them apart: CIEDE2000 >= 12 after a Machado
+            // (2009) simulation, the bar SCRATCH contrast.py audits
+            // (R5-a11y-04). Blue and Purple, the closest label pair, keep
+            // >= 12 in normal vision and >= 10 in both simulations.
+            for (a, b, minimum) in [
+                ("warning", "shadowroom.rating", 12.),
+                ("shadowroom.label.blue", "text.accent", 12.),
+                ("shadowroom.label.blue", "shadowroom.label.purple", 10.),
+            ] {
+                for vision in [Vision::Protan, Vision::Deutan] {
+                    let delta = cvd::delta_e(c(a), c(b), vision);
+                    assert!(
+                        delta >= minimum,
+                        "{name}: {a} vs {b} {vision:?} dE2000 {delta:.1}"
+                    );
+                }
+            }
+            assert!(
+                cvd::delta_e(
+                    c("shadowroom.label.blue"),
+                    c("shadowroom.label.purple"),
+                    Vision::Normal
+                ) >= 12.,
+                "{name}: Blue vs Purple"
             );
             let canvas = c("shadowroom.canvas");
             assert!(

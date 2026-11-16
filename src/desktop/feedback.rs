@@ -383,7 +383,7 @@ impl Workspace {
         let glyph = match flash.tone {
             Tone::Info => None,
             Tone::Success => Some(("check", self.c("success", "#7fbf7f"))),
-            Tone::Warning => Some(("warning", self.c("warning", "#e0b341"))),
+            Tone::Warning => Some(("warning", self.warning())),
         };
         Some(
             self.fade_in(

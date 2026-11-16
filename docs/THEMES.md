@@ -110,9 +110,9 @@ roles, not hex values. The high-contrast variants' values are listed after this 
 | `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions; `border.variant` also outlines segmented controls and keycaps, whose state is shown by the chosen segment's bar |
 | `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and the empty label swatch: inputs with no other boundary, 3:1 against every surface |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
-| `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#765612` | decisions on chrome |
-| `success` / `error` / `warning` | `#7fbf7f` / `#d46a6a` / `#e8893a` | `#39734f` / `#a53e42` / `#9a4d10` | status; `warning` is orange, at least 25° (OKLCH) from rating amber |
-| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#a3a6f0` `#c497d0` | `#b3362e` `#7e6200` `#2a7560` `#4c49b8` `#8a3fa6` | inspector label swatches and Catalog label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9). Blue is periwinkle, at least 25° from the accent, so a blue strip never reads as the "current" underline |
+| `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#5e4508` | decisions on chrome |
+| `success` / `error` / `warning` | `#7fbf7f` / `#d46a6a` / `#ce7629` | `#39734f` / `#a53e42` / `#985f3b` | status; `warning` is orange, at least 25° (OKLCH) from rating amber and from `error`, and lighter or darker than rating so protan and deutan viewers still tell them apart. Failures draw a circled × in `error`; the triangle is for warnings and danger actions only |
+| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#b8c3ff` `#c79fc5` | `#b3362e` `#7e6200` `#2a7560` `#5d55f3` `#832692` | inspector and image-menu label swatches and Catalog label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9) and Purple's dot (Purple has no key; no chrome swatch carries a letter, which would read as a shortcut). Blue is periwinkle, at least 25° from the accent and well apart from it in lightness, so a blue strip never reads as the "current" underline; Purple leans magenta and sits at a different lightness from Blue |
 | `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#3a3a3a` / `#8a8a8a` | `#c4c9d1` / `#626c7c` | cull ledger: the unreviewed hairline and reviewed cells (3:1 apart; the rail 1.5:1 on the panel) |
 | `shadowroom.histogram.background` / `shadowroom.histogram.grid` | `#0f0f0f` / `#1c1c1c` | `#ffffff` / `#00000014` | histogram plot plate and quarter-tone guides; a light plate switches the curves to darker inks |
 
@@ -169,9 +169,9 @@ High-contrast palette values:
 | `text.accent`, `shadowroom.focus_ring` | `#8cc4ff` | `#0a4a85` |
 | `border` / `border.variant` / `shadowroom.control_border` | `#8a8a8a` / `#9a9a9a` / `#b0b0b0` | `#5c6470` / `#6e7682` / `#3d4450` |
 | `ghost_element.hover` / `ghost_element.selected` | `#ffffff14` / `#ffffff2e` | `#00000012` / `#0a4a8529` |
-| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ffa05a` | `#1f5c36` / `#8f1d22` / `#8a3a00` |
-| `shadowroom.pick` / `reject` / `rating` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#5c4200` |
-| `shadowroom.label.blue` | `#b4b6ff` | `#4038a8` |
+| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ea8e48` | `#1f5c36` / `#8f1d22` / `#924a02` |
+| `shadowroom.pick` / `reject` / `rating` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#3d2c00` |
+| `shadowroom.label.blue` / `shadowroom.label.purple` | `#8a8ef6` / `#d1a7d1` | `#4d39e3` / `#6a126e` |
 | `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#4a4a4a` / `#c4c4c4` | `#a0a6b0` / `#3a4452` |
 
 Imported Zed themes never define Shadowroom roles. `shadowroom.well` and

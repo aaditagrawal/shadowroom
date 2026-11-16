@@ -464,8 +464,8 @@ impl Workspace {
                 .px(px(ui::PANEL_INSET))
                 .bg(self.c("elevated_surface.background", "#1b1b1b"))
                 .border_b_1()
-                .border_color(self.c("warning", "#e0b341"))
-                .child(icon("warning", self.c("warning", "#e0b341")))
+                .border_color(self.warning())
+                .child(icon("warning", self.warning()))
                 .child(
                     div()
                         .flex_1()
