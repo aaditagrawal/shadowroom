@@ -396,6 +396,8 @@ impl PaletteCache {
 const PALETTE_PAGE: usize = 12;
 /// The palette's right-hand category column ("Appearance" fits), at 100% text.
 const PALETTE_CATEGORY_WIDTH: f32 = 80.;
+/// Inspector histogram plot height; its label rows are added at the Text size.
+const HISTOGRAM_PLOT: f32 = 94.;
 /// Loose command matches kept beside photo and folder results.
 const PALETTE_LOOSE: usize = 3;
 /// The rating filter menu at 100% text: label, count and digit key.
@@ -5858,7 +5860,7 @@ impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
             .font_family(self.font.clone())
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.fg)
             .bg(self.bg)
             .border_1()
@@ -6212,8 +6214,8 @@ impl Workspace {
         for cap in caps {
             row = row.child(
                 div()
-                    .min_w(px(18.))
-                    .h(px(18.))
+                    .min_w(px(ui::scaled(18.)))
+                    .h(px(ui::scaled(18.)))
                     .px(px(space::XS))
                     .flex()
                     .items_center()
@@ -6413,7 +6415,7 @@ impl Workspace {
             .h(px(ui::CONTROL_HEIGHT))
             .px(px(space::SM))
             // Explicit metrics keep the label vertically centred at every scale factor.
-            .text_size(ui::font(12.))
+            .text_size(ui::font(ui::text::BODY))
             .line_height(px(ui::scaled(16.)))
             .overflow_hidden()
             .cursor_pointer()
@@ -6463,18 +6465,23 @@ impl Workspace {
             ))
             .on_click(cx.listener(move |this, _, window, cx| this.execute(cmd.clone(), window, cx)))
     }
-    fn section(&self, label: &str) -> Div {
+    /// The one section-header style (R2-design-04): LABEL size, MEDIUM,
+    /// muted, sentence case. Callers add only spacing and rules.
+    fn section_header(&self, label: impl Into<SharedString>) -> Div {
         div()
+            .text_size(ui::font(ui::text::LABEL))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(self.muted())
+            .child(label.into())
+    }
+    fn section(&self, label: &str) -> Div {
+        self.section_header(label.to_owned())
             .h(px(ui::scaled(ui::SECTION_HEIGHT)))
             .mt(px(space::LG))
             .px(px(ui::PANEL_INSET))
             .flex()
             .items_center()
             .justify_between()
-            .text_size(ui::font(11.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
-            .child(label.to_owned())
     }
     /// Display name for a library scope: "Host / root" for remote roots,
     /// otherwise the folder's own name. Never shows internal scope ids.
@@ -6637,7 +6644,7 @@ impl Workspace {
                     .when(!narrow, |s| {
                         s.child(
                             div()
-                                .text_size(ui::font(13.))
+                                .text_size(ui::font(ui::text::TITLE))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Shadowroom"),
                         )
@@ -6819,7 +6826,7 @@ impl Workspace {
                 .when_some(count, |s, n| {
                     s.child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(copy::count(n)),
                     )
@@ -6900,7 +6907,7 @@ impl Workspace {
                 .when_some(rated.filter(|_| count > 0 || active), |s, rated| {
                     s.child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(format!("{} of {}", copy::count(rated), copy::count(count))),
                     )
@@ -7022,7 +7029,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(copy::count(count)),
                     )
@@ -7175,7 +7182,7 @@ impl Workspace {
                         div()
                             .flex_shrink_0()
                             .whitespace_nowrap()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(state),
                     )
@@ -9383,7 +9390,7 @@ impl Workspace {
                     false,
                     cx,
                 ))
-                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(11.)).text_color(self.muted()).child(
+                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_normal().line_clamp(1).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(
                     "Originals stay in their source folders. Ratings and flags are preserved.",
                 ))
                 .into_any_element();
@@ -9800,7 +9807,7 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT - 2.))
                     .px(px(space::SM))
-                    .text_size(ui::font(12.))
+                    .text_size(ui::font(ui::text::BODY))
                     .line_height(px(ui::scaled(16.)))
                     .border_b_2()
                     .border_color(transparent_black())
@@ -9861,7 +9868,7 @@ impl Workspace {
             .into_any_element()
     }
     fn inspector_section(&self, label: &str) -> Div {
-        div()
+        self.section_header(label.to_owned())
             .h(px(ui::scaled(ui::INSPECTOR_SECTION_HEIGHT)))
             .flex_shrink_0()
             .mt(px(space::LG))
@@ -9872,10 +9879,6 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(ui::font(11.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
-            .child(label.to_owned())
     }
     fn inspector_view(&self, cx: &gpui::Context<Self>) -> AnyElement {
         let mut body = div()
@@ -10095,7 +10098,7 @@ impl Workspace {
                     body = body.child(crate::histogram::histogram_with(
                         &preview.histogram,
                         (self.docks.inspector - 2. * ui::PANEL_INSET - 1.).max(1.),
-                        122.,
+                        HISTOGRAM_PLOT + crate::histogram::label_rows_height(ui::text_scale()),
                         crate::histogram::HistogramOptions {
                             scale: if self.histogram_log {
                                 crate::histogram::HistogramScale::Log
@@ -10115,11 +10118,17 @@ impl Workspace {
                             plot: self.histogram_plate().into(),
                             plot_border: self.border().into(),
                             plot_grid: self.c("shadowroom.histogram.grid", "#1c1c1c").into(),
+                            text_scale: ui::text_scale(),
                             ..Default::default()
                         },
                     ));
                 } else {
-                    body = body.child(div().h(px(122.)).bg(self.histogram_plate()));
+                    body = body.child(
+                        div()
+                            .h(px(HISTOGRAM_PLOT
+                                + crate::histogram::label_rows_height(ui::text_scale())))
+                            .bg(self.histogram_plate()),
+                    );
                 }
             }
             if !self.inspector_info {
@@ -10194,7 +10203,7 @@ impl Workspace {
                     if let Some(note) = &preview.rendering_note {
                         body = body.child(self.inspector_section("Rendering")).child(
                             div()
-                                .text_size(ui::font(11.))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(self.muted())
                                 .child(note.clone()),
                         );
@@ -11253,7 +11262,7 @@ impl Workspace {
                                 div()
                                     .flex_1()
                                     .min_w(px(0.))
-                                    .text_size(ui::font(11.))
+                                    .text_size(ui::font(ui::text::LABEL))
                                     .text_color(self.muted())
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -11273,7 +11282,7 @@ impl Workspace {
                             .flex_shrink_0()
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             // Blue marks only where you are; "Recent" is a
                             // plain tag (and full text on the active row).
                             .text_color(if active { self.text() } else { self.muted() })
@@ -11317,7 +11326,7 @@ impl Workspace {
                     .child(title)
                     .child(
                         div()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(hint),
                     ),
@@ -11350,7 +11359,7 @@ impl Workspace {
                             .gap(px(space::SM))
                             .border_b_1()
                             .border_color(self.border())
-                            .text_size(ui::font(13.))
+                            .text_size(ui::font(ui::text::TITLE))
                             .child(icon("search", self.icon_muted()))
                             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(
                                 self.input_field(
@@ -11390,7 +11399,7 @@ impl Workspace {
                     .child(
                         div()
                             .text_color(self.muted())
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .child(description.to_owned()),
                     ),
             )
@@ -11453,7 +11462,7 @@ impl Workspace {
                     .items_center()
                     .h(px(ui::CONTROL_HEIGHT))
                     .px(px(space::SM))
-                    .text_size(ui::font(12.))
+                    .text_size(ui::font(ui::text::BODY))
                     .line_height(px(ui::scaled(16.)))
                     .text_color(if active { self.text() } else { self.muted() })
                     .when(active, |s| s.bg(self.selected_bg()))
@@ -11814,15 +11823,11 @@ impl Workspace {
                 let light = theme.appearance == "light";
                 if last_appearance != Some(light) {
                     theme_list = theme_list.child(
-                        div()
+                        self.section_header(if light { "Light" } else { "Dark" })
                             .flex_shrink_0()
                             .px(px(space::MD))
                             .pt(px(space::SM))
-                            .pb(px(space::XS))
-                            .text_size(ui::font(ui::text::LABEL))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(self.muted())
-                            .child(if light { "LIGHT" } else { "DARK" }),
+                            .pb(px(space::XS)),
                     );
                     last_appearance = Some(light);
                     child += 1;
@@ -11963,8 +11968,8 @@ impl Workspace {
             .when(section == PreferencesSection::Appearance, |body| body
             .child(self.preference_row("Theme source", "Where the active palette comes from", theme_mode()))
             .child(div().pt(px(space::MD)).flex().items_center().gap(px(space::SM)).child(div().text_color(self.muted()).child("Selected theme")).child(s.theme.clone()))
-            .child(div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(source_description))
-            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(11.)).text_color(self.muted()).child(note)))
+            .child(div().pt(px(space::XS)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(source_description))
+            .children(self.contrast_note(&s.theme).map(|note| div().pt(px(space::XS)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(note)))
             .child(
                 div()
                     .pt(px(space::MD))
@@ -11983,7 +11988,7 @@ impl Workspace {
                     )),
             )
             .child(theme_list())
-            .child(div().pt(px(space::SM)).text_size(ui::font(11.)).text_color(self.muted()).child(match mode {
+            .child(div().pt(px(space::SM)).text_size(ui::font(ui::text::LABEL)).text_color(self.muted()).child(match mode {
                 "system" => "Choose a light or dark theme to update its system appearance slot.",
                 "zed" => "Installed Zed themes appear automatically. Choosing a theme switches to Manual.",
                 _ => "Installed Zed themes appear automatically. Theme files reload when changed.",
@@ -12000,7 +12005,7 @@ impl Workspace {
                 div()
                     .pt(px(space::MD))
                     .text_color(self.muted())
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .child(format!(
                         "Memory {:.1} of {} MB · textures {:.1} MB · disk {:.1} MB · {} reads · {} cache hits · {} queued",
                         stats.memory_bytes as f64 / 1048576.,
@@ -12032,7 +12037,7 @@ impl Workspace {
                 div()
                     .pt(px(space::LG))
                     .pb(px(space::SM))
-                    .text_size(ui::font(13.))
+                    .text_size(ui::font(ui::text::TITLE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(self.text())
                     .child("Creator Micro"),
@@ -12040,7 +12045,7 @@ impl Workspace {
             .child(
                 div()
                     .text_color(self.muted())
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .child("Arrows navigate · F13–F15 flag · F16/F17 rating · F18–F20 views · F21 zoom · F22 histogram · F23/F24 bursts. Profiles: docs/CONTROLS.md"),
             ));
         let changed: HashSet<PreferencesSection> = self
@@ -12125,7 +12130,7 @@ impl Workspace {
             div().child("Applying changes…").into_any_element()
         } else if prompt {
             div()
-                .text_size(ui::font(12.))
+                .text_size(ui::font(ui::text::BODY))
                 .text_color(self.text())
                 .child(format!(
                     "Discard {changes} {}?",
@@ -12267,7 +12272,7 @@ impl Workspace {
                     )))
                     .child(
                         self.modal_footer()
-                            .text_size(ui::font(11.))
+                            .text_size(ui::font(ui::text::LABEL))
                             .text_color(self.muted())
                             .child(div().flex_1().min_w(px(0.)).child(status))
                             .child(buttons),
@@ -12352,7 +12357,7 @@ impl Workspace {
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(
                 self.compact_toggle(
@@ -12919,7 +12924,7 @@ impl Workspace {
             .flex_col()
             .overflow_hidden()
             .font_family(self.settings.interface_font.clone())
-            .text_size(ui::font(12.))
+            .text_size(ui::font(ui::text::BODY))
             .line_height(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
             .text_color(self.text())
             .bg(self.bg())

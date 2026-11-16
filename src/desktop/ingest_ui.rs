@@ -2363,7 +2363,7 @@ impl Workspace {
         }
     }
     fn ingest_heading(&self, label: &str, first: bool) -> Div {
-        div()
+        self.section_header(label.to_owned())
             .flex_shrink_0()
             .px(px(space::SM))
             .when(!first, |s| {
@@ -2372,14 +2372,10 @@ impl Workspace {
                     .border_t_1()
                     .border_color(self.border())
             })
-            .text_size(ui::font(11.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(self.muted())
-            .child(label.to_uppercase())
     }
     fn ingest_label(&self, label: &str) -> Div {
         div()
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .child(label.to_owned())
     }
@@ -2458,7 +2454,7 @@ impl Workspace {
             .id(id)
             .flex_shrink_0()
             .cursor_pointer()
-            .text_size(ui::font(11.))
+            .text_size(ui::font(ui::text::LABEL))
             .text_color(self.muted())
             .hover(move |s| s.text_color(hover))
             .child(label.to_owned())
@@ -2662,7 +2658,7 @@ impl Workspace {
                 .items_center()
                 .border_1()
                 .border_color(self.border())
-                .text_size(ui::font(11.))
+                .text_size(ui::font(ui::text::LABEL))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .tooltip(self.tip(meaning, ""))
@@ -2953,7 +2949,7 @@ impl Workspace {
                 .child(
                     div()
                         .min_w(px(0.))
-                        .text_size(ui::font(11.))
+                        .text_size(ui::font(ui::text::LABEL))
                         .whitespace_normal()
                         .child(example.clone()),
                 )
@@ -3217,7 +3213,7 @@ impl Workspace {
                     .text_center()
                     .child(
                         div()
-                            .text_size(ui::font(15.))
+                            .text_size(ui::font(ui::text::DISPLAY))
                             .font_weight(FontWeight::MEDIUM)
                             .child(if loaded {
                                 "No imports yet"
@@ -3426,7 +3422,7 @@ impl Workspace {
                                 div()
                                     .pl(px(space::LG))
                                     .min_w(px(0.))
-                                    .text_size(ui::font(11.))
+                                    .text_size(ui::font(ui::text::LABEL))
                                     .text_color(this.muted())
                                     .flex()
                                     .items_center()

@@ -298,7 +298,8 @@ impl Workspace {
             }])
     }
 
-    /// 45 px title bar: 13 px medium title, optional close button on the right.
+    /// 45 px title bar: a MEDIUM title in the TITLE role (13 px at 100%),
+    /// optional close button on the right.
     pub(super) fn modal_header(
         &self,
         title: impl IntoElement,
@@ -323,7 +324,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(space::SM))
-                    .text_size(ui::font(13.))
+                    .text_size(ui::font(ui::text::TITLE))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
@@ -697,7 +698,7 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap(px(space::XS))
-                                .text_size(ui::font(11.))
+                                .text_size(ui::font(ui::text::LABEL))
                                 .text_color(error_color)
                                 .child(icon("warning", error_color).size(px(12.)))
                                 .child(message.clone()),

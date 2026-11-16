@@ -85,6 +85,9 @@ pub struct HistogramOptions {
     pub plot: Rgba,
     pub plot_border: Rgba,
     pub plot_grid: Rgba,
+    /// The window's Text size factor: tick and readout text and their rows
+    /// grow with it (see [`label_rows_height`]).
+    pub text_scale: f32,
 }
 
 impl Default for HistogramOptions {
@@ -101,6 +104,7 @@ impl Default for HistogramOptions {
             plot: rgb(PLOT_BG),
             plot_border: rgb(PLOT_BORDER),
             plot_grid: rgb(GRID),
+            text_scale: 1.,
         }
     }
 }
@@ -124,6 +128,12 @@ const LABEL_WARNING: u32 = 0xe0b341;
 const EMPTY_LABEL: u32 = 0x9a9a9a;
 const AXIS_ROW: f32 = 14.;
 const NOTE_ROW: f32 = 14.;
+const LABEL_SIZE: f32 = 11.;
+
+/// Height of the tick and readout rows below the plot at `text_scale`.
+pub fn label_rows_height(text_scale: f32) -> f32 {
+    ((AXIS_ROW + NOTE_ROW) * text_scale).round()
+}
 /// Share of samples in an end bin before that channel counts as clipped.
 const CLIP_THRESHOLD: f64 = 0.001;
 /// Share of the frame above which the clipping readout turns to the warning colour.
@@ -165,8 +175,12 @@ pub fn histogram_with(
     let width = width.max(32.);
     let height = height.max(16.);
     let labels = options.labels && height >= 72.;
+    let text_scale = options.text_scale.clamp(0.5, 3.);
+    let label_size = px(LABEL_SIZE * text_scale);
+    let axis_row = (AXIS_ROW * text_scale).round();
+    let note_row = label_rows_height(text_scale) - axis_row;
     let plot_height = if labels {
-        height - AXIS_ROW - NOTE_ROW
+        height - axis_row - note_row
     } else {
         height
     };
@@ -203,7 +217,7 @@ pub fn histogram_with(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(11.))
+                .text_size(label_size)
                 .text_color(empty_label)
                 .child("No histogram data"),
         );
@@ -227,8 +241,8 @@ pub fn histogram_with(
         let mut axis = div()
             .relative()
             .w(px(width))
-            .h(px(AXIS_ROW))
-            .text_size(px(11.))
+            .h(px(axis_row))
+            .text_size(label_size)
             .text_color(options.label);
         for (value, text) in ticks {
             let x = value as f32 / 255. * width;
@@ -243,11 +257,11 @@ pub fn histogram_with(
             root.child(axis).child(
                 div()
                     .w(px(width))
-                    .h(px(NOTE_ROW))
+                    .h(px(note_row))
                     .flex()
                     .justify_between()
                     .gap(px(6.))
-                    .text_size(px(11.))
+                    .text_size(label_size)
                     .text_color(options.label)
                     .child(
                         div()

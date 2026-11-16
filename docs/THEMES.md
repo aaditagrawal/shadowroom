@@ -74,7 +74,8 @@ settings applies to the next menu without reopening Preferences.
 box: **90%**, **100%**, **110%**, **125%**, **150%**, or **System** (the
 default), which follows the desktop's text-scaling factor (GNOME **Large Text** /
 `text-scaling-factor`, read through the portal or `gsettings` and followed live;
-100% on macOS). At 100% no interface text is smaller than 11 px. Controls keep
+100% on macOS). No interface text is smaller than 11 px, at 90% either; histogram
+ticks and readouts and keycaps grow with the text. Controls keep
 their 24/28 px boxes, which hold a 150% line, and spacing stays on the 4 px grid,
 so layouts keep their shape while text grows; the image menu widens with the text.
 `SHADOWROOM_TEXT_SCALE=1.25` overrides the desktop factor for measurements.

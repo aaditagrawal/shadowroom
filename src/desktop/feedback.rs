@@ -678,7 +678,7 @@ impl Workspace {
             )
             .children(toast.detail.map(|detail| {
                 div()
-                    .text_size(ui::font(11.))
+                    .text_size(ui::font(ui::text::LABEL))
                     .text_color(self.muted())
                     .child(detail)
             }))
@@ -686,7 +686,7 @@ impl Workspace {
                 s.child(
                     div()
                         .mt(px(space::XS))
-                        .text_size(ui::font(11.))
+                        .text_size(ui::font(ui::text::LABEL))
                         .text_color(self.muted())
                         .child(notice.text.clone()),
                 )
