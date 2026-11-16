@@ -3463,7 +3463,7 @@ impl Workspace {
         };
         self.reconcile_rating_filter();
         if self.quit.closing() && !matches!(cmd, Cmd::Quit | Cmd::DismissError) {
-            self.error = Some("The app is finishing writes and exports before closing.".into());
+            self.error = Some("Shadowroom is finishing writes, exports or an import before closing · Esc keeps it open".into());
             cx.notify();
             return;
         }

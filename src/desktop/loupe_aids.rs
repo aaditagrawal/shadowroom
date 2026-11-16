@@ -319,6 +319,8 @@ impl Workspace {
             return false;
         }
         self.quit = QuitState::Open;
+        // The toast that said a key was refused while closing is moot now.
+        self.error = None;
         let carrying_on = if self.import_ui.progress.phase.is_active() {
             " · the import continues"
         } else if self.export_jobs.iter().any(|job| job.state.is_active()) {
