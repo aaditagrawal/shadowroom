@@ -202,22 +202,32 @@ impl ClipCounts {
     }
 }
 
-/// Stripe period, in image pixels, for an image whose long edge is `long`:
-/// about 4 display pixels when a 2560 px preview is fitted to a window.
-fn stripe_period(long: u32) -> u32 {
-    (long / 240).max(6)
+/// Stripe period on screen: thin stripes (a quarter) stay 2 display px and
+/// wide ones (a half) 4 px, so blown and colour-clipped highlights read apart
+/// at Fit, not only at 100% (R5-review-06).
+const STRIPE_DISPLAY: f32 = 8.;
+
+/// Stripe period, in image pixels, for a copy shown at `display_scale`
+/// display pixels per image pixel (Fit is usually well below 1).
+pub fn stripe_period(display_scale: f32) -> u32 {
+    let scale = if display_scale.is_finite() && display_scale > 0. {
+        display_scale
+    } else {
+        1.
+    };
+    ((STRIPE_DISPLAY / scale).round() as u32).clamp(4, 512)
 }
 
 /// Paint clipped pixels in a BGRA display copy of RGBA pixels, by [`classify`]:
 /// crushed shadows solid blue; highlights as 45° magenta stripes, wide where
 /// every channel is blown and thin where only one or two are, so the two read
-/// apart and neither matches peaking or reject red. Transparent pixels are
-/// left alone.
-pub fn clipping(rgba: &[u8], bgra: &mut [u8], width: u32) {
+/// apart and neither matches peaking or reject red. `period` comes from
+/// [`stripe_period`] for the scale the copy is shown at. Transparent pixels
+/// are left alone.
+pub fn clipping(rgba: &[u8], bgra: &mut [u8], width: u32, period: u32) {
     assert_eq!(bgra.len(), rgba.len());
     let width = width.max(1) as usize;
-    let height = rgba.len() / 4 / width;
-    let period = stripe_period(width.max(height) as u32) as usize;
+    let period = period.max(4) as usize;
     let thin = (period / 4).max(1);
     let wide = period / 2;
     let [hr, hg, hb] = HIGHLIGHT_INK;
@@ -419,7 +429,7 @@ mod tests {
             pixel.swap(0, 2);
         }
         let before = display.clone();
-        clipping(&source, &mut display, w);
+        clipping(&source, &mut display, w, stripe_period(1.));
         let counts = ClipCounts::of(&source);
         assert_eq!(counts.samples, u64::from(w * h));
         // Every pixel the overlay may paint is one the readout counts, by row.
@@ -457,10 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn stripes_keep_their_display_width_at_any_scale() {
+        // Fit at a quarter, 100% and an 18% portrait Fit: thin >= 2 and wide
+        // >= 4 display px, so the two highlight states stay apart.
+        for scale in [0.25, 1., 0.18, 2.] {
+            let period = stripe_period(scale) as f32;
+            assert!((period / 4.).floor() * scale >= 1.5, "{scale}");
+            assert!((period / 2.) * scale >= 3.5, "{scale}");
+        }
+        assert_eq!(stripe_period(f32::NAN), stripe_period(1.));
+    }
+
+    #[test]
     fn transparent_pixels_are_neither_painted_nor_counted() {
         let source = [255, 255, 255, 0, 0, 0, 0, 100];
         let mut display = source;
-        clipping(&source, &mut display, 2);
+        clipping(&source, &mut display, 2, stripe_period(1.));
         assert_eq!(display, source);
         assert_eq!(ClipCounts::of(&source), ClipCounts::default());
     }

@@ -86,10 +86,12 @@ visual aid, not an automatic sharpness verdict, and never changes the source or
 histogram. The clipping overlay (`J`, or the clipping button by the inspector's
 histogram) marks the displayed preview with one rule: crushed shadows (every
 channel at 2 or below) solid blue, and highlights in magenta stripes, wide where
-every channel is blown and thin where only one or two channels reach 254. A
+every channel is blown and thin where only one or two channels reach 254, sized
+for the screen (4 and 2 display pixels at Fit as at 100%). A
 saturated colour with one channel at 0 (grass, a fuchsia dress) is not a shadow.
 The histogram footer names the same ends in words with the overlay's colours
-(**Shadows 0.8% · Highlights 1.0%**), measured on the preview the overlay paints,
+(**Shadows 0.8% · Highlights 1.0%**, each with an outlined swatch of its ink),
+measured on the preview the overlay paints,
 so the figures do not change while sharper previews load (**Measuring…** until
 then). They turn to the warning colour above 0.5% of the frame, or above 2% when
 only one or two channels clip. Pressing `J` or `F` says **Preparing clipping…**

@@ -125,6 +125,9 @@ impl Workspace {
 
     /// Paints the overlays `effect` asks for into a BGRA display copy of
     /// `rgba`. Runs on the background executor.
+    /// `stripe` is the clipping stripe period for the scale the copy is
+    /// shown at ([`shadowroom::peaking::stripe_period`]).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn paint_effects(
         effect: u8,
         style: PeakingStyle,
@@ -132,13 +135,14 @@ impl Workspace {
         bgra: &mut [u8],
         width: u32,
         height: u32,
+        stripe: u32,
     ) {
         if effect & PEAKING_BIT != 0 {
             shadowroom::peaking::highlight_with(rgba, bgra, width, height, style);
         }
         // Clipping paints last: an exposure warning outranks an edge.
         if effect & CLIPPING_BIT != 0 {
-            shadowroom::peaking::clipping(rgba, bgra, width);
+            shadowroom::peaking::clipping(rgba, bgra, width, stripe);
         }
     }
 

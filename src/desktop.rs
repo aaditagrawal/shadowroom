@@ -8011,6 +8011,24 @@ impl Workspace {
             }
             return fallback;
         };
+        // Clipping stripes are sized for how this copy is shown: fitted to
+        // the photo area (a pane of it in Compare), or a zoomed full preview
+        // at the zoom factor of the original (R5-review-06).
+        let stripe = {
+            let (area_w, area_h) = self.center_size;
+            let area_w = if self.mode == ViewMode::Compare {
+                area_w / 2.
+            } else {
+                area_w
+            };
+            let fit = (area_w / width.max(1) as f32).min(area_h / height.max(1) as f32);
+            let shown = if kind == PreviewKind::Full && self.zoom {
+                self.zoom_factor * preview.source_width.max(width) as f32 / width.max(1) as f32
+            } else {
+                fit.min(1.)
+            };
+            shadowroom::peaking::stripe_period(shown)
+        };
         self.texture_inflight.insert(key);
         let task = cx.background_executor().spawn(async move {
             let mut bgra = if shrink.is_some() {
@@ -8024,7 +8042,15 @@ impl Workspace {
             for pixel in bgra.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
-            Self::paint_effects(effect, style, &preview.rgba, &mut bgra, width, height);
+            Self::paint_effects(
+                effect,
+                style,
+                &preview.rgba,
+                &mut bgra,
+                width,
+                height,
+                stripe,
+            );
             let buffer = image::RgbaImage::from_raw(width, height, bgra)
                 .expect("validated preview dimensions");
             (
