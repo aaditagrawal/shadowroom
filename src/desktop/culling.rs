@@ -7,6 +7,8 @@ use super::*;
 const NAVIGATOR_EDGE: f32 = 120.;
 /// A press that moves less than this is a click, not a pan.
 const CLICK_SLOP: f32 = 4.;
+/// Widest line of empty-state copy at 100% text (~70 characters).
+const EMPTY_MEASURE: f32 = 560.;
 
 /// One removable constraint of the current view, for breadcrumb chips.
 pub(super) struct Constraint {
@@ -700,7 +702,8 @@ impl Workspace {
         let (title, body): (String, String) = if library_empty {
             (
                 "Insert a card or open a folder".into(),
-                "Import from Card copies and verifies into your library · Open Folder culls where the files are, nothing is copied. Originals are never modified.".into(),
+                // One line per verb, at a readable measure (R4-catalog-03).
+                "Import from Card copies and verifies photos into your library.\nOpen Folder culls them where they are; nothing is copied or modified.".into(),
             )
         } else if self.duplicates_only {
             let (title, body, _) = copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
@@ -710,9 +713,11 @@ impl Workspace {
             // holds photos trashed in-app earlier, so say where the rest went.
             (
                 "Nothing in Shadowroom's Trash".into(),
-                "Deleted photos go to the system Trash · restore them from your file manager. \
-                 For in-app restore with ratings, choose the in-app Trash in Preferences."
-                    .into(),
+                format!(
+                    "Deleted photos go to the system Trash · restore them from your file manager. \
+                     For in-app restore with ratings, choose the in-app Trash in {}.",
+                    settings_noun()
+                ),
             )
         } else if self.filter == Filter::Trash {
             (
@@ -752,13 +757,7 @@ impl Workspace {
                 "Change or clear the filters to see more photos.".into(),
             )
         };
-        let hint = |key: &str, what: &str| {
-            div()
-                .flex()
-                .gap(px(space::SM))
-                .child(div().text_color(self.text()).child(key.to_owned()))
-                .child(what.to_owned())
-        };
+        let mut drives = None;
         let mut actions = div()
             .id("empty-actions")
             .pt(px(space::SM))
@@ -771,7 +770,7 @@ impl Workspace {
                 .child(
                     self.action_button(
                         "empty-import",
-                        "Import from Card…",
+                        copy::IMPORT_FROM_CARD,
                         Cmd::Import,
                         ButtonKind::Primary,
                         false,
@@ -782,7 +781,7 @@ impl Workspace {
                 .child(
                     self.action_button(
                         "empty-open",
-                        "Open Folder…",
+                        copy::OPEN_FOLDER,
                         Cmd::OpenFolder,
                         ButtonKind::Secondary,
                         false,
@@ -790,20 +789,46 @@ impl Workspace {
                     )
                     .tooltip(self.tip("Cull where the files are; nothing is copied", "⌘O")),
                 );
-            for (n, drive) in self.drives.iter().enumerate() {
-                let path = drive.path.clone();
-                actions = actions.child(
-                    self.dialog_button(
-                        ("empty-drive", n),
-                        &format!("Import from {}", drive.name),
-                        ButtonKind::Secondary,
-                        false,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scan_for_import(path.clone());
-                        cx.notify();
-                    })),
-                );
+            // Two decisions, two buttons (R4-catalog-03). Other drives are a
+            // quiet list below; the card Import from Card opens is not repeated.
+            let card = self
+                .drives
+                .iter()
+                .position(|drive| drive.removable && !self.import_ui.active());
+            let others: Vec<_> = self
+                .drives
+                .iter()
+                .enumerate()
+                .filter(|(n, _)| Some(*n) != card)
+                .collect();
+            if !others.is_empty() {
+                let mut list = div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .justify_center()
+                    .items_center()
+                    .gap_x(px(space::SM))
+                    .text_size(ui::font(ui::text::LABEL))
+                    .text_color(self.muted())
+                    .child("or import from");
+                for (n, drive) in others {
+                    let path = drive.path.clone();
+                    list = list.child(
+                        div()
+                            .id(("empty-drive", n))
+                            .cursor_pointer()
+                            .text_color(self.text())
+                            .hover(|s| s.underline())
+                            .child(drive.name.clone())
+                            .tooltip(self.tip(&format!("Copy and verify {}", drive.name), ""))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.scan_for_import(path.clone());
+                                cx.notify();
+                            })),
+                    );
+                }
+                drives = Some(list);
             }
         } else if self.duplicates_only {
             let (_, _, button) = copy::duplicates_empty(self.duplicate_scan.as_ref(), &scope);
@@ -887,23 +912,29 @@ impl Workspace {
                     .font_weight(FontWeight::MEDIUM)
                     .child(title),
             )
-            .child(div().text_color(self.muted()).child(body))
+            .child(
+                div()
+                    .max_w(px(ui::scaled(EMPTY_MEASURE)))
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::XS))
+                    .text_color(self.muted())
+                    .children(body.lines().map(str::to_owned)),
+            )
             .child(actions)
+            .children(drives)
             // Key hints only where they can do something: an empty library.
             .when(library_empty, |s| {
                 s.child(
-                    div()
-                        .pt(px(space::LG))
-                        .flex()
-                        .flex_wrap()
-                        .justify_center()
-                        .gap(px(space::LG))
-                        .text_size(ui::font(ui::text::LABEL))
-                        .text_color(self.muted())
-                        .child(hint(&shortcut("⌘⇧I"), "import from card"))
-                        .child(hint(&shortcut("⌘O"), "open folder"))
-                        .child(hint("F1", "guide"))
-                        .child(hint(&shortcut("⌘K"), "commands")),
+                    div().pt(px(space::LG)).child(
+                        self.key_hints(&[
+                            ("⌘⇧I", "Import"),
+                            ("⌘O", "Open"),
+                            ("F1", "Guide"),
+                            ("⌘K", "Commands"),
+                        ])
+                        .justify_center(),
+                    ),
                 )
             })
             .into_any_element()
