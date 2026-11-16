@@ -28,6 +28,9 @@ pub(super) const TRACK_TOP: f32 = 6.;
 /// The Catalog's band under the decision bar, hairline included.
 pub(super) const ROW_HEIGHT: f32 = ui::HAIRLINE + BAND;
 
+/// (decision epoch, frames, cells) a cached ledger was built for.
+pub(super) type CacheKey = (u64, usize, usize);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Mark {
     Unreviewed = 0,

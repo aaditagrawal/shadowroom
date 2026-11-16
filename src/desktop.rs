@@ -1201,7 +1201,7 @@ pub struct Workspace {
     decision_epoch: u64,
     selection_summary_cache: RefCell<Option<((usize, usize, u64), SelectionSummary)>>,
     /// Cull ledger cells keyed by (decision epoch, frames, cells).
-    ledger_cache: RefCell<Option<((u64, usize, usize), Rc<ledger::Ledger>)>>,
+    ledger_cache: RefCell<Option<(ledger::CacheKey, Rc<ledger::Ledger>)>>,
     /// Painted ledger track (left edge, geometry) for pointer hit-testing.
     ledger_track: Rc<Cell<(f32, ledger::Track)>>,
     /// The guide opened by itself at launch; closing it stops that.
