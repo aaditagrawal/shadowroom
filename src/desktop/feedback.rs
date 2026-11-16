@@ -551,7 +551,7 @@ impl Workspace {
                     "compare-show-all",
                     "Show all photos",
                     "library",
-                    Cmd::RatedAtLeast(0),
+                    Cmd::ClearFilters,
                     false,
                     cx,
                 ),

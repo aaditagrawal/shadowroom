@@ -3957,15 +3957,15 @@ impl Workspace {
                 self.rebuild(id);
             }
             Cmd::RatedAtLeast(r) => {
+                // Like the toolbar's rating menu: narrows what is in view
+                // (folder, collection, label) and toggles off when active.
                 let id = self.selected_id();
-                self.scope = None;
-                self.duplicates_only = false;
-                self.label_filter = None;
-                self.bursts_only = false;
-                self.filter = Filter::All;
-                self.min_rating = r;
-                self.settings.filter = "all".into();
-                self.settings.min_rating = r;
+                if self.filter == Filter::Trash {
+                    self.filter = Filter::All;
+                    self.settings.filter = "all".into();
+                }
+                self.min_rating = if self.min_rating == r { 0 } else { r };
+                self.settings.min_rating = self.min_rating;
                 self.save_settings();
                 self.rebuild(id);
             }
@@ -6533,12 +6533,7 @@ impl Workspace {
                 "star",
                 "3 stars and up".into(),
                 Some(rated),
-                self.filter == Filter::All
-                    && self.min_rating == 3
-                    && self.scope.is_none()
-                    && self.label_filter.is_none()
-                    && !self.bursts_only
-                    && !self.duplicates_only,
+                self.min_rating == 3 && self.filter != Filter::Trash,
             )
             .on_click(
                 cx.listener(|this, _, window, cx| this.execute(Cmd::RatedAtLeast(3), window, cx)),
