@@ -12826,6 +12826,8 @@ impl Workspace {
             .items_center()
             .gap(px(space::SM))
             .p(px(ui::STATUS_INSET))
+            // Text leads the bar now that no toggle does: the panel inset.
+            .pl(px(space::SM))
             .border_t_1()
             .border_color(self.border())
             .bg(self.c("status_bar.background", "#141414"))
