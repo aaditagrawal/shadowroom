@@ -4428,8 +4428,10 @@ impl Workspace {
         cx.notify();
     }
 
-    fn palette_items(&self) -> Vec<PaletteItem> {
-        let mut items = vec![
+    /// The fixed commands; `palette_items` adds the rating, grouping, label,
+    /// font, theme and host rows.
+    fn command_items() -> Vec<PaletteItem> {
+        vec![
             item(
                 "Show Import Panel",
                 "File",
@@ -4480,14 +4482,14 @@ impl Workspace {
                 Cmd::Ingest("plan".into()),
             ),
             item(
-                "Open Folder…",
+                copy::OPEN_FOLDER,
                 "File · cull where the files are; nothing is copied",
                 "⌘O",
                 "folder-opened",
                 Cmd::OpenFolder,
             ),
             item(
-                "Import from Card…",
+                copy::IMPORT_FROM_CARD,
                 "File · copy and verify into your library",
                 "⌘⇧I",
                 "import",
@@ -4536,21 +4538,21 @@ impl Workspace {
                 Cmd::Flag(Flag::None),
             ),
             item(
-                "Reset Rating and Flag",
+                copy::RESET_DECISION,
                 "Review · clear stars and pick/reject without advancing; keep color label",
                 "R",
                 "reset",
                 Cmd::ResetDecision,
             ),
             item(
-                "Move to Trash",
+                copy::MOVE_TO_TRASH,
                 "Review · confirm configured Trash destination",
                 "Delete",
                 "trash",
                 Cmd::Trash(true),
             ),
             item(
-                "Delete Permanently…",
+                copy::DELETE_PERMANENTLY,
                 "File · confirm photo/file counts and original locations",
                 "Shift Delete",
                 "trash",
@@ -4677,7 +4679,10 @@ impl Workspace {
             ),
             item(
                 "Focus Peaking",
-                "View · mark sharp edges; color in Preferences → Culling",
+                &format!(
+                    "View · mark sharp edges; color in {} → Culling",
+                    settings_noun()
+                ),
                 "F",
                 "peaking",
                 Cmd::FocusPeaking,
@@ -4697,7 +4702,7 @@ impl Workspace {
                 Cmd::SearchPhotos,
             ),
             item(
-                "Show Full Folder",
+                copy::SHOW_FULL_FOLDER,
                 "Review · leave selected subset",
                 "",
                 "folder",
@@ -4905,7 +4910,10 @@ impl Workspace {
                 "close",
                 Cmd::Quit,
             ),
-        ];
+        ]
+    }
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let mut items = Self::command_items();
         for rating in 0..=5 {
             items.push(item(
                 &if rating == 0 {
@@ -6726,7 +6734,7 @@ impl Workspace {
                     .child(
                         self.button(
                             "catalog-add-photos",
-                            "Import from Card…",
+                            copy::IMPORT_FROM_CARD,
                             "import",
                             Cmd::Import,
                             false,
@@ -6928,7 +6936,7 @@ impl Workspace {
                 row(
                     "sidebar-open-empty".into(),
                     "folder-opened",
-                    "Open Folder…".into(),
+                    copy::OPEN_FOLDER.into(),
                     None,
                     false,
                 )
@@ -7140,7 +7148,11 @@ impl Workspace {
             if let Some(ids) = &self.review_subset {
                 crumb = crumb.child(self.toggle_button(
                     "clear-review-subset",
-                    &format!("{} selected · Show full folder", copy::count(ids.len())),
+                    &format!(
+                        "{} selected · {}",
+                        copy::count(ids.len()),
+                        copy::SHOW_FULL_FOLDER
+                    ),
                     "",
                     Cmd::ClearReviewSubset,
                     true,
@@ -9460,7 +9472,10 @@ impl Workspace {
                     cx,
                 )
                 .tooltip(self.tip(
-                    "Reset rating and pick/reject · keep color label · stay on this photo",
+                    &format!(
+                        "{} · keep color label · stay on this photo",
+                        copy::RESET_DECISION
+                    ),
                     "R",
                 )),
             )
@@ -9618,7 +9633,7 @@ impl Workspace {
             .child(self.control_divider())
             .child(
                 self.button("trash-selection", "", "trash", Cmd::Trash(true), false, cx)
-                    .tooltip(self.tip("Move to Trash…", "Delete")),
+                    .tooltip(self.tip(copy::MOVE_TO_TRASH, "Delete")),
             )
             .into_any_element()
     }

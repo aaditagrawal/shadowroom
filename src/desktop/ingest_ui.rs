@@ -3232,7 +3232,7 @@ impl Workspace {
                         .child(
                             self.button(
                                 "ingest-history-import",
-                                "Import from Card…",
+                                copy::IMPORT_FROM_CARD,
                                 "import",
                                 Cmd::Import,
                                 false,

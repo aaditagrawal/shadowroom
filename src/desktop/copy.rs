@@ -311,6 +311,24 @@ pub(super) fn middle_path(path: &str, max: usize) -> String {
 /// One label for the duplicate scan in the toolbar, the pane and the palette.
 pub(super) const SCAN_DUPLICATES: &str = "Scan for Duplicates";
 
+/// Command names shared by the sidebar, empty state, image menu, palette and
+/// Getting Started, so one action never has two names (R4-catalog-06).
+/// Cull in place: index a folder where it is; nothing is copied.
+pub(super) const OPEN_FOLDER: &str = "Open Folder…";
+/// Copy and verify a card (or a folder) into the library.
+pub(super) const IMPORT_FROM_CARD: &str = "Import from Card…";
+/// R: clear stars and pick/reject, keep the colour label. The decision bar
+/// shortens it to "Reset" and names it in full in its tooltip.
+pub(super) const RESET_DECISION: &str = "Reset Rating and Flag";
+/// Open the photo in the single-photo Review view.
+pub(super) const OPEN_IN_REVIEW: &str = "Open in Review";
+/// Delete: asks before moving to the configured Trash.
+pub(super) const MOVE_TO_TRASH: &str = "Move to Trash…";
+/// Shift+Delete: asks before deleting from disk.
+pub(super) const DELETE_PERMANENTLY: &str = "Delete Permanently…";
+/// Leave a selected subset in Review and show the whole folder again.
+pub(super) const SHOW_FULL_FOLDER: &str = "Show Full Folder";
+
 /// The Duplicates view with nothing to show, by scan state: what happened,
 /// what was checked, and the button that moves on (None while scanning).
 /// `scope` is a bare noun: "the whole library" or a folder name.

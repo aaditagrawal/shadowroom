@@ -56,19 +56,41 @@ impl MenuRow {
     }
 }
 
+/// Every image-menu label, for the Getting Started copy test.
+#[cfg(test)]
+pub(super) fn image_action_labels() -> Vec<&'static str> {
+    use ImageAction as A;
+    let actions = [
+        A::Review,
+        A::Survey,
+        A::Compare,
+        A::Pick,
+        A::Reject,
+        A::Reset,
+        A::Reveal,
+        A::Trash,
+        A::PermanentDelete,
+        A::Rating(0),
+        A::Label(ColorLabel::None),
+    ];
+    let mut labels: Vec<_> = actions.iter().map(|a| a.label(false)).collect();
+    labels.push(A::Survey.label(true));
+    labels
+}
+
 impl ImageAction {
     fn label(self, in_burst: bool) -> &'static str {
         match self {
-            Self::Review => "Open in Review",
+            Self::Review => copy::OPEN_IN_REVIEW,
             Self::Survey if in_burst => "Survey Burst",
             Self::Survey => "Survey",
             Self::Compare => "Compare",
             Self::Pick => "Pick",
             Self::Reject => "Reject",
-            Self::Reset => "Reset Stars and Flag",
+            Self::Reset => copy::RESET_DECISION,
             Self::Reveal => reveal_label(),
-            Self::Trash => "Move to Trash…",
-            Self::PermanentDelete => "Delete Permanently…",
+            Self::Trash => copy::MOVE_TO_TRASH,
+            Self::PermanentDelete => copy::DELETE_PERMANENTLY,
             Self::Rating(_) => "Rating",
             Self::Label(_) => "Label",
         }
@@ -359,25 +381,28 @@ impl Workspace {
     }
 
     /// The menu's rows: open / decide / reveal / delete, separated by rules.
-    /// Survey is named for the burst only when the photo is in one.
+    /// Survey is named for the burst only when the photo is in one, and
+    /// "Open in Review" is offered only outside Review (R4-catalog-06).
     fn image_menu_rows(&self) -> Vec<MenuRow> {
         use ImageAction as A;
-        vec![
-            MenuRow::Action(A::Review),
-            MenuRow::Action(A::Survey),
-            MenuRow::Action(A::Compare),
-            MenuRow::Separator,
-            MenuRow::Action(A::Pick),
-            MenuRow::Action(A::Reject),
-            MenuRow::Ratings,
-            MenuRow::Labels,
-            MenuRow::Action(A::Reset),
-            MenuRow::Separator,
-            MenuRow::Action(A::Reveal),
-            MenuRow::Separator,
-            MenuRow::Action(A::Trash),
-            MenuRow::Action(A::PermanentDelete),
-        ]
+        let open = (self.mode != ViewMode::Loupe).then_some(MenuRow::Action(A::Review));
+        open.into_iter()
+            .chain([
+                MenuRow::Action(A::Survey),
+                MenuRow::Action(A::Compare),
+                MenuRow::Separator,
+                MenuRow::Action(A::Pick),
+                MenuRow::Action(A::Reject),
+                MenuRow::Ratings,
+                MenuRow::Labels,
+                MenuRow::Action(A::Reset),
+                MenuRow::Separator,
+                MenuRow::Action(A::Reveal),
+                MenuRow::Separator,
+                MenuRow::Action(A::Trash),
+                MenuRow::Action(A::PermanentDelete),
+            ])
+            .collect()
     }
 
     /// The rows Up/Down/Enter move through, in order.
