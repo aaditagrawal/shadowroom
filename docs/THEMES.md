@@ -99,8 +99,15 @@ a full-strength icon instead.
 and `shadowroom.scrim.label.*`) are identical in both palettes: thumbnail
 badges and compare captions sit on photographs, which can be white or black in
 either appearance, so they use a dark `#0f0f0fd0` plate with colours that keep
-3:1 (glyphs) or 4.5:1 (text) over the plate on a white photo. Labels on
-thumbnails show their initial (R, Y, G, B, P) as well as their colour.
+3:1 (glyphs) or 4.5:1 (text) over the plate on a white photo. A thumbnail's
+flag glyph and label chip share one plate; the chip is filled with
+`shadowroom.scrim.label.*` and carries the label's initial (R, Y, G, B, P) in
+`shadowroom.scrim.label.text` (`#0f0f0f`, at least 7:1 on every fill).
+
+The **cull ledger** draws on chrome, not photographs: `shadowroom.pick` and
+`shadowroom.reject` ticks, `icon.muted` for reviewed photos without a flag,
+`border` as the unreviewed rail, and `text.accent` only for the current
+photo's playhead.
 
 Imported Zed themes never define Shadowroom roles. `shadowroom.well` and
 `shadowroom.control_border` are derived from the theme's own background, panel
