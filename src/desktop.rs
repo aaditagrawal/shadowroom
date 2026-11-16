@@ -1048,16 +1048,28 @@ struct AddHostForm {
     edit: text_input::Edit,
     /// Validation message shown under the alias field; cleared by typing.
     error: Option<String>,
+    /// The host being checked after Add & connect: the dialog stays open,
+    /// "Connecting…", until it connects (closes) or fails (says why here).
+    connecting: Option<String>,
+    /// A host this dialog added whose connection failed: it is saved, so
+    /// "Try again" replaces it instead of refusing a duplicate.
+    failed: Option<String>,
 }
+/// What the agent is started with when the remote command is left empty.
+const DEFAULT_REMOTE_COMMAND: &str = "shadowroom-remote serve --stdio";
 impl AddHostForm {
     fn new() -> Self {
         let mut edit = text_input::Edit::default();
         edit.focus("");
         Self {
-            fields: [String::new(), "shadowroom-remote serve --stdio".into()],
+            // Empty: the default command shows as the field's placeholder,
+            // so a custom command is typed rather than edited out of a prefill.
+            fields: [String::new(), String::new()],
             active: 0,
             edit,
             error: None,
+            connecting: None,
+            failed: None,
         }
     }
     /// Moves keyboard focus to `field`, caret at its end.
@@ -2253,6 +2265,30 @@ impl Workspace {
                             );
                         }
                     }
+                    // Add network host waits, "Connecting…", for its host: it
+                    // closes once connected and says why in place on failure.
+                    if let Some(form) = self.add_host.as_mut().filter(|form| {
+                        form.connecting.as_deref() == Some(snapshot.config.id.as_str())
+                    }) {
+                        if matches!(snapshot.state(), HostState::Connected | HostState::Indexing) {
+                            self.add_host = None;
+                            self.announce(
+                                format!("Connected to {}", snapshot.config.display_name),
+                                Tone::Success,
+                            );
+                        } else if let Some(error) = snapshot.status.error() {
+                            form.connecting = None;
+                            form.failed = Some(snapshot.config.id.clone());
+                            let error = error.trim_end_matches('.');
+                            form.error = Some(if error.contains("Check ") {
+                                format!("Could not connect: {error}.")
+                            } else {
+                                format!(
+                                    "Could not connect: {error}. Check the alias and that shadowroom-remote is installed on the host."
+                                )
+                            });
+                        }
+                    }
                     // Host failures arrive once as IoEvent::Error on each transition
                     // into failure; snapshots only carry the current state, so a
                     // dismissed error is not re-raised by every progress update.
@@ -2265,6 +2301,14 @@ impl Workspace {
                 }
                 IoEvent::Drives(d) => self.drives = d,
                 IoEvent::Status(s) => self.status = s,
+                // Add network host already says why its host failed, in place.
+                IoEvent::Error(s)
+                    if self.add_host.as_ref().is_some_and(|form| {
+                        form.connecting
+                            .iter()
+                            .chain(form.failed.iter())
+                            .any(|id| s.starts_with(&format!("{id}: ")))
+                    }) => {}
                 IoEvent::Error(s) => self.error = Some(s.into()),
                 IoEvent::FilesDeleted(report) => self.deletion_finished(report),
                 IoEvent::Busy(b) => self.busy = b,
@@ -3655,7 +3699,13 @@ impl Workspace {
                 self.add_host = Some(AddHostForm::new());
             }
             Cmd::SaveRemoteHost => {
-                if let Some(AddHostForm { fields, .. }) = &self.add_host {
+                if let Some(AddHostForm {
+                    fields,
+                    connecting: None,
+                    failed,
+                    ..
+                }) = &self.add_host
+                {
                     let mut invalid = None;
                     let alias = fields[0].trim().to_string();
                     let config = shadowroom::network::HostConfig {
@@ -3663,7 +3713,7 @@ impl Workspace {
                         display_name: alias.clone(),
                         ssh_alias: alias,
                         remote_command: if fields[1].trim().is_empty() {
-                            "shadowroom-remote serve --stdio".into()
+                            DEFAULT_REMOTE_COMMAND.into()
                         } else {
                             fields[1].clone()
                         },
@@ -3671,23 +3721,35 @@ impl Workspace {
                         local_program: None,
                         local_args: vec![],
                     };
+                    // "Try again" after a failed check replaces the host this
+                    // dialog saved; any other existing host is refused.
+                    let replace = failed.as_deref() == Some(config.id.as_str())
+                        && self.remote_hosts.contains_key(&config.id);
                     if config.ssh_alias.is_empty()
                         || config.ssh_alias.starts_with('-')
                         || config.ssh_alias.chars().any(char::is_whitespace)
                     {
                         invalid =
                             Some("Enter an SSH alias (e.g. studio) or user@host, without spaces");
-                    } else if self.remote_hosts.contains_key(&config.id) {
+                    } else if self.remote_hosts.contains_key(&config.id) && !replace {
                         invalid =
                             Some("This host already exists; use Connect in the command palette");
-                    } else if self.enqueue(IoCommand::Remote(
-                        shadowroom::network::RemoteCommand::Add(config),
-                    )) {
-                        self.add_host = None;
-                        self.announce("Checking remote agent protocol and version…", Tone::Info);
+                    } else if (!replace
+                        || self.enqueue(IoCommand::Remote(
+                            shadowroom::network::RemoteCommand::Remove(config.id.clone()),
+                        )))
+                        && self.enqueue(IoCommand::Remote(shadowroom::network::RemoteCommand::Add(
+                            config.clone(),
+                        )))
+                    {
+                        // Stay open and say so until the agent answers.
+                        if let Some(form) = &mut self.add_host {
+                            form.connecting = Some(config.id);
+                            form.failed = None;
+                            form.error = None;
+                        }
                     }
-                    // Validation stays next to the field; the toast is for
-                    // connection failures after the dialog closes.
+                    // Validation stays next to the field.
                     if let (Some(message), Some(form)) = (invalid, &mut self.add_host) {
                         form.error = Some(message.into());
                         form.focus(0);
@@ -10578,7 +10640,7 @@ impl Workspace {
                     ssh_alias: alias.into(),
                     remote_command: p["remote_command"]
                         .as_str()
-                        .unwrap_or("shadowroom-remote serve --stdio")
+                        .unwrap_or(DEFAULT_REMOTE_COMMAND)
                         .into(),
                     extra_ssh_args: p["extra_ssh_args"]
                         .as_array()
