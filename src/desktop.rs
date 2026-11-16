@@ -3452,6 +3452,18 @@ impl Workspace {
                 self.save_settings();
                 self.rebuild(None);
             }
+            Cmd::AddRemoteHost
+                if self
+                    .preferences_draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.changed()) =>
+            {
+                // Like Import: never drop unapplied preference edits.
+                self.palette = false;
+                self.error = Some(
+                    "Apply or cancel your preference changes before adding a network host".into(),
+                );
+            }
             Cmd::AddRemoteHost => {
                 self.close_preferences();
                 self.palette = false;
