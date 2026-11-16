@@ -7953,6 +7953,16 @@ impl Workspace {
                                             .child(icon("selected", this.scrim_accent())),
                                     );
                                 }
+                                let checked =
+                                    this.multi.len() > 1 && this.multi.contains(&photo.id);
+                                frame = frame.children(this.pin_badge(
+                                    photo.id,
+                                    if checked {
+                                        space::XS + 18. + space::TINY
+                                    } else {
+                                        space::XS
+                                    },
+                                ));
                                 let burst = this.burst_slot(photo.id);
                                 if let Some((_, frame_no, count)) = burst {
                                     frame = frame.child(
@@ -8340,15 +8350,18 @@ impl Workspace {
             if let Some(badges) = self.decision_badges(p.flag, p.label) {
                 photo_box = photo_box.child(badges);
             }
+            // Frame number in a fixed plate (up to "16"), the pin beside it.
+            photo_box = photo_box.children(self.pin_badge(p.id, space::XS + 22. + space::TINY));
             photo_box = photo_box.child(
                 div()
                     .absolute()
                     .top(px(space::XS))
                     .right(px(space::XS))
-                    .px(px(space::XS))
+                    .w(px(22.))
                     .h(px(18.))
                     .flex()
                     .items_center()
+                    .justify_center()
                     .bg(self.scrim())
                     .text_size(px(ui::text::LABEL))
                     .text_color(if active {
@@ -8556,6 +8569,27 @@ impl Workspace {
         }
     }
 
+    /// The pinned Compare reference, marked on its thumbnail: a pin plate at
+    /// the photo's top-right, `right` px in from the edge.
+    fn pin_badge(&self, id: i64, right: f32) -> Option<Div> {
+        (self.reference == Some(id)).then(|| {
+            div()
+                .absolute()
+                .top(px(space::XS))
+                .right(px(right))
+                .size(px(18.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(self.scrim())
+                .child(
+                    svg()
+                        .path("pin")
+                        .size(px(12.))
+                        .text_color(self.scrim_text()),
+                )
+        })
+    }
     fn group_count_badge(&self, count: usize) -> Div {
         div()
             .absolute()
@@ -8653,6 +8687,7 @@ impl Workspace {
             if let Some(badges) = self.decision_badges(p.flag, p.label) {
                 frame = frame.child(badges);
             }
+            frame = frame.children(self.pin_badge(p.id, space::XS));
             if p.rating > 0 {
                 // Compact "★5" chip: the count, not five glyphs over the photo.
                 frame = frame.child(
