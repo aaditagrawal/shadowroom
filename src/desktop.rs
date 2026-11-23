@@ -2166,6 +2166,16 @@ impl Workspace {
             }
         }
     }
+    fn export_candidates(&self, picks: bool, ids: &[i64]) -> impl Iterator<Item = &Photo> {
+        // Picks with no ids are every catalog pick; ids scope either kind.
+        let scope: HashSet<i64> = ids.iter().copied().collect();
+        self.photos.iter().filter(move |photo| {
+            !photo.trashed
+                && (!picks || photo.flag == Flag::Pick)
+                && ((picks && scope.is_empty()) || scope.contains(&photo.id))
+        })
+    }
+
     fn queue_export(
         &mut self,
         destination: PathBuf,
@@ -2181,14 +2191,8 @@ impl Workspace {
                     .into(),
             );
         }
-        // Picks with no ids are every catalog pick; ids scope either kind.
-        let scope: HashSet<i64> = ids.iter().copied().collect();
         let mut photos = 0;
-        for photo in self.photos.iter().filter(|photo| {
-            !photo.trashed
-                && (!picks || photo.flag == Flag::Pick)
-                && ((picks && scope.is_empty()) || scope.contains(&photo.id))
-        }) {
+        for photo in self.export_candidates(picks, &ids) {
             photo
                 .require_local("Export and XMP writing")
                 .map_err(|e| e.to_string())?;
@@ -13576,6 +13580,15 @@ impl Workspace {
                 root = root.child(self.modal_tint());
             }
             root = root.child(view);
+        }
+        if self.trace.enabled() {
+            // GPUI can redraw a dirty window to dispatch KeyUp or modifier
+            // changes without calling the keystroke interceptor or presenting.
+            let key_up = self.trace.clone();
+            let modifiers = self.trace.clone();
+            root = root
+                .capture_key_up(move |_, _, _| key_up.mark_dispatch())
+                .on_modifiers_changed(move |_, _, _| modifiers.mark_dispatch());
         }
         // The error toast paints above every overlay so no scrim dims it.
         root = root

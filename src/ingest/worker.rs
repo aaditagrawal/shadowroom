@@ -110,6 +110,7 @@ pub struct Worker {
     cancel_epoch: Arc<AtomicUsize>,
     /// Bumped by every job start, so a Cancel names the job it stopped.
     launches: Arc<AtomicUsize>,
+    admission: Arc<Mutex<()>>,
     /// Set by HoldQueue: queued imports wait even after the running one ends.
     held: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
@@ -143,6 +144,8 @@ impl Worker {
         let worker_scan_control = scan_control.clone();
         let cancel_epoch = Arc::new(AtomicUsize::new(0));
         let worker_epoch = cancel_epoch.clone();
+        let admission = Arc::new(Mutex::new(()));
+        let worker_admission = admission.clone();
         let launches = Arc::new(AtomicUsize::new(0));
         let worker_launches = launches.clone();
         let held = Arc::new(AtomicBool::new(false));
@@ -164,6 +167,7 @@ impl Worker {
                         scan: worker_scan_control,
                         cancel_epoch: worker_epoch,
                         launches: worker_launches,
+                        admission: worker_admission,
                         held: worker_held,
                         hooks,
                     },
@@ -178,6 +182,7 @@ impl Worker {
             scan_control,
             cancel_epoch,
             launches,
+            admission,
             held,
             stopping,
             activity,
@@ -189,6 +194,7 @@ impl Worker {
         // and so are pause and resume: a second card's scan may be running on
         // the dispatcher, but the copy job must answer at once (the
         // acknowledgement follows from the dispatcher).
+        let _admission = self.admission.lock().unwrap();
         let command = match command {
             // Cancel stops the copying card, or the scan when nothing copies;
             // a second card being scanned (or queued) is left alone. It is
@@ -272,6 +278,7 @@ struct Lanes {
     scan: Control,
     cancel_epoch: Arc<AtomicUsize>,
     launches: Arc<AtomicUsize>,
+    admission: Arc<Mutex<()>>,
     held: Arc<AtomicBool>,
     hooks: Arc<dyn CopyHooks>,
 }
@@ -379,6 +386,14 @@ fn run(
             }
             match super::copy::preflight(&plan, &NativeFsStats) {
                 Ok(_) => {
+                    let _admission = lanes.admission.lock().unwrap();
+                    if accepted != lanes.cancel_epoch.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if lanes.held.load(Ordering::Acquire) {
+                        jobs.queue.push_front((plan, accepted, guard));
+                        break;
+                    }
                     launch(plan, jobs, guard);
                     break;
                 }
@@ -459,12 +474,14 @@ fn run(
                         let plan = planned.as_ref().unwrap();
                         ensure!(!plan.groups.is_empty(), "No new media to import");
                         super::copy::preflight(plan, &NativeFsStats)?;
+                        let admission = lanes.admission.lock().unwrap();
                         if jobs.running.is_some() || lanes.held.load(Ordering::Acquire) {
                             jobs.queue.push_back((
                                 plan.clone(),
                                 lanes.cancel_epoch.load(Ordering::Acquire),
                                 Activity::start(&activity),
                             ));
+                            drop(admission);
                             emit(&events, Event::Queue(jobs.summary()));
                         } else {
                             launch(plan.clone(), &mut jobs, Activity::start(&activity));
@@ -499,6 +516,7 @@ fn run(
                     let plan = planned.as_ref().context("Compute an import plan first")?;
                     ensure!(!plan.groups.is_empty(), "No media selected for import");
                     super::copy::preflight(plan, &NativeFsStats)?;
+                    let admission = lanes.admission.lock().unwrap();
                     if jobs.running.is_some() || lanes.held.load(Ordering::Acquire) {
                         ensure!(
                             !jobs.busy_with(&plan.source, lanes.hooks.as_ref()),
@@ -510,6 +528,7 @@ fn run(
                             lanes.cancel_epoch.load(Ordering::Acquire),
                             Activity::start(&activity),
                         ));
+                        drop(admission);
                         emit(&events, Event::Queue(jobs.summary()));
                     } else {
                         launch(plan.clone(), &mut jobs, Activity::start(&activity));
@@ -595,7 +614,15 @@ fn run(
                     // Another card than the one copying may go: it is not read.
                     let path_key = path.canonicalize().unwrap_or_else(|_| path.clone());
                     ensure!(
-                        !jobs.busy_with(&path, lanes.hooks.as_ref()) && !jobs.queued(&path_key),
+                        !jobs.busy_with(&path, lanes.hooks.as_ref())
+                            && !jobs
+                                .source
+                                .as_ref()
+                                .is_some_and(|source| source.starts_with(&path_key))
+                            && !jobs
+                                .queue
+                                .iter()
+                                .any(|(plan, _, _)| plan.source.starts_with(&path_key)),
                         "Import is still using the device; wait for completion before ejecting"
                     );
                     eject(&path)?;

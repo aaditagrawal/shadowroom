@@ -7,14 +7,13 @@ compile that source RPM without networking in Fedora. The RPM contains both
 `shadowroom` and `shadowroom-remote`, desktop integration, controls, fonts, and
 dependency/asset license notices. It uses Fedora's native shared libraries.
 
-The initial target is Fedora 44 x86_64. Fedora 45 x86_64 is also an available
-COPR chroot and should be validated before advertising support. These are native
+Starting with v0.1.7, COPR release builds target Fedora 44 and 45 on x86_64. These are native
 Fedora RPMs, separate from the portable glibc 2.28 AppImage and tarball.
 
 ## Fedora repository
 
 The [aaditagrawal/shadowroom COPR project](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/)
-is configured for Fedora 44 x86_64 with binary-build networking disabled. Its
+builds with binary-build networking disabled. Its
 public Builds/Packages pages show the current package version and publication
 status. GitHub release publication precedes the COPR compilation: a GitHub
 release alone does not mean the Fedora repository build has finished.
@@ -28,8 +27,7 @@ sudo dnf upgrade shadowroom
 ```
 
 COPR builds/signs a third-party repository; this is not inclusion in Fedora's
-official repositories. Fedora 44 x86_64 is the validated target. Do not assume a
-Fedora 45 build is available merely because COPR offers that chroot.
+official repositories. Check the build result for your Fedora version before installing.
 
 ## Build the source RPM
 
@@ -83,7 +81,7 @@ release. This recipe disables debuginfo and debugsource packages.
 For a downloaded, verified GitHub release RPM:
 
 ```sh
-sudo dnf install ./shadowroom-0.1.6-1.fc44.x86_64.rpm
+sudo dnf install ./shadowroom-0.1.7-1.fc44.x86_64.rpm
 ```
 
 A directly downloaded RPM is installed locally; it does not configure a package
@@ -97,7 +95,7 @@ The [Fedora COPR workflow](../.github/workflows/copr.yml) runs after Native chec
 publish a verified version tag. It also accepts an owner's published-release
 event or a manual **already-published tag** from the default branch. It reuses the
 release's self-contained SRPM rather than rebuilding source preparation against
-mutable dependency state. Only Fedora 44 x86_64 is submitted.
+mutable dependency state. The publisher adds the Fedora 45 x86_64 chroot on first submission, preserves existing targets, and verifies both Fedora 44 and 45 build results. Older releases retain their Fedora 44 target.
 
 The repository uses:
 
@@ -106,8 +104,7 @@ The repository uses:
 | Variable `COPR_PROJECT` | `aaditagrawal/shadowroom` |
 | Secret `COPR_CONFIG` | Complete COPR API INI configuration, supplied securely |
 
-The project and repository settings are provisioned separately from the build
-workflow. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
+Provision the project, its Fedora 44 target and the GitHub settings before publication. The publisher can add the Fedora 45 target to that project. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
 describes obtaining API configuration. Secrets belong in GitHub repository
 secrets, never source files, logs, release assets, or chat. The publisher validates
 the Fedora HTTPS endpoint/owner, writes a temporary mode-600 configuration, and
@@ -123,7 +120,7 @@ Before submitting, [copr-publish.py](../scripts/copr-publish.py) verifies:
   Its package identity, embedded source commit, Cargo.lock, and vendor provenance
   match the released source. Archive contents are inspected without executing or
   extracting them into the project.
-- The COPR project has the validated chroot and disabled build networking.
+- The COPR project has its Fedora 44 target and disabled build networking.
   Public build history contains no competing build for the same version/release
   and no unidentified active upload.
 

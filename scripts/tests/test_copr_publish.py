@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location(
     "copr_publish", Path(__file__).parents[1] / "copr-publish.py"
@@ -23,6 +23,52 @@ class PublisherSafety(unittest.TestCase):
             "state": state,
             "source_package": {"name": "shadowroom", "version": version},
         }
+
+    def test_release_targets_and_additive_project_update(self):
+        targets = publisher.release_chroots("0.1.7")
+        self.assertEqual(targets, ["fedora-44-x86_64", "fedora-45-x86_64"])
+        self.assertEqual(publisher.release_chroots("0.1.6"), targets[:1])
+        current = {"enable_net": False, "chroot_repos": {targets[0]: "", "extra": ""}}
+        ready = {**current, "chroot_repos": {**current["chroot_repos"], targets[1]: ""}}
+        client = Mock()
+        with patch.object(
+            publisher, "public_json", side_effect=[current, ready, ready]
+        ):
+            publisher.enable_release_chroots(client, "owner", "project", targets)
+            publisher.enable_release_chroots(client, "owner", "project", targets)
+        client.project_proxy.edit.assert_called_once_with(
+            "owner", "project", chroots=sorted([*targets, "extra"])
+        )
+        with self.assertRaises(ValueError):
+            publisher.project_chroots({**ready, "enable_net": True})
+
+    def test_partial_copr_success_is_refused(self):
+        targets = publisher.release_chroots("0.1.7")
+        owner, project = publisher.PROJECT.split("/")
+        build = {
+            **self.build(),
+            "ownername": owner,
+            "projectname": project,
+            "chroots": targets,
+        }
+        receipt = {"reused": False, "chroots": targets}
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            with (
+                patch.object(
+                    publisher,
+                    "public_json",
+                    side_effect=[
+                        build,
+                        {"state": "succeeded"},
+                        {"state": "skipped"},
+                    ],
+                ),
+                self.assertRaisesRegex(ValueError, targets[1]),
+            ):
+                publisher.wait_build(
+                    42, receipt, work / "receipt.json", work, {}, {}, 1
+                )
 
     def run_and_jobs(self):
         return {

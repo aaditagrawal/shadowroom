@@ -149,6 +149,10 @@ def exercise(args, root, report):
         smoke.require(not [p for p in (root / "slow-library").rglob("*") if ".shadowroom-part-" in p.name], "Staging files remain")
         record("native pause/resume/cancel cleans incomplete 256 MiB video", progress=cancelled["progress"])
 
+        c.call("ingest_dequeue", {"path": str(root / "unqueued-card")})
+        c.call("ingest_clear_queue")
+        c.call("ingest_retry_failed", {"source": str(root / "unqueued-card")}, error=True)
+
         # A real remote protocol child on Wiker exercises network paths without
         # depending on fleet availability or granting new SSH access.
         remote_source = root / "remote-photos"

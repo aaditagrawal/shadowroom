@@ -989,11 +989,6 @@ impl ImportUi {
             .filter(|group| {
                 let relative = source_relative(&group.primary.path, &self.source);
                 wanted.contains(&relative)
-                    || group
-                        .primary
-                        .path
-                        .file_name()
-                        .is_some_and(|name| wanted.contains(Path::new(name)))
             })
             .map(|group| group.id)
             .collect()
@@ -5912,7 +5907,7 @@ mod responsive_tests {
         use super::{Phase, ScanState};
         use std::path::PathBuf;
         let temp = tempfile::tempdir().unwrap();
-        let shown = temp.path().join("CARD_B");
+        let shown = temp.path().canonicalize().unwrap().join("CARD_B");
         std::fs::create_dir(&shown).unwrap();
         image::RgbImage::new(4, 4)
             .save(shown.join("00.png"))

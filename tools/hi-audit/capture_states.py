@@ -350,7 +350,7 @@ class Harness:
         sources = sorted(p for p in self.photos_src.iterdir()
                          if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".tif", ".tiff",
                                                                   ".heic", ".dng", ".cr3", ".nef", ".arw"))
-        require(len(sources) >= 4, "Need at least four demo photos")
+        require(len(sources) >= 6, "Need at least six demo photos")
         self.originals = {str(p): (sha256_file(p), p.stat().st_mtime_ns) for p in sources}
         for p in sources:
             shutil.copy2(p, shoot / p.name)
@@ -404,10 +404,12 @@ class Harness:
 
     def start_xserver(self):
         self.display = os.environ.get("DISPLAY", "")
-        if self.args.use_current_display or not (shutil.which("Xwayland") and os.environ.get("WAYLAND_DISPLAY")):
+        if self.args.use_current_display:
             require(self.display, "No DISPLAY and no private Xwayland available")
             self.notes.append(f"Using existing DISPLAY {self.display}; synthetic input targets the focused window")
             return
+        require(shutil.which("Xwayland") and os.environ.get("WAYLAND_DISPLAY"),
+                "Private Xwayland unavailable. Use --use-current-display to allow desktop input.")
         number = next(n for n in range(87, 200)
                       if not Path(f"/tmp/.X11-unix/X{n}").exists() and not Path(f"/tmp/.X{n}-lock").exists())
         log = (self.session / "logs/xwayland.log").open("wb")

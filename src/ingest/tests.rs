@@ -1882,9 +1882,8 @@ fn a_label_only_card_is_not_followed_to_another_path() {
     let moved = f.temp.path().join("card1");
     fs::rename(&f.source, &moved).unwrap();
     *watched.lock().unwrap() = Some(moved);
-    let probe = plan.groups[0].group.primary.path.clone();
-    assert!(!watch.present(&probe));
-    assert!(!watch.relocate(&probe));
+    assert!(!watch.present());
+    assert!(!watch.relocate());
 }
 
 /// The job tells the app where it reads after the card came back elsewhere,
@@ -1915,7 +1914,7 @@ fn a_relocated_source_is_reported_and_failures_keep_the_scanned_names() {
     fs::rename(&f.source, &moved).unwrap();
     fs::create_dir(&f.source).unwrap();
     *mounted.lock().unwrap() = Some(moved.clone());
-    assert!(watch.relocate(&probe));
+    assert!(watch.relocate());
     assert_eq!(watch.current(), moved);
     assert_eq!(
         watch.scanned(&moved.join("IMG_0001.mov")),

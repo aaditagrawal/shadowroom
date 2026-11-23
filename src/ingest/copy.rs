@@ -1248,7 +1248,7 @@ fn fold(
             }
             Settled::Failed { id, path, error } => {
                 failed = true;
-                if watch.lost(&path) {
+                if watch.lost() {
                     deferred.push(id);
                     continue;
                 }
@@ -1366,27 +1366,23 @@ impl<'a> SourceWatch<'a> {
         }
         group
     }
-    /// One probe: the root lists, the folder holding `file` exists, and the
+    /// One probe: the source root lists and the
     /// volume identity is unchanged. A pulled card (or an unmounted static
     /// mount point) fails these; a single unreadable or deleted file does
     /// not, and fails on its own.
-    pub(super) fn present(&self, file: &Path) -> bool {
+    pub(super) fn present(&self) -> bool {
         let root = self.current.borrow().clone();
-        let file = self.rebase(file);
         fs::read_dir(&root).is_ok()
-            && file
-                .parent()
-                .is_none_or(|parent| fs::symlink_metadata(parent).is_ok())
             && self
                 .volume
                 .as_deref()
                 .is_none_or(|volume| self.hooks.volume_identity(&root) == volume)
     }
-    /// Whether a group that failed reading `file` failed because the source
+    /// Whether a group read failed because the source
     /// went away. The source must stay present for `LOSS_GRACE` before the
     /// failure counts as the photo's own.
-    fn lost(&self, file: &Path) -> bool {
-        if !self.present(file) {
+    fn lost(&self) -> bool {
+        if !self.present() {
             return true;
         }
         if self.control.is_cancelled()
@@ -1401,16 +1397,16 @@ impl<'a> SourceWatch<'a> {
         while Instant::now() < deadline && !self.control.is_cancelled() {
             self.control
                 .wait(LOSS_PROBE.min(deadline.saturating_duration_since(Instant::now())));
-            if !self.present(file) {
+            if !self.present() {
                 return true;
             }
         }
         self.confirmed.set(Some(Instant::now()));
         false
     }
-    /// The same volume mounted somewhere else, holding `probe`: read from
+    /// Find the same volume mounted somewhere else and read from
     /// there from now on. Returns whether the source moved.
-    pub(super) fn relocate(&self, probe: &Path) -> bool {
+    pub(super) fn relocate(&self) -> bool {
         let (Some(mount), Some(volume)) = (&self.mount, &self.volume) else {
             return false;
         };
@@ -1428,7 +1424,7 @@ impl<'a> SourceWatch<'a> {
                 continue;
             }
             let previous = self.current.replace(root);
-            if self.present(probe) {
+            if self.present() {
                 self.confirmed.set(None);
                 return true;
             }
@@ -1535,7 +1531,6 @@ pub fn execute_with(
                 .collect();
             // Also after a cancel: a photo the vanished card failed was not
             // imported, but it is not a failure either.
-            let lost = |path: &Path| watch.lost(path);
             let mut deferred: Vec<usize> = Vec::new();
             let mut retry = std::collections::VecDeque::<usize>::new();
             let mut next = 0;
@@ -1551,7 +1546,9 @@ pub fn execute_with(
                         resync |= fold(list, &mut report, &watch, &mut deferred);
                     }
                 }
-                if resync {
+                if resync || !deferred.is_empty() {
+                    // Settle in-flight commits before reporting source loss: the user
+                    // may reinsert the card as soon as the pause is visible.
                     // Wait until every group named after the failed batch is settled,
                     // then continue from the counters the catalog actually holds.
                     to_committer
@@ -1574,10 +1571,6 @@ pub fn execute_with(
                     // with everything verified so far committed, and continue by
                     // ourselves when the same source returns. Nothing counts as
                     // failed and no error piles up per remaining photo.
-                    let probe = index_of
-                        .get(&deferred[0])
-                        .map(|&index| plan.groups[index].group.primary.path.clone())
-                        .unwrap_or_else(|| plan.source.clone());
                     control.lose_source();
                     report.progress.phase = Phase::Paused;
                     report.progress.source_missing = true;
@@ -1592,14 +1585,14 @@ pub fn execute_with(
                                 update(&report.progress);
                             }
                         }
-                        if watch.present(&probe) {
+                        if watch.present() {
                             back = true;
                             break;
                         }
                         // The same card, mounted at another path.
                         if relocate_at.elapsed() >= Duration::from_secs(1) {
                             relocate_at = Instant::now();
-                            if watch.relocate(&probe) {
+                            if watch.relocate() {
                                 // The app learns where the card is now: that
                                 // path is this job's card, never a new card.
                                 report.progress.current_source = Some(watch.current());
@@ -1774,7 +1767,7 @@ pub fn execute_with(
                         if control.is_cancelled() {
                             break;
                         }
-                        if lost(&named.group.primary.path) {
+                        if watch.lost() {
                             // Not handled: the bar gives its bytes back until the retry.
                             handled = group_start;
                             report.progress.transferred = handled;

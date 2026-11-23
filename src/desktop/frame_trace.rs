@@ -142,6 +142,13 @@ impl Trace {
         self.0.is_some()
     }
 
+    pub fn mark_dispatch(&self) {
+        if let Some(recorder) = &self.0 {
+            let mut recorder = recorder.borrow_mut();
+            recorder.pending.dispatched |= recorder.pending.open;
+        }
+    }
+
     /// An input event, stamped before the workspace handles it.
     pub fn input(&self, kind: &str, detail: &str) {
         if let Some(recorder) = &self.0 {

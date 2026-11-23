@@ -188,7 +188,9 @@ mod portal {
                 .find_map(|uri| uri.to_file_path().ok())
                 .map_or(NativeAnswer::Cancelled, NativeAnswer::Chosen),
             // The user dismissed the dialog.
-            Err(ashpd::Error::Response(_)) => NativeAnswer::Cancelled,
+            Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => {
+                NativeAnswer::Cancelled
+            }
             Err(error) => NativeAnswer::Unavailable(error.to_string()),
         }
     }
@@ -341,17 +343,14 @@ impl Workspace {
 
     /// Photo folders an export must stay outside of (empty for other purposes).
     fn export_photo_folders(&self, purpose: &Purpose) -> Vec<PathBuf> {
-        if !matches!(
-            purpose,
-            Purpose::Workspace {
-                export: Some(_),
-                ..
-            }
-        ) {
+        let Purpose::Workspace {
+            export: Some(picks),
+            ids,
+        } = purpose
+        else {
             return Vec::new();
-        }
-        self.photos
-            .iter()
+        };
+        self.export_candidates(*picks, ids)
             .filter(|photo| !photo.is_remote())
             .flat_map(|photo| std::iter::once(&photo.path).chain(photo.companion_path.iter()))
             .filter_map(|path| path.parent())
