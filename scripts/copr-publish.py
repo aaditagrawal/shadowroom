@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 REPOSITORY = "aaditagrawal/shadowroom"
 PROJECT = "aaditagrawal/shadowroom"
 COPR_URL = "https://copr.fedorainfracloud.org"
+FEDORA_43 = "fedora-43-x86_64"
 FEDORA_44 = "fedora-44-x86_64"
 FEDORA_45 = "fedora-45-x86_64"
 REQUIRED_JOBS = {
@@ -396,13 +397,16 @@ def credentials(text):
         raise ValueError("Invalid COPR API configuration") from None
 
 
-def release_chroots(version):
-    # The publisher runs from main even when resuming an older release.
-    return (
-        [FEDORA_44, FEDORA_45]
-        if tuple(map(int, version.split("."))) >= (0, 1, 7)
-        else [FEDORA_44]
+def release_chroots(version, available):
+    if tuple(map(int, version.split("."))) < (0, 1, 7):
+        return [FEDORA_44]
+    require(
+        {FEDORA_44, FEDORA_45} <= set(available),
+        "Required COPR release chroots are unavailable",
     )
+    return [
+        target for target in (FEDORA_43, FEDORA_44, FEDORA_45) if target in available
+    ]
 
 
 def project_chroots(configuration):
@@ -421,8 +425,10 @@ def enable_release_chroots(client, owner, project, targets):
         )
 
     current = enabled()
-    if FEDORA_45 in targets and FEDORA_45 not in current:
-        client.project_proxy.edit(owner, project, chroots=sorted(current | {FEDORA_45}))
+    if set(targets) - current:
+        client.project_proxy.edit(
+            owner, project, chroots=sorted(current.union(targets))
+        )
         require(set(targets) <= enabled(), "COPR did not enable all release chroots")
 
 
@@ -587,7 +593,6 @@ def main():
             "srpm_sha256": digest[7:],
             "source_archives": archives,
             "project": PROJECT,
-            "chroots": release_chroots(version),
             "evr": f"{version}-{rpm_release}",
             "state": "verified",
         }
@@ -598,14 +603,16 @@ def main():
         )
         if not args.submit:
             return
-        owner, project = PROJECT.split("/")
-        configuration = public_json("project", ownername=owner, projectname=project)
-        project_chroots(configuration)
         previous = existing_build(all_builds(), receipt["evr"])
         receipt["reused"] = previous is not None
         if previous:
+            # The server records the submitted targets even after a chroot retires.
+            receipt["chroots"] = release_chroots(version, previous["chroots"])
             build_id = previous["id"]
         else:
+            receipt["chroots"] = release_chroots(
+                version, public_json("mock-chroots/list")
+            )
             secret = os.environ.pop("COPR_CONFIG", "")
             require(secret, "COPR_CONFIG repository secret is required for submission")
             credentials(secret)

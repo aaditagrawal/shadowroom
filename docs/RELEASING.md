@@ -145,7 +145,7 @@ COPR receives only its specific API secret and read-only GitHub permissions.
 Its publisher runs from the default branch, verifies the exact release tag/SHA,
 required native job results (including the exact mainline source run when
 artifacts were promoted), asset checksums, and SRPM source/lock provenance,
-then uploads the verified local SRPM for Fedora 44 and 45 x86_64 without build networking.
+then uploads the verified local SRPM for Fedora 44 and 45 x86_64, plus Fedora 43 while its COPR target is active, without build networking.
 The reusable call validates successful predecessor jobs instead of requiring its
 own still-running workflow to have a final conclusion. External/manual runs
 require a completed Native checks run whose seven source/package/publication

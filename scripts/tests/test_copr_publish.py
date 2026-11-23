@@ -25,11 +25,22 @@ class PublisherSafety(unittest.TestCase):
         }
 
     def test_release_targets_and_additive_project_update(self):
-        targets = publisher.release_chroots("0.1.7")
-        self.assertEqual(targets, ["fedora-44-x86_64", "fedora-45-x86_64"])
-        self.assertEqual(publisher.release_chroots("0.1.6"), targets[:1])
-        current = {"enable_net": False, "chroot_repos": {targets[0]: "", "extra": ""}}
-        ready = {**current, "chroot_repos": {**current["chroot_repos"], targets[1]: ""}}
+        available = [publisher.FEDORA_43, publisher.FEDORA_44, publisher.FEDORA_45]
+        targets = publisher.release_chroots("0.1.7", available)
+        self.assertEqual(targets, available)
+        self.assertEqual(
+            publisher.release_chroots("0.1.7", available[1:]), available[1:]
+        )
+        self.assertEqual(
+            publisher.release_chroots("0.1.6", available), [publisher.FEDORA_44]
+        )
+        with self.assertRaises(ValueError):
+            publisher.release_chroots("0.1.7", available[:2])
+        current = {
+            "enable_net": False,
+            "chroot_repos": {publisher.FEDORA_44: "", "extra": ""},
+        }
+        ready = {**current, "chroot_repos": dict.fromkeys([*targets, "extra"], "")}
         client = Mock()
         with patch.object(
             publisher, "public_json", side_effect=[current, ready, ready]
@@ -43,7 +54,9 @@ class PublisherSafety(unittest.TestCase):
             publisher.project_chroots({**ready, "enable_net": True})
 
     def test_partial_copr_success_is_refused(self):
-        targets = publisher.release_chroots("0.1.7")
+        targets = publisher.release_chroots(
+            "0.1.7", [publisher.FEDORA_44, publisher.FEDORA_45]
+        )
         owner, project = publisher.PROJECT.split("/")
         build = {
             **self.build(),

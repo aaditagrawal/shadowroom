@@ -61,7 +61,7 @@ built-in picker when no portal is available; OS Trash runs inside the app withou
 requiring GIO. See [Linux portability](docs/PORTABILITY.md) for the
 experimental Rust media backends and static CPU/X11 browsing prototype.
 
-Fedora 44 and 45 x86_64 packages are built in the
+Fedora 43 (while available), 44 and 45 x86_64 packages are built in the
 [Shadowroom COPR repository](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/).
 After its release build succeeds, enable it with `sudo dnf copr enable
 aaditagrawal/shadowroom`, then `sudo dnf install shadowroom`; subsequent versions

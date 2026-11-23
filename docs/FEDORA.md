@@ -7,7 +7,7 @@ compile that source RPM without networking in Fedora. The RPM contains both
 `shadowroom` and `shadowroom-remote`, desktop integration, controls, fonts, and
 dependency/asset license notices. It uses Fedora's native shared libraries.
 
-Starting with v0.1.7, COPR release builds target Fedora 44 and 45 on x86_64. These are native
+Starting with v0.1.7, COPR release builds target Fedora 44 and 45 on x86_64, plus Fedora 43 while COPR accepts new builds for it. These are native
 Fedora RPMs, separate from the portable glibc 2.28 AppImage and tarball.
 
 ## Fedora repository
@@ -95,7 +95,7 @@ The [Fedora COPR workflow](../.github/workflows/copr.yml) runs after Native chec
 publish a verified version tag. It also accepts an owner's published-release
 event or a manual **already-published tag** from the default branch. It reuses the
 release's self-contained SRPM rather than rebuilding source preparation against
-mutable dependency state. The publisher adds the Fedora 45 x86_64 chroot on first submission, preserves existing targets, and verifies both Fedora 44 and 45 build results. Older releases retain their Fedora 44 target.
+mutable dependency state. The publisher enables missing release chroots, preserves existing targets, and verifies the result for every submitted chroot. Older releases retain their Fedora 44 target.
 
 The repository uses:
 
@@ -104,7 +104,7 @@ The repository uses:
 | Variable `COPR_PROJECT` | `aaditagrawal/shadowroom` |
 | Secret `COPR_CONFIG` | Complete COPR API INI configuration, supplied securely |
 
-Provision the project, its Fedora 44 target and the GitHub settings before publication. The publisher can add the Fedora 45 target to that project. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
+Provision the project, its Fedora 44 target and the GitHub settings before publication. The publisher can add the Fedora 43 and 45 targets to that project. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
 describes obtaining API configuration. Secrets belong in GitHub repository
 secrets, never source files, logs, release assets, or chat. The publisher validates
 the Fedora HTTPS endpoint/owner, writes a temporary mode-600 configuration, and
