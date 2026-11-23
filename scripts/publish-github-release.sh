@@ -20,7 +20,7 @@ uv run --no-project python scripts/release-checksums.py dist
 if state=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
     [[ "$state" == true ]] || { printf '%s\n' 'Release is already published; refusing to replace its assets.' >&2; exit 1; }
 else
-    gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease \
+    gh release create "$RELEASE_TAG" --verify-tag --draft \
         --title "Shadowroom $RELEASE_TAG" --notes-file "$notes"
 fi
 assets=()
@@ -28,4 +28,4 @@ for path in dist/*.tar.gz dist/*.zip dist/*.AppImage dist/*.rpm dist/*.sha256 di
     [[ ! -f "$path" ]] || assets+=("$path")
 done
 gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-gh release edit "$RELEASE_TAG" --draft=false --prerelease --notes-file "$notes"
+gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest --notes-file "$notes"
