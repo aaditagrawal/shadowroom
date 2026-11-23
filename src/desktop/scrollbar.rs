@@ -67,6 +67,19 @@ impl Workspace {
         cx: &Context<Self>,
     ) -> AnyElement {
         let base = handle.0.borrow().base_handle.clone();
+        self.scrollable(id, &base, content, cx)
+    }
+
+    /// `content` (an element tracking `base`) with the shared draggable
+    /// scrollbar on its right; the bar appears only when there is overflow.
+    pub(super) fn scrollable(
+        &self,
+        id: &'static str,
+        base: &ScrollHandle,
+        content: AnyElement,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let base = base.clone();
         let paint_handle = base.clone();
         let geometry = std::rc::Rc::new(std::cell::Cell::new((0., Geometry::new(0., 0., 0.))));
         let painted = geometry.clone();

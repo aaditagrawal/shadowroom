@@ -4,21 +4,40 @@ Shadowroom includes restrained **Shadowroom Dark** and **Shadowroom Light** pale
 
 ## Appearance controls
 
-Click the active theme name in the status bar, open **Preferences → Appearance**
-with **Cmd/Ctrl+,**, or search **Appearance & Themes** in **Cmd/Ctrl+K**. Appearance
+The half-filled circle in the status bar switches to the current theme's light or
+dark variant (Shadowroom Dark ↔ Shadowroom Light, any "… Dark" ↔ "… Light" pair,
+else the System light and dark choices) and sets the theme source to Manual; its
+tooltip names the active theme and the one it switches to (**Switch Light / Dark
+Theme** in the palette does the same). For everything else open **Preferences →
+Appearance** with **Cmd/Ctrl+,** (the status bar's gear), or search **Appearance &
+Themes** in **Cmd/Ctrl+K**. Appearance
 is the first preferences section. Culling, Performance, Controller and Help have their
 own sections so a large theme collection does not bury other settings.
 
 Preferences use a separate draft. Choices do not change the running app or write
 the settings file until you click **Apply** or **Apply & Close**. **Apply** saves
-and leaves preferences open; **Apply & Close** saves and closes them. **Cancel**,
-Escape, the close button, or clicking outside discards only the unapplied changes
-since the last successful Apply. Switching sections keeps the draft. Imported
-theme files are staged and installed only when applied.
+and leaves preferences open; **Apply & Close** (the default, Return) saves and
+closes them. The footer counts unsaved changes, each edited section shows a dot
+on its tab, and **Apply** is disabled while nothing has changed. **Cancel**
+discards the unapplied changes at once. With unsaved changes, Escape, the close
+button, Cmd/Ctrl+, or clicking outside first asks **Discard N changes?** with
+**Keep Editing** as the default; without changes they simply close. Switching
+sections keeps the draft. Imported theme files are staged and installed only
+when applied. macOS names the dialog **Settings**; Linux keeps **Preferences**.
+
+Preferences work entirely from the keyboard. Tab and Shift+Tab move through the
+section tabs, the controls and the footer buttons; a 2 px focus ring
+(`shadowroom.focus_ring`, defaulting to `border.focused`) appears only after
+keyboard navigation. Each choice group and the theme list is one Tab stop:
+arrows choose the neighbouring option. Space activates the focused control,
+Return activates a focused button and is otherwise **Apply & Close**,
+Ctrl+Tab or Ctrl+PageDown/PageUp switches sections, and Cmd/Ctrl+S applies.
+Grouping options that do not apply (Burst gap with Grouping Off, Similarity
+with Off or Time) are dimmed and inert.
 
 The theme list groups Dark and Light palettes, with background/accent/text
 swatches and a separate bounded scroll area. Installed Zed themes are discovered
-automatically. **Import Zed theme…** accepts a Zed color-theme family JSON/JSONC
+automatically. **Import Zed Theme…** accepts a Zed color-theme family JSON/JSONC
 file and stages it in Manual mode. Apply saves a local copy and activates it.
 The explicit MCP `theme_import` tool installs and activates its requested family
 immediately.
@@ -30,10 +49,163 @@ immediately.
   theme file or settings are unavailable. Selecting a theme explicitly switches
   to Manual.
 
-The selected palette is named in Preferences; the status bar retains the active palette until Apply. Theme source
+The selected palette is named in Preferences; the window keeps the active palette until Apply. Theme source
 can also be changed through the palette's **Theme Source** commands.
 
-Shadowroom Dark uses `#0f0f0f` for the workspace/editor/image canvas, `#141414` for panels and chrome, `#1b1b1b` for elevated/hover surfaces, `#232323` for selection and `#2a2a2a` for active controls. Text is `#e6e6e6`, muted text `#8a8a8a`, borders `#262626`/`#333333`, accent `#5b9bd5`, success `#7fbf7f`, error `#d46a6a` and warning `#e0b341`.
+### Motion
+
+Menus, dialogs and the command palette fade in over 120 ms, starting at 30%
+opacity so they are readable on the first frame. Status-bar notices, the error
+toast and the trailing decision note fade in over 150 ms; a notice that replaces
+one already showing appears at once, so rapid decisions do not flicker. The
+on-photo decision chip settles in from 60% over 120 ms when a photo on screen
+gets its first decision (with automatic advance off); later changes update it
+at once. Navigation, photo changes, zoom and pan are never animated, and
+everything closes instantly.
+
+**Preferences → Appearance → Reduce motion** turns these fades off. Fades are
+also off when the system asks for reduced motion: on Linux, the desktop portal's
+`reduced-motion` setting or GNOME's **Animations** switch (read through the
+portal, else `gsettings`); on macOS, **Accessibility → Display → Reduce motion**.
+Shadowroom reads the system setting at startup and follows changes while it
+runs (on Linux through the portal's `SettingChanged` signal, on macOS by
+re-reading the setting every two seconds), so turning on reduced motion in system
+settings applies to the next menu without reopening Preferences.
+`SHADOWROOM_REDUCE_MOTION=1` (or `0`) overrides both, for measurements.
+
+### Text size
+
+**Preferences → Appearance → Text size** scales every font size and text line
+box: **90%**, **100%**, **110%**, **125%**, **150%**, or **System** (the
+default), which follows the desktop's text-scaling factor (GNOME **Large Text** /
+`text-scaling-factor`, read through the portal or `gsettings` and followed live;
+100% on macOS). No interface text is smaller than 11 px, at 90% either; histogram
+ticks and readouts and keycaps grow with the text. Controls keep
+their 24/28 px boxes, which hold a 150% line, and spacing stays on the 4 px grid,
+so layouts keep their shape while text grows; the image menu widens with the text.
+`SHADOWROOM_TEXT_SCALE=1.25` overrides the desktop factor for measurements.
+
+Type roles are distinct (size, weight, colour) tuples, so roles that share the
+11 px floor still read apart: section headers are 11 px MEDIUM in `text`; field
+labels, hints and captions 11 px regular in `text.muted`; body text 12 px;
+subheads 13 px MEDIUM; dialog and empty-state titles 16 px MEDIUM. Glyph text
+(badges, keycaps, histogram ticks) has its own role at the 11 px floor.
+
+### High contrast
+
+**Shadowroom High Contrast Dark** and **Shadowroom High Contrast Light** are the
+standard palettes with every role pushed further: the same neutral chrome and
+single blue accent, with body and secondary text at 7:1 or more on every surface
+(including selected rows), accent and status colours at 4.5:1, and borders, text
+fields, choice groups and the focus ring at 3:1 or more. Both appear in the
+Appearance theme list. When the system asks for more contrast (the portal's
+`org.freedesktop.appearance contrast`, GNOME **High Contrast**, or macOS
+**Accessibility → Display → Increase contrast**), Shadowroom Dark and Light are
+drawn as their high-contrast variants in every theme mode, and Preferences says
+so under the theme list; imported themes are used as chosen. The change follows
+the system setting live. `SHADOWROOM_HIGH_CONTRAST=1` (or `0`) overrides it.
+
+### Built-in palettes
+
+The palettes are defined as theme roles in `src/theme.rs`; render code reads
+roles, not hex values. The high-contrast variants' values are listed after this table.
+
+| Role | Shadowroom Dark | Shadowroom Light | Used for |
+| --- | --- | --- | --- |
+| `background`, `shadowroom.canvas` | `#0f0f0f`, `#0f0f0f` | `#f1f2f4`, `#dcdcdc` | window and grid background; image canvas (neutral, R=G=B) |
+| `panel.background` (title, toolbar, status bars) | `#181818` | `#f8f9fb` | chrome |
+| `elevated_surface.background` | `#202020` | `#ffffff` | dialogs, menus, palette, tooltips |
+| `shadowroom.well` | `#161616` | `#e4e4e4` | thumbnail image wells in grid and filmstrip |
+| `text` / `text.muted` / `text.disabled` | `#e6e6e6` / `#9a9a9a` / `#666666` | `#292e37` / `#566070` / `#8992a0` | copy |
+| `text.accent`, `border.focused` | `#5b9bd5` | `#245c91`, `#3979b4` | the single accent (see below) |
+| `border` / `border.variant` | `#292929` / `#333333` | `#cbd1da` / `#dce0e7` | decorative hairlines between regions; `border.variant` also outlines segmented controls and keycaps, whose state is shown by the chosen segment's bar |
+| `shadowroom.control_border` | `#707070` | `#717a88` | text-field outlines and the empty label swatch: inputs with no other boundary, 3:1 against every surface |
+| `ghost_element.hover` / `ghost_element.selected` | `#ffffff08` / `#ffffff12` | `#1728420a` / `#3979b418` | translucent hover and selection fills |
+| `shadowroom.pick` / `reject` / `rating` | `#7fbf7f` / `#d46a6a` / `#e0b341` | `#2f6844` / `#a53e42` / `#5e4508` | decisions on chrome |
+| `success` / `error` / `warning` | `#7fbf7f` / `#d46a6a` / `#ce7629` | `#39734f` / `#a53e42` / `#985f3b` | status; `warning` is orange, at least 25° (OKLCH) from rating amber and from `error`, and lighter or darker than rating so protan and deutan viewers still tell them apart. Failures draw a circled × in `error`; the triangle is for warnings and danger actions only |
+| `shadowroom.label.{red,yellow,green,blue,purple}` | `#e0918a` `#d9bd72` `#86bfa8` `#b8c3ff` `#c79fc5` | `#b3362e` `#7e6200` `#2a7560` `#5d55f3` `#832692` | inspector and image-menu label swatches and Catalog label strips (3:1 on panels, wells and the filmstrip canvas); `shadowroom.label.text` (`#0f0f0f` / `#ffffff`) draws each swatch's key (6-9) and Purple's dot (Purple has no key; no chrome swatch carries a letter, which would read as a shortcut). Blue is periwinkle, at least 25° from the accent and well apart from it in lightness, so a blue strip never reads as the "current" underline; Purple leans magenta and sits at a different lightness from Blue |
+| `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#3a3a3a` / `#8a8a8a` | `#c4c9d1` / `#626c7c` | cull ledger: the unreviewed hairline and reviewed cells (3:1 apart; the rail 1.5:1 on the panel) |
+| `shadowroom.histogram.background` / `shadowroom.histogram.grid` | `#0f0f0f` / `#1c1c1c` | `#ffffff` / `#00000014` | histogram plot plate and quarter-tone guides; a light plate switches the curves to darker inks |
+
+State ladder: hover is a fill only and always weaker than selection, on panels,
+dialogs and the canvas alike, which is why the ghost fills are translucent.
+Selection adds a second cue: the accent bar or underline for a location, a 2 px
+text-coloured bar on a chosen segment, or full-strength text and MEDIUM weight.
+
+**Choice groups** (Preferences choices, LIN/LOG, Catalog S/M/L) keep a
+`border.variant` hairline outline by design: every segment is identified by its
+text, and a 3:1 box around each group made the chrome noisier than the photos.
+The outline is therefore decorative under WCAG 1.4.11. What must reach 3:1 is
+the state: the chosen segment's 2 px text-coloured bar on its selected fill and
+the keyboard focus ring (`shadowroom.focus_ring`) on panels, bars and dialogs, in
+all four built-in palettes. A desktop test
+(`choice_group_state_and_focus_ring_reach_three_to_one`) holds those pairs.
+Text fields keep `shadowroom.control_border`, since an empty field has no other
+boundary.
+
+The accent means "you are here": the active view tab and inspector tab
+underline, the current collection's bar, the current photo's outline, the
+command palette's selected row, and keyboard focus. Toggles (panels,
+histogram, zoom, focus peaking, grouping, auto-advance, pin) show "on" as a quiet
+filled state with a full-strength icon and a 2 px text-coloured bar along the
+bottom, the same bar as a chosen segment, so every toggle that is on carries the
+same marks.
+
+**One meaning per mark.** A 1 px box around a glyph always means "a key": every
+shortcut listed in a menu, tooltip, dialog footer, bar or the guide is drawn with
+the same keycap (`border.variant` hairline, MICRO text). The decision bar's "P",
+"X" and "1-5" are the one exception: plain muted hints inside the buttons they
+press. A current value is never boxed: the current rating in the image menu takes
+the selected fill, and the current label (in the image menu and the inspector) a
+text-coloured ring with an inset gap around its swatch. Chrome label swatches
+carry their key (6-9) or, for Purple, a dot; letters stay on photo badges. Each
+icon has one meaning: the Culling tab draws the ledger, the histogram toggle the
+histogram, failures a circled ×, warnings and danger actions the triangle.
+
+**Photo-overlay roles** (`shadowroom.scrim`, `shadowroom.scrim.{text,muted,pick,reject,rating,accent}`
+and `shadowroom.scrim.label.*`) are identical in both palettes: thumbnail
+badges and compare captions sit on photographs, which can be white or black in
+either appearance, so they use a dark `#0f0f0fd0` plate with colours that keep
+3:1 (glyphs) or 4.5:1 (text) over the plate on a white photo. A thumbnail's
+flag glyph and label chip share one plate; the chip is filled with
+`shadowroom.scrim.label.*` and carries the label's initial (R, Y, G, B, P) in
+`shadowroom.scrim.label.text` (`#0f0f0f`, at least 7:1 on every fill).
+
+The **cull ledger** draws on chrome, not photographs, and codes each state by
+shape as well as colour: unreviewed frames are a 1 px `shadowroom.ledger.rail`
+hairline, reviewed frames without a flag a 3 px `shadowroom.ledger.reviewed`
+bar centred on that line, picks a 4 px `shadowroom.pick` bar standing above it
+and rejects a 4 px `shadowroom.reject` bar hanging below it, so pick and reject
+stay apart without hue. In lights out the ledger's band takes the canvas colour,
+never brighter than the photo's surround; where the rail token would fall below
+1.5:1 on that canvas (Shadowroom Light) the rail uses the first chrome role that
+reaches it and reviewed frames the first that keeps 3:1 from the rail. `text.accent` marks only the current photo's playhead;
+the bracket for the frames the filmstrip shows is a `text.muted` hairline.
+Filmstrip label strips sit on photographs, so they use the photo-overlay label
+inks (`shadowroom.scrim.label.*`), matching the chip on the same frame; Catalog
+strips sit on the well and use the chrome label colours.
+
+High-contrast palette values:
+
+| Role | High Contrast Dark | High Contrast Light |
+| --- | --- | --- |
+| `background`, `shadowroom.canvas` | `#000000`, `#000000` | `#ffffff`, `#d6d6d6` |
+| `panel.background` (title, toolbar, status bars) | `#0d0d0d` | `#f5f5f5` |
+| `elevated_surface.background` | `#161616` | `#ffffff` |
+| `text` / `text.muted` / `text.disabled` | `#ffffff` / `#dadada` / `#8f8f8f` | `#000000` / `#2a303a` / `#6b7280` |
+| `text.accent`, `shadowroom.focus_ring` | `#8cc4ff` | `#0a4a85` |
+| `border` / `border.variant` / `shadowroom.control_border` | `#8a8a8a` / `#9a9a9a` / `#b0b0b0` | `#5c6470` / `#6e7682` / `#3d4450` |
+| `ghost_element.hover` / `ghost_element.selected` | `#ffffff14` / `#ffffff2e` | `#00000012` / `#0a4a8529` |
+| `success` / `error` / `warning` | `#8fe08f` / `#ff8a8a` / `#ea8e48` | `#1f5c36` / `#8f1d22` / `#924a02` |
+| `shadowroom.pick` / `reject` / `rating` | `#8fe08f` / `#ff8a8a` / `#ffd166` | `#1f5c36` / `#8f1d22` / `#3d2c00` |
+| `shadowroom.label.blue` / `shadowroom.label.purple` | `#8a8ef6` / `#d1a7d1` | `#4d39e3` / `#6a126e` |
+| `shadowroom.ledger.rail` / `shadowroom.ledger.reviewed` | `#4a4a4a` / `#c4c4c4` | `#a0a6b0` / `#3a4452` |
+
+Imported Zed themes never define Shadowroom roles. `shadowroom.well` and
+`shadowroom.control_border` are derived from the theme's own background, panel
+and muted-text roles (`Theme::derived_color`); other Shadowroom roles use the
+built-in palette of the same appearance. Colours a theme supplies itself always
+win, and derivation never rewrites the imported theme.
 
 ## Zed import
 
@@ -72,6 +244,12 @@ The desktop stores its choice in preferences as `theme_mode` (`manual`, `system`
 
 ## Role fallbacks and contrast
 
+Dialogs share one frame: an elevated surface with a 13 px title bar, a single
+modal scrim `shadowroom.scrim.modal` (dark `#00000099`, light `#1f2a3a59`) drawn
+only behind the topmost dialog so nested dialogs never darken twice, and one
+button hierarchy: an accent-filled default, outlined secondary actions, and
+error-coloured destructive actions (filled only when irreversible).
+
 Built-in appearance fallbacks cover canonical Zed text/icon/placeholder/disabled/accent roles, main/panel/elevated/title/status/toolbar/tab surfaces, active and disabled elements, ghost elements, focused borders, search/drop highlights, scrollbars and semantic status backgrounds/borders. Invalid present colors use the same fallback path as absent/null colors. Valid external colors and alpha retain their original values.
 
 `Theme::contrast_ratio(foreground_key, background_key)` reports explicitly supplied roles, compositing foreground/background transparency over the theme's canvas. Missing or unsupported role colors return `None`. `accessibility_diagnostics()` flags sparse required roles, invalid color values and low contrast for ordinary text and meaningful icons. It uses the [W3C contrast guidance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html): 4.5:1 for ordinary text; 3:1 for meaningful non-text controls. Disabled text is excluded. Diagnostics are advisory and never recolor an imported theme; preserving the user's chosen theme remains the default. Alpha-aware ratios, black/white's 21:1 ratio, sparse themes, nested overrides, real-file reload and unchanged metadata polling are covered by tests.
@@ -90,6 +268,10 @@ The UI registers bundled bytes with GPUI at startup. The variable fonts include 
 
 ## Preference persistence
 
+**Culling → Peaking color** (Red, the default, Cyan, Yellow or White) and
+**Peaking sensitivity** (Low, Medium or High) style focus peaking; they are stored
+as `peaking_color` and `peaking_sensitivity`.
+
 **Culling → Trash destination** chooses **OS Trash** (the default) or **In-app**.
 OS Trash moves confirmed local photo groups out of their source folders and uses
 your operating system's recovery interface. In-app Trash only hides catalog
@@ -102,4 +284,4 @@ Preferences live in the user's configuration directory under `shadowroom/setting
 
 `Settings::save(path)` writes a same-directory temporary file with exclusive creation, flushes and syncs its data, then atomically renames it over the target. Failed writes do not partially replace the existing file. On Unix new snapshots are owner-readable/writable. Saves replace a target symlink itself, rather than following it. This protects one complete snapshot; the desktop holds an exclusive catalog lease to prevent concurrent writable instances.
 
-Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, OS Trash (`trash_mode: "system"`), 8,192 MiB disk preview budget, automatic memory sizing, and the startup Getting Started guide enabled. Optional in-app Trash is stored as `trash_mode: "in_app"`. Auto is stored as `memory_budget_mb: 0` and uses a quarter of physical RAM, bounded to 512 MiB–4 GiB; manual limits remain available. Help controls the startup guide, which can also be reopened with F1 or ?. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.
+Defaults are Geist Mono, Shadowroom Dark, burst grouping, 2,000 ms burst gap, visual distance 8, automatic advance on, automatic removable-drive discovery on, OS Trash (`trash_mode: "system"`), 8,192 MiB disk preview budget, automatic memory sizing, and the startup Getting Started guide enabled. Optional in-app Trash is stored as `trash_mode: "in_app"`. Auto is stored as `memory_budget_mb: 0` and uses a quarter of physical RAM, bounded to 512 MiB–4 GiB; manual limits remain available. Help controls the startup guide, which can also be reopened with F1 or ?; closing the guide the first time it opens by itself turns the startup guide off (a notice says so) unless **Show at startup** was changed in that session. Grouping can be turned off. Session fields retain the selected photograph, view mode, inspector visibility, minimum rating and flag filter. Stored budgets are clamped to safe ranges; visual hash distance is limited to 64 and star filters to five. These preferences configure the app; the media pipeline enforces the actual cache limits.

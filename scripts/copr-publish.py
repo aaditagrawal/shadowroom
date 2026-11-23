@@ -23,7 +23,8 @@ from urllib.request import Request, urlopen
 REPOSITORY = "aaditagrawal/shadowroom"
 PROJECT = "aaditagrawal/shadowroom"
 COPR_URL = "https://copr.fedorainfracloud.org"
-CHROOT = "fedora-44-x86_64"
+FEDORA_44 = "fedora-44-x86_64"
+FEDORA_45 = "fedora-45-x86_64"
 REQUIRED_JOBS = {
     "Core / ubuntu-24.04",
     "Core / macos-15",
@@ -132,7 +133,9 @@ def validate_build_run(run, jobs, sha):
         "Artifact source run did not complete successfully",
     )
     succeeded = {job["name"] for job in jobs if job.get("conclusion") == "success"}
-    require(NATIVE_JOBS <= succeeded, "Artifact source is missing successful native jobs")
+    require(
+        NATIVE_JOBS <= succeeded, "Artifact source is missing successful native jobs"
+    )
 
 
 def validate_artifacts(artifacts):
@@ -393,7 +396,37 @@ def credentials(text):
         raise ValueError("Invalid COPR API configuration") from None
 
 
-def submit_once(srpm, secret):
+def release_chroots(version):
+    # The publisher runs from main even when resuming an older release.
+    return (
+        [FEDORA_44, FEDORA_45]
+        if tuple(map(int, version.split("."))) >= (0, 1, 7)
+        else [FEDORA_44]
+    )
+
+
+def project_chroots(configuration):
+    enabled = configuration.get("chroot_repos", {})
+    require(
+        configuration.get("enable_net") is False and FEDORA_44 in enabled,
+        "COPR project must enable Fedora 44 x86_64 with build networking disabled",
+    )
+    return set(enabled)
+
+
+def enable_release_chroots(client, owner, project, targets):
+    def enabled():
+        return project_chroots(
+            public_json("project", ownername=owner, projectname=project)
+        )
+
+    current = enabled()
+    if FEDORA_45 in targets and FEDORA_45 not in current:
+        client.project_proxy.edit(owner, project, chroots=sorted(current | {FEDORA_45}))
+        require(set(targets) <= enabled(), "COPR did not enable all release chroots")
+
+
+def submit_once(srpm, secret, targets):
     from copr.v3 import Client
 
     credentials(secret)
@@ -407,11 +440,12 @@ def submit_once(srpm, secret):
         # a mutating request; a later run first inspects public build history.
         client.config["connection_attempts"] = 1
         owner, project = PROJECT.split("/")
+        enable_release_chroots(client, owner, project, targets)
         result = client.build_proxy.create_from_file(
             owner,
             project,
             str(srpm),
-            buildopts={"chroots": [CHROOT], "enable_net": False},
+            buildopts={"chroots": targets, "enable_net": False},
         )
         if isinstance(result, list):
             require(len(result) == 1, "COPR did not return exactly one build")
@@ -432,8 +466,8 @@ def wait_build(build_id, receipt, output, work, expected, archives, minutes):
             "Recorded COPR build belongs to another project",
         )
         require(
-            CHROOT in build.get("chroots", []),
-            "COPR build does not cover Fedora 44 x86_64",
+            set(receipt["chroots"]) <= set(build.get("chroots", [])),
+            "COPR build does not cover all requested release chroots",
         )
         state = build["state"]
         receipt["state"] = state
@@ -461,6 +495,14 @@ def wait_build(build_id, receipt, output, work, expected, archives, minutes):
         )
         if state == "succeeded":
             require(validated_existing, "Cannot verify the existing COPR source RPM")
+            for target in receipt["chroots"]:
+                result = public_json(
+                    "build-chroot", build_id=build_id, chrootname=target
+                )
+                require(
+                    result.get("state") == "succeeded",
+                    f"COPR build did not succeed for {target}",
+                )
             return
         require(
             time.monotonic() < deadline,
@@ -545,7 +587,7 @@ def main():
             "srpm_sha256": digest[7:],
             "source_archives": archives,
             "project": PROJECT,
-            "chroot": CHROOT,
+            "chroots": release_chroots(version),
             "evr": f"{version}-{rpm_release}",
             "state": "verified",
         }
@@ -558,11 +600,7 @@ def main():
             return
         owner, project = PROJECT.split("/")
         configuration = public_json("project", ownername=owner, projectname=project)
-        require(
-            configuration.get("enable_net") is False
-            and CHROOT in configuration.get("chroot_repos", {}),
-            "COPR project must enable Fedora 44 x86_64 with build networking disabled",
-        )
+        project_chroots(configuration)
         previous = existing_build(all_builds(), receipt["evr"])
         receipt["reused"] = previous is not None
         if previous:
@@ -574,7 +612,7 @@ def main():
             receipt["state"] = "submitting"
             write_receipt(args.output, receipt)
             try:
-                build_id = submit_once(srpm, secret)
+                build_id = submit_once(srpm, secret, receipt["chroots"])
             except Exception:  # noqa: BLE001 - Do not expose authenticated HTTP/configuration errors.
                 receipt["state"] = "submission_uncertain"
                 write_receipt(args.output, receipt)
@@ -593,7 +631,7 @@ def main():
         if summary:
             with open(summary, "a") as stream:
                 stream.write(
-                    f"Published `{receipt['evr']}` to [{PROJECT}]({receipt['build_url']}) ({CHROOT}).\n"
+                    f"Published `{receipt['evr']}` to [{PROJECT}]({receipt['build_url']}) ({', '.join(receipt['chroots'])}).\n"
                 )
 
 

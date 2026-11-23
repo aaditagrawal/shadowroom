@@ -20,6 +20,7 @@ import traceback
 
 TOOLS = {
     "ingest_scan", "ingest_plan", "ingest_start", "ingest_status", "ingest_cancel",
+    "ingest_retry_failed", "ingest_clear_queue", "ingest_dequeue",
     "ingest_pause", "ingest_resume", "ingest_history", "ingest_mark_imported", "eject",
     "workspace_state", "library_list", "photo_get", "select", "rate", "flag",
     "label", "undo", "redo", "view", "zoom", "pin", "filter", "group",

@@ -56,6 +56,11 @@ not-attempted files. This is not an atomic filesystem transaction. Restore any
 already-trashed files through the OS file manager; permanent deletion cannot be
 rolled back.
 
+With OS Trash selected, Shadowroom's own Trash view holds only photos trashed
+in-app earlier; when it is empty it says that deleted photos went to the system
+Trash and offers **Open System Trash** (also in the command palette), which shows
+the system Trash in the file manager.
+
 After restoring files from OS Trash, refresh or reopen their folder to index
 them again. Restoring the files does not restore catalog decisions removed with
 their original photo record. Export decisions explicitly before deletion if you

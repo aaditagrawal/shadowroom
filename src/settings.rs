@@ -49,6 +49,9 @@ pub struct Settings {
     pub ingest_collision: String,
     pub ingest_time_group_minutes: u32,
     pub eject_after_ingest: bool,
+    /// Post a desktop notification when an import or export finishes while
+    /// the window is in the background.
+    pub ingest_notify: bool,
     pub ingest_include_videos: bool,
     /// Volume identity → allow / deny. No mount paths are used as identity.
     pub ingest_volumes: BTreeMap<String, String>,
@@ -101,6 +104,7 @@ impl Default for Settings {
             ingest_collision: "suffix".into(),
             ingest_time_group_minutes: 60,
             eject_after_ingest: false,
+            ingest_notify: true,
             ingest_include_videos: true,
             ingest_volumes: BTreeMap::new(),
             ingest_presets: BTreeMap::new(),

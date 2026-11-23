@@ -195,6 +195,22 @@ pub trait CopyHooks: Send + Sync {
     fn before_manifest_verify(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
+    /// Called on the import dispatcher before it scans `path` (fault
+    /// injection: a slow card keeps the dispatcher busy).
+    fn before_scan(&self, _path: &Path) {}
+    /// The volume holding `path` (`uuid:…` or `label:…`).
+    fn volume_identity(&self, path: &Path) -> String {
+        super::volume_identity(path)
+    }
+    /// Mount roots of removable drives currently carrying `volume`, so a card
+    /// that comes back at another mount point is still recognised.
+    fn volume_mounts(&self, volume: &str) -> Vec<PathBuf> {
+        crate::indexer::discover_drives()
+            .into_iter()
+            .filter(|drive| drive.removable && drive.volume == volume)
+            .map(|drive| drive.path)
+            .collect()
+    }
 }
 pub struct DefaultHooks;
 impl CopyHooks for DefaultHooks {}
@@ -997,7 +1013,11 @@ enum FromCommitter {
 }
 enum Settled {
     Committed(CommittedGroup),
-    Failed { path: PathBuf, error: String },
+    Failed {
+        id: usize,
+        path: PathBuf,
+        error: String,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1011,6 +1031,7 @@ enum CommitState {
 fn fail_pending(mut pending: PendingGroup, error: &str) -> Settled {
     let cleanup = pending.rollback.cleanup().err();
     Settled::Failed {
+        id: pending.group.group.id,
         path: pending.group.group.primary.path.clone(),
         error: format!(
             "{error}{}",
@@ -1188,7 +1209,16 @@ mod batch_tests {
 }
 
 /// Folds settled groups into the report; returns whether any failed.
-fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
+/// Folds settled groups into the report. Returns whether a commit batch
+/// failed (the copier must resynchronize counters). A group that failed
+/// because the source vanished (`lost`) is not counted: its scan ID goes to
+/// `deferred` and it is copied again once the source returns.
+fn fold(
+    settled: Vec<Settled>,
+    report: &mut Report,
+    watch: &SourceWatch<'_>,
+    deferred: &mut Vec<usize>,
+) -> bool {
     let mut failed = false;
     for item in settled {
         match item {
@@ -1201,6 +1231,9 @@ fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
                 report.progress.errors.extend(cleanup_errors);
                 if creates_files {
                     report.progress.completed += 1;
+                    if group.group.kind == "video" {
+                        report.progress.completed_videos += 1;
+                    }
                 } else {
                     report.progress.skipped += 1;
                 }
@@ -1213,9 +1246,18 @@ fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
                 }
                 report.records.push(record);
             }
-            Settled::Failed { path, error } => {
+            Settled::Failed { id, path, error } => {
                 failed = true;
+                if watch.lost() {
+                    deferred.push(id);
+                    continue;
+                }
+                // Named under the scanned source, like the scan's tiles and
+                // "Retry failed", even when the card was read elsewhere.
+                let path = watch.scanned(&path);
                 report.progress.failed += 1;
+                report.progress.failed_ids.push(id);
+                report.progress.failed_sources.push(path.clone());
                 report
                     .progress
                     .errors
@@ -1224,6 +1266,172 @@ fn fold(settled: Vec<Settled>, report: &mut Report) -> bool {
         }
     }
     failed
+}
+
+/// How long a read error waits for the source to settle before it counts as
+/// a failure: on real hardware a pulled card returns EIO before the mount is
+/// torn down, and the mount table can still answer for a moment.
+const LOSS_GRACE: Duration = Duration::from_millis(1500);
+const LOSS_PROBE: Duration = Duration::from_millis(250);
+
+/// Where the job's source is, and whether it is still the one that was
+/// scanned. A card that comes back at another mount point (a stale
+/// `/run/media/u/EOS_DIGITAL` makes the new one `EOS_DIGITAL1`) is found by
+/// its volume identity, and the remaining paths are read from there.
+pub(super) struct SourceWatch<'a> {
+    /// The scanned source; every planned path starts with it.
+    origin: PathBuf,
+    /// The removable mount root holding `origin` when the job started, when
+    /// the volume has a stable identity (relocation is off otherwise).
+    mount: Option<PathBuf>,
+    volume: Option<String>,
+    /// The source root now: `origin`, or the same place on the new mount.
+    current: std::cell::RefCell<PathBuf>,
+    /// When a grace period last ended with the source still present, so a
+    /// run of ordinary failures on a present card waits only once.
+    confirmed: std::cell::Cell<Option<Instant>>,
+    hooks: &'a dyn CopyHooks,
+    control: &'a Control,
+}
+impl<'a> SourceWatch<'a> {
+    pub(super) fn new(plan: &IngestPlan, hooks: &'a dyn CopyHooks, control: &'a Control) -> Self {
+        let volume = plan.groups.first().map(|g| g.group.volume.clone());
+        // Only a filesystem UUID identifies a card; a label or folder name
+        // could be another card with the same name.
+        let mount = volume
+            .as_deref()
+            .filter(|volume| volume.starts_with("uuid:"))
+            .and_then(|volume| {
+                hooks
+                    .volume_mounts(volume)
+                    .into_iter()
+                    .filter(|mount| plan.source.starts_with(mount))
+                    .max_by_key(|mount| mount.as_os_str().len())
+            });
+        Self {
+            origin: plan.source.clone(),
+            mount,
+            volume,
+            current: std::cell::RefCell::new(plan.source.clone()),
+            confirmed: std::cell::Cell::new(None),
+            hooks,
+            control,
+        }
+    }
+    /// `path` (planned under the scanned source) where it is now.
+    fn rebase(&self, path: &Path) -> PathBuf {
+        let current = self.current.borrow();
+        match path.strip_prefix(&self.origin) {
+            Ok(relative) if *current != self.origin => current.join(relative),
+            _ => path.to_path_buf(),
+        }
+    }
+    /// `path` (read where the source is now) under the scanned source.
+    pub(super) fn scanned(&self, path: &Path) -> PathBuf {
+        let current = self.current.borrow();
+        match path.strip_prefix(&*current) {
+            Ok(relative) if *current != self.origin => self.origin.join(relative),
+            _ => path.to_path_buf(),
+        }
+    }
+    /// The source root now.
+    pub(super) fn current(&self) -> PathBuf {
+        self.current.borrow().clone()
+    }
+    /// The card's UUID identity, when it can be followed to another mount.
+    pub(super) fn identity(&self) -> Option<String> {
+        self.mount.as_ref().and(self.volume.clone())
+    }
+    /// The scanned source relative to the card's mount root.
+    pub(super) fn inside(&self) -> Option<PathBuf> {
+        let mount = self.mount.as_ref()?;
+        self.origin.strip_prefix(mount).ok().map(Path::to_path_buf)
+    }
+    /// `group` with its source paths where they are now.
+    fn rebase_group(&self, group: &PlannedGroup) -> PlannedGroup {
+        let mut group = group.clone();
+        if *self.current.borrow() == self.origin {
+            return group;
+        }
+        let ingest = &mut group.group;
+        ingest.primary.path = self.rebase(&ingest.primary.path);
+        if let Some(companion) = ingest.companion.as_mut() {
+            companion.path = self.rebase(&companion.path);
+        }
+        for sidecar in &mut ingest.sidecars {
+            sidecar.path = self.rebase(&sidecar.path);
+        }
+        for file in &mut group.files {
+            file.source.path = self.rebase(&file.source.path);
+        }
+        group
+    }
+    /// One probe: the source root lists and the
+    /// volume identity is unchanged. A pulled card (or an unmounted static
+    /// mount point) fails these; a single unreadable or deleted file does
+    /// not, and fails on its own.
+    pub(super) fn present(&self) -> bool {
+        let root = self.current.borrow().clone();
+        fs::read_dir(&root).is_ok()
+            && self
+                .volume
+                .as_deref()
+                .is_none_or(|volume| self.hooks.volume_identity(&root) == volume)
+    }
+    /// Whether a group read failed because the source
+    /// went away. The source must stay present for `LOSS_GRACE` before the
+    /// failure counts as the photo's own.
+    fn lost(&self) -> bool {
+        if !self.present() {
+            return true;
+        }
+        if self.control.is_cancelled()
+            || self
+                .confirmed
+                .get()
+                .is_some_and(|at| at.elapsed() < LOSS_GRACE * 2)
+        {
+            return false;
+        }
+        let deadline = Instant::now() + LOSS_GRACE;
+        while Instant::now() < deadline && !self.control.is_cancelled() {
+            self.control
+                .wait(LOSS_PROBE.min(deadline.saturating_duration_since(Instant::now())));
+            if !self.present() {
+                return true;
+            }
+        }
+        self.confirmed.set(Some(Instant::now()));
+        false
+    }
+    /// Find the same volume mounted somewhere else and read from
+    /// there from now on. Returns whether the source moved.
+    pub(super) fn relocate(&self) -> bool {
+        let (Some(mount), Some(volume)) = (&self.mount, &self.volume) else {
+            return false;
+        };
+        let Ok(inside) = self.origin.strip_prefix(mount) else {
+            return false;
+        };
+        for candidate in self.hooks.volume_mounts(volume) {
+            // A whole card reads from the mount root itself (no trailing "/").
+            let root = if inside.as_os_str().is_empty() {
+                candidate
+            } else {
+                candidate.join(inside)
+            };
+            if root == *self.current.borrow() {
+                continue;
+            }
+            let previous = self.current.replace(root);
+            if self.present() {
+                self.confirmed.set(None);
+                return true;
+            }
+            self.current.replace(previous);
+        }
+        false
+    }
 }
 
 pub fn execute(
@@ -1261,6 +1469,7 @@ pub fn execute_with(
         Utc::now().timestamp_millis(),
         rand::random::<u64>()
     );
+    let watch = SourceWatch::new(plan, hooks, control);
     let mut report = Report {
         progress: Progress {
             job_id: job.clone(),
@@ -1268,6 +1477,9 @@ pub fn execute_with(
             total: plan.groups.len(),
             total_bytes: plan.bytes,
             library_root: Some(roots[0].clone()),
+            source: Some(plan.source.clone()),
+            volume: watch.identity(),
+            volume_path: watch.inside(),
             destinations: roots
                 .iter()
                 .map(|p| format!("{}: pending verification", p.display()))
@@ -1302,21 +1514,41 @@ pub fn execute_with(
                     File::open(parent)?.sync_all()?;
                 }
             }
-            let started = Instant::now();
+            let mut rate = Throughput::new(Instant::now());
             let mut last_update = Instant::now() - Duration::from_secs(1);
-            let mut transferred = 0u64;
+            // `moved` is bytes actually read (the rate); `handled` also counts
+            // whole groups skipped or failed (the bar and time left).
+            let mut moved = 0u64;
+            let mut handled = 0u64;
             state = catalog.ingest_sequences()?;
-            for planned in &plan.groups {
+            // A group that failed because the source vanished is retried, in
+            // plan order, once the same source is back.
+            let index_of: HashMap<usize, usize> = plan
+                .groups
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (planned.group.id, index))
+                .collect();
+            // Also after a cancel: a photo the vanished card failed was not
+            // imported, but it is not a failure either.
+            let mut deferred: Vec<usize> = Vec::new();
+            let mut retry = std::collections::VecDeque::<usize>::new();
+            let mut next = 0;
+            let mut resync = false;
+            // Deferred groups whose bytes already left the bar.
+            let mut uncounted = HashSet::new();
+            loop {
                 if control.is_cancelled() {
                     break;
                 }
-                let mut batch_failed = false;
                 for message in settled.try_iter() {
                     if let FromCommitter::Settled(list) = message {
-                        batch_failed |= fold(list, &mut report);
+                        resync |= fold(list, &mut report, &watch, &mut deferred);
                     }
                 }
-                if batch_failed {
+                if resync || !deferred.is_empty() {
+                    // Settle in-flight commits before reporting source loss: the user
+                    // may reinsert the card as soon as the pause is visible.
                     // Wait until every group named after the failed batch is settled,
                     // then continue from the counters the catalog actually holds.
                     to_committer
@@ -1325,14 +1557,110 @@ pub fn execute_with(
                     for message in settled.iter() {
                         match message {
                             FromCommitter::Settled(list) => {
-                                fold(list, &mut report);
+                                fold(list, &mut report, &watch, &mut deferred);
                             }
                             FromCommitter::Resynced => break,
                         }
                     }
                     state = catalog.ingest_sequences()?;
                     session = report.progress.completed as u64;
+                    resync = false;
                 }
+                if !deferred.is_empty() {
+                    // The card was pulled (or its reader unplugged): hold, paused,
+                    // with everything verified so far committed, and continue by
+                    // ourselves when the same source returns. Nothing counts as
+                    // failed and no error piles up per remaining photo.
+                    control.lose_source();
+                    report.progress.phase = Phase::Paused;
+                    report.progress.source_missing = true;
+                    update(&report.progress);
+                    let mut reported = Instant::now();
+                    let mut relocate_at = Instant::now();
+                    let mut back = false;
+                    while !control.is_cancelled() {
+                        for message in settled.try_iter() {
+                            if let FromCommitter::Settled(list) = message {
+                                resync |= fold(list, &mut report, &watch, &mut deferred);
+                                update(&report.progress);
+                            }
+                        }
+                        if watch.present() {
+                            back = true;
+                            break;
+                        }
+                        // The same card, mounted at another path.
+                        if relocate_at.elapsed() >= Duration::from_secs(1) {
+                            relocate_at = Instant::now();
+                            if watch.relocate() {
+                                // The app learns where the card is now: that
+                                // path is this job's card, never a new card.
+                                report.progress.current_source = Some(watch.current());
+                                back = true;
+                                break;
+                            }
+                        }
+                        if reported.elapsed() >= Duration::from_secs(1) {
+                            // Repeated so a dropped event cannot hide the pause.
+                            update(&report.progress);
+                            reported = Instant::now();
+                        }
+                        control.wait(Duration::from_millis(200));
+                    }
+                    if !back {
+                        break;
+                    }
+                    control.regain_source();
+                    report.progress.source_missing = false;
+                    report.progress.phase = Phase::Copying;
+                    update(&report.progress);
+                    let mut again: Vec<usize> = retry
+                        .drain(..)
+                        .chain(
+                            deferred
+                                .drain(..)
+                                .filter_map(|id| index_of.get(&id).copied()),
+                        )
+                        .collect();
+                    again.sort_unstable();
+                    again.dedup();
+                    retry.extend(again);
+                    continue;
+                }
+                let index = if let Some(index) = retry.pop_front() {
+                    // A group the committer failed still counts in the bar.
+                    if !uncounted.remove(&index) {
+                        handled = handled.saturating_sub(plan.groups[index].group.bytes());
+                    }
+                    index
+                } else if next < plan.groups.len() {
+                    next += 1;
+                    next - 1
+                } else {
+                    // Everything handed to the committer settles before the job
+                    // ends, so a batch the vanished source failed is retried too.
+                    to_committer
+                        .send(ToCommitter::Resync)
+                        .map_err(|_| anyhow::anyhow!("Import committer stopped"))?;
+                    let mut failed = false;
+                    for message in settled.iter() {
+                        match message {
+                            FromCommitter::Settled(list) => {
+                                failed |= fold(list, &mut report, &watch, &mut deferred);
+                            }
+                            FromCommitter::Resynced => break,
+                        }
+                    }
+                    if failed {
+                        state = catalog.ingest_sequences()?;
+                        session = report.progress.completed as u64;
+                    }
+                    if deferred.is_empty() {
+                        break;
+                    }
+                    continue;
+                };
+                let planned = &watch.rebase_group(&plan.groups[index]);
                 control.checkpoint()?;
                 if let Some(record) = catalog.ingest_previous(&planned.group)? {
                     let same_roots = record.files.len() == planned.files.len()
@@ -1369,6 +1697,8 @@ pub fn execute_with(
                         })
                     {
                         report.progress.skipped += 1;
+                        handled += planned.group.bytes();
+                        report.progress.transferred = handled;
                         if last_update.elapsed() >= Duration::from_millis(100) {
                             update(&report.progress);
                             last_update = Instant::now();
@@ -1392,6 +1722,7 @@ pub fn execute_with(
                         planned.letter,
                     )?
                 };
+                let group_start = handled;
                 let result = group_copy(
                     &named,
                     &plan.options,
@@ -1400,27 +1731,24 @@ pub fn execute_with(
                     control,
                     hooks,
                     |bytes, phase| {
-                        transferred += bytes;
+                        moved += bytes;
+                        handled += bytes;
                         // Phase changes are reported immediately; byte counts are throttled.
                         let phase_changed = report.progress.phase != phase;
                         report.progress.phase = phase;
-                        let elapsed = started.elapsed().as_secs_f64().max(0.001);
-                        report.progress.mb_per_second = transferred as f64 / elapsed / 1_000_000.;
-                        report.progress.eta_seconds = if transferred > 0 {
-                            Some(
-                                ((plan.bytes.saturating_sub(transferred)) as f64
-                                    / (transferred as f64 / elapsed))
-                                    as u64,
-                            )
-                        } else {
-                            None
-                        };
+                        report.progress.transferred = handled;
+                        rate.sample(moved, control.paused_for(), Instant::now());
+                        report.progress.mb_per_second = rate.bytes_per_second() / 1_000_000.;
+                        report.progress.eta_seconds = rate.eta(plan.bytes.saturating_sub(handled));
                         if phase_changed || last_update.elapsed() >= Duration::from_millis(100) {
                             update(&report.progress);
                             last_update = Instant::now();
                         }
                     },
                 );
+                // A group that stopped early still counts as handled in full.
+                handled = handled.max(group_start + named.group.bytes());
+                report.progress.transferred = handled;
                 match result {
                     Ok(Some(group)) => {
                         // Later names in this batch assume it commits; a failed batch
@@ -1439,11 +1767,22 @@ pub fn execute_with(
                         if control.is_cancelled() {
                             break;
                         }
+                        if watch.lost() {
+                            // Not handled: the bar gives its bytes back until the retry.
+                            handled = group_start;
+                            report.progress.transferred = handled;
+                            uncounted.insert(index);
+                            deferred.push(named.group.id);
+                            continue;
+                        }
+                        let scanned = watch.scanned(&named.group.primary.path);
                         report.progress.failed += 1;
+                        report.progress.failed_ids.push(named.group.id);
                         report
                             .progress
                             .errors
-                            .push(format!("{}: {error:#}", named.group.primary.path.display()));
+                            .push(format!("{}: {error:#}", scanned.display()));
+                        report.progress.failed_sources.push(scanned);
                     }
                 }
                 // Byte progress is throttled above; per-group counters are too, so a
@@ -1463,15 +1802,21 @@ pub fn execute_with(
         // Groups already verified and published commit even after cancellation,
         // exactly as when each group committed on its own.
         drop(to_committer);
+        // Groups the vanished source failed after the copier stopped (on
+        // cancel) are left out, as never imported, rather than counted failed.
+        let mut abandoned = Vec::new();
         for message in settled.iter() {
             if let FromCommitter::Settled(list) = message {
-                fold(list, &mut report);
+                fold(list, &mut report, &watch, &mut abandoned);
             }
         }
         if let Err(panic) = committer.join() {
             std::panic::resume_unwind(panic);
         }
     });
+    // A finished job waits for nothing: a cancel while the card was out
+    // ends the wait, and the terminal report must not read as paused.
+    report.progress.source_missing = false;
     report.progress.phase = if control.is_cancelled() {
         Phase::Cancelled
     } else if report.progress.errors.is_empty() {
@@ -1492,6 +1837,61 @@ pub fn execute_with(
     finalize_report(&mut report, &roots[0], catalog, hooks);
     update(&report.progress);
     Ok(report)
+}
+
+/// Copy throughput over active (unpaused) time: an exponentially weighted
+/// average of one-second windows, so the rate follows the card reader and a
+/// pause never drags it down or inflates the time left.
+pub(crate) struct Throughput {
+    started: Instant,
+    window_at: f64,
+    window_bytes: u64,
+    average: Option<f64>,
+    active: f64,
+    moved: u64,
+}
+impl Throughput {
+    /// Weight of the newest one-second window.
+    const ALPHA: f64 = 0.2;
+    /// Time left is withheld until this much copying has been measured.
+    const SETTLE_SECONDS: f64 = 5.;
+    pub(crate) fn new(started: Instant) -> Self {
+        Self {
+            started,
+            window_at: 0.,
+            window_bytes: 0,
+            average: None,
+            active: 0.,
+            moved: 0,
+        }
+    }
+    /// Records `moved` bytes read so far, `paused` total pause time, at `now`.
+    pub(crate) fn sample(&mut self, moved: u64, paused: Duration, now: Instant) {
+        self.active = (now
+            .saturating_duration_since(self.started)
+            .saturating_sub(paused))
+        .as_secs_f64();
+        let window = self.active - self.window_at;
+        if window >= 1. {
+            let sample = moved.saturating_sub(self.window_bytes) as f64 / window;
+            self.average = Some(
+                self.average
+                    .map_or(sample, |a| Self::ALPHA * sample + (1. - Self::ALPHA) * a),
+            );
+            self.window_at = self.active;
+            self.window_bytes = moved;
+        }
+        self.moved = moved;
+    }
+    pub(crate) fn bytes_per_second(&self) -> f64 {
+        self.average
+            .unwrap_or_else(|| self.moved as f64 / self.active.max(0.001))
+    }
+    /// Seconds left for `remaining` bytes, or None while still estimating.
+    pub(crate) fn eta(&self, remaining: u64) -> Option<u64> {
+        let rate = self.bytes_per_second();
+        (self.active >= Self::SETTLE_SECONDS && rate > 0.).then(|| (remaining as f64 / rate) as u64)
+    }
 }
 
 /// History stays non-successful until the proposed outcome artifact verifies.

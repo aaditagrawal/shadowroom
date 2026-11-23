@@ -40,7 +40,7 @@ context menu. This is a source finding, not a claim about every Lua extension.
 [sidebar implementation](https://github.com/darktable-org/darktable/blob/release-5.6.1/src/libs/image.c#L490-L598).
 
 **Shadowroom guidance:** the requested right-click menu is useful independently of
-darktable's layout. Include Show in folder, Show in Review, Survey burst, existing
+darktable's layout. Include Show in folder, Show in Review, Survey, existing
 decision actions, and explicitly named deletion actions. Make the target scope
 visible when several photos are selected.
 

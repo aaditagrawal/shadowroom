@@ -1,5 +1,11 @@
 use super::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Like GTK's default `gtk-cursor-blink-timeout`, the caret stops blinking and
+/// stays visible this long after the last key in the field. Each blink repaints
+/// the whole window, so an open but idle field would otherwise keep drawing
+/// two frames a second (docs/PERFORMANCE.md, "Human interface responsiveness").
+const BLINK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) struct Edit {
     cursor: usize,
@@ -32,7 +38,8 @@ impl Edit {
         self.visible = true;
     }
     pub fn blink(&mut self) -> bool {
-        let visible = self.epoch.elapsed().as_millis() % 1000 < 500;
+        let elapsed = self.epoch.elapsed();
+        let visible = elapsed >= BLINK_TIMEOUT || elapsed.as_millis() % 1000 < 500;
         let changed = visible != self.visible;
         self.visible = visible;
         changed
@@ -222,7 +229,7 @@ impl Workspace {
                 });
             },
         )
-        .h(px(ui::TEXT_LINE_HEIGHT))
+        .h(px(ui::scaled(ui::TEXT_LINE_HEIGHT)))
         .w_full()
         .into_any_element()
     }
@@ -265,6 +272,17 @@ mod tests {
         assert!(edit.blink());
         assert!(!edit.visible);
         edit.reset();
+        assert!(edit.visible);
+        assert!(!edit.blink());
+    }
+
+    #[test]
+    fn caret_rests_visible_after_the_blink_timeout() {
+        let mut edit = Edit::default();
+        edit.focus("query");
+        edit.visible = false;
+        edit.epoch = Instant::now() - super::BLINK_TIMEOUT - Duration::from_millis(600);
+        assert!(edit.blink());
         assert!(edit.visible);
         assert!(!edit.blink());
     }

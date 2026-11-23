@@ -848,6 +848,7 @@ fn build_tool_definitions() -> Vec<Value> {
     let mut settings = json!({"type":"object","additionalProperties":false,"properties":{
         "interface_font":{"type":"string","minLength":1,"maxLength":128},"theme":{"type":"string","minLength":1,"maxLength":256},
         "theme_mode":{"type":"string","enum":["manual","system","zed"]},"theme_light":{"type":"string","minLength":1,"maxLength":256},"theme_dark":{"type":"string","minLength":1,"maxLength":256},
+        "peaking_color":{"type":"string","enum":["red","cyan","yellow","white"]},"peaking_sensitivity":{"type":"string","enum":["low","medium","high"]},
         "grouping_mode":modes,"burst_gap_ms":{"type":"integer","minimum":1,"maximum":3600000},"visual_threshold":{"type":"integer","minimum":0,"maximum":64},
         "remote_cache_budget_mb":{"type":"integer","minimum":0,"maximum":1048576},"auto_advance":{"type":"boolean"},"auto_discover_drives":{"type":"boolean"},"cache_budget_mb":{"type":"integer","minimum":128,"maximum":1048576},"memory_budget_mb":{"anyOf":[{"type":"integer","enum":[0]},{"type":"integer","minimum":64,"maximum":65536}]},"show_getting_started":{"type":"boolean"},"trash_mode":{"type":"string","enum":["system","in_app"]},
         "last_photo_id":{"type":["integer","null"],"minimum":1},"view_mode":{"type":"string","enum":["grid","loupe","compare","survey"]},"show_inspector":{"type":"boolean"},"show_sidebar":{"type":"boolean"},"sidebar_width":{"type":"integer","minimum":180,"maximum":480},"inspector_width":{"type":"integer","minimum":240,"maximum":480},"min_rating":rating,"filter":{"type":"string","enum":["all","picks","unrated","rejects","trash"]}
@@ -864,7 +865,7 @@ fn build_tool_definitions() -> Vec<Value> {
         "ingest_library_root":path,"ingest_folder_template":{"type":"string","maxLength":4096},"ingest_file_template":path,
         "ingest_backup_roots":{"type":"array","items":path,"maxItems":16},"ingest_job_codes":{"type":"array","items":{"type":"string"},"maxItems":20},
         "ingest_day_start_hour":{"type":"integer","minimum":0,"maximum":23},"ingest_collision":{"type":"string","enum":["suffix","skip"]},
-        "ingest_time_group_minutes":{"type":"integer","minimum":1,"maximum":1440},"eject_after_ingest":{"type":"boolean"},
+        "ingest_time_group_minutes":{"type":"integer","minimum":1,"maximum":1440},"eject_after_ingest":{"type":"boolean"},"ingest_notify":{"type":"boolean"},
         "ingest_include_videos":{"type":"boolean"},"ingest_volumes":{"type":"object"},"ingest_presets":{"type":"object"}
     });
     settings["properties"]
@@ -921,7 +922,28 @@ fn build_tool_definitions() -> Vec<Value> {
         ),
         tool(
             "ingest_cancel",
-            "Cancel the import/scan; keep committed groups and remove incomplete staging files.",
+            "Cancel the running import (or the scan when nothing copies); keep committed groups and remove incomplete staging files. The next queued import starts.",
+            json!({}),
+            &[],
+            false,
+        ),
+        tool(
+            "ingest_dequeue",
+            "Remove one queued import, by its source path, without touching the running import or other queued imports.",
+            json!({"path":path}),
+            &["path"],
+            false,
+        ),
+        tool(
+            "ingest_retry_failed",
+            "Import only the photos that failed in a card's last job (the shown card, a card whose result is kept while another is shown, or its latest failed History row): rescans the source when needed, checks exactly those photos and starts or queues the import. Poll ingest_status.",
+            json!({"source":path}),
+            &[],
+            false,
+        ),
+        tool(
+            "ingest_clear_queue",
+            "Drop every queued import; the running import continues.",
             json!({}),
             &[],
             false,
@@ -1188,7 +1210,7 @@ fn build_tool_definitions() -> Vec<Value> {
         tool(
             "command",
             "Execute an allowlisted workspace action; this is not a shell or arbitrary-command interface.",
-            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","open_folder_picker","open_theme_picker","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","show_full_folder","reset_decision"]}}),
+            json!({"name":{"type":"string","enum":["next","previous","next_group","previous_group","toggle_histogram","toggle_inspector","toggle_sidebar","toggle_auto_advance","toggle_focus","select_all","refresh","retry_saves","retry_preview","toggle_histogram_log","toggle_compare_sync","next_unreviewed","previous_unreviewed","resolve_burst","show_duplicates","scan_duplicates_in_view","toggle_palette","toggle_preferences","open_folder_picker","open_theme_picker","show_appearance","show_rating_filter","reset_layout","resize_catalog","resize_inspector","close_overlay","getting_started","toggle_focus_peaking","toggle_clipping","show_full_folder","reset_decision"]}}),
             &["name"],
             false,
         ),
@@ -1434,7 +1456,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0]["error"]["code"], -32700);
         assert_eq!(lines[1]["result"]["protocolVersion"], PROTOCOLS[0]);
-        assert_eq!(lines[2]["result"]["tools"].as_array().unwrap().len(), 46);
+        assert_eq!(lines[2]["result"]["tools"].as_array().unwrap().len(), 49);
     }
     #[cfg(unix)]
     #[test]
@@ -1529,7 +1551,7 @@ mod tests {
             normalize_arguments("settings_set", json!({"settings":{"theme_mode":"unknown"}}))
                 .is_err()
         );
-        assert_eq!(tool_definitions().len(), 46);
+        assert_eq!(tool_definitions().len(), 49);
     }
     #[test]
     fn inherited_nonblocking_socket_handles_partial_input_and_large_reply() {

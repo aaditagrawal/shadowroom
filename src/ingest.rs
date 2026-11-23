@@ -20,7 +20,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub use copy::{
@@ -785,9 +785,18 @@ struct ControlState {
     paused: bool,
     cancelled: bool,
     finished: bool,
+    /// When the current pause began, and the total of earlier pauses, so
+    /// throughput and time left count only time spent copying.
+    paused_since: Option<Instant>,
+    paused_total: Duration,
     /// Last progress the running job reported, so pause/resume acknowledgements
     /// carry real counters and the phase the job is actually in.
     progress: Progress,
+    /// The source vanished; the job holds itself paused until it returns.
+    source_missing: bool,
+    /// The user had paused before the source vanished: its return must not
+    /// resume the job on their behalf.
+    paused_before_loss: bool,
 }
 impl Control {
     pub fn reset(&self) {
@@ -795,7 +804,11 @@ impl Control {
             state.cancelled = false;
             state.finished = false;
             state.paused = false;
+            state.paused_since = None;
+            state.paused_total = Duration::ZERO;
             state.progress = Progress::default();
+            state.source_missing = false;
+            state.paused_before_loss = false;
             self.0.1.notify_all();
         }
     }
@@ -810,9 +823,13 @@ impl Control {
             |_| Progress::default(),
             |state| {
                 let mut progress = state.progress.clone();
-                if state.paused && !state.finished && !progress.phase.is_terminal() {
+                if (state.paused || state.source_missing)
+                    && !state.finished
+                    && !progress.phase.is_terminal()
+                {
                     progress.phase = Phase::Paused;
                 }
+                progress.source_missing = state.source_missing && !state.finished;
                 progress
             },
         )
@@ -828,13 +845,56 @@ impl Control {
     pub fn pause(&self) {
         if let Ok(mut state) = self.0.0.lock() {
             state.paused = true;
+            state.paused_since.get_or_insert_with(Instant::now);
         }
     }
     pub fn resume(&self) {
         if let Ok(mut state) = self.0.0.lock() {
             state.paused = false;
+            if let Some(since) = state.paused_since.take() {
+                state.paused_total += since.elapsed();
+            }
             self.0.1.notify_all();
         }
+    }
+    /// The source vanished: hold the job paused (the committer flushes what
+    /// is already verified) until `regain_source`.
+    pub(crate) fn lose_source(&self) {
+        if let Ok(mut state) = self.0.0.lock()
+            && !state.source_missing
+        {
+            state.source_missing = true;
+            state.paused_before_loss = state.paused;
+            state.paused = true;
+            state.paused_since.get_or_insert_with(Instant::now);
+        }
+    }
+    /// The same source is back: continue, unless the user had paused first.
+    pub(crate) fn regain_source(&self) {
+        let resume = self.0.0.lock().is_ok_and(|mut state| {
+            let lost = std::mem::take(&mut state.source_missing);
+            lost && !state.paused_before_loss
+        });
+        if resume {
+            self.resume();
+        }
+    }
+    pub fn is_source_missing(&self) -> bool {
+        self.0.0.lock().is_ok_and(|state| state.source_missing)
+    }
+    /// Sleeps up to `timeout`, waking early on cancel, resume or pause changes.
+    pub(crate) fn wait(&self, timeout: Duration) {
+        if let Ok(state) = self.0.0.lock()
+            && !state.cancelled
+        {
+            let _ = self.0.1.wait_timeout(state, timeout);
+        }
+    }
+    /// Time this job has spent paused, including a pause still in progress.
+    pub(crate) fn paused_for(&self) -> Duration {
+        self.0.0.lock().map_or(Duration::ZERO, |state| {
+            state.paused_total + state.paused_since.map_or(Duration::ZERO, |s| s.elapsed())
+        })
     }
     pub fn cancel(&self) {
         if let Ok(mut state) = self.0.0.lock() {
@@ -948,12 +1008,46 @@ pub struct Progress {
     pub videos: usize,
     pub bytes: u64,
     pub total_bytes: u64,
+    /// Bytes of the plan already handled (copied, or skipped/failed whole
+    /// groups), so a byte-weighted bar never stalls behind one large video.
+    #[serde(default)]
+    pub transferred: u64,
     pub mb_per_second: f64,
     pub eta_seconds: Option<u64>,
     pub destinations: Vec<String>,
     pub errors: Vec<String>,
     pub manifest: Option<PathBuf>,
     pub library_root: Option<PathBuf>,
+    /// The scanned source this job reads (a card's mount root or a folder), so
+    /// a view showing another card never mistakes this job's events for its own.
+    #[serde(default)]
+    pub source: Option<PathBuf>,
+    /// Where the job reads now when the card came back at another mount point
+    /// (a stale `EOS_DIGITAL` makes it `EOS_DIGITAL1`); `None` while it reads
+    /// `source`. That path is this job's card too, never a new card.
+    #[serde(default)]
+    pub current_source: Option<PathBuf>,
+    /// The card's filesystem UUID identity (`uuid:…`) when it has one, so the
+    /// same card at any mount point is recognised as the copying card.
+    #[serde(default)]
+    pub volume: Option<String>,
+    /// `source` relative to the card's mount root (empty for a whole card).
+    #[serde(default)]
+    pub volume_path: Option<PathBuf>,
+    /// The source disappeared mid-copy (card pulled, reader unplugged): the job
+    /// waits, paused, and continues by itself when the same source returns.
+    #[serde(default)]
+    pub source_missing: bool,
+    /// Scan group IDs that failed, so "Retry failed" can plan exactly those.
+    #[serde(default)]
+    pub failed_ids: Vec<usize>,
+    /// Primary source paths of the failed groups: "Retry failed" from another
+    /// card's view or from History rescans the source and checks these.
+    #[serde(default)]
+    pub failed_sources: Vec<PathBuf>,
+    /// Videos among `completed`, so results say "4 photos, 1 video".
+    #[serde(default)]
+    pub completed_videos: usize,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Report {

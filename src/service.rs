@@ -43,6 +43,10 @@ pub enum IoCommand {
     IngestPause,
     IngestResume,
     IngestCancel,
+    IngestClearQueue,
+    /// Hold (true) or release the import queue while the app is closing.
+    IngestHoldQueue(bool),
+    IngestDequeue(PathBuf),
     IngestHistory(usize),
     IngestMarkImported(Vec<usize>),
     Eject(PathBuf),
@@ -82,7 +86,8 @@ pub enum IoEvent {
     RemoteRemoved(String),
     RemoteProvider(Arc<crate::media::RemotePreviewProvider>),
     Ingest(crate::ingest::worker::Event),
-    IngestDetected(PathBuf),
+    /// A card was inserted: its mount root and volume identity.
+    IngestDetected(PathBuf, String),
     Drives(Vec<Drive>),
     Status(String),
     Error(String),
@@ -261,8 +266,12 @@ fn run_catalog(
                                 None,
                             );
                             IoEvent::Status(format!(
-                                "Exported {count} {} to {}",
-                                if request.picks { "files" } else { "sidecars" },
+                                "Exported {} to {}",
+                                if request.picks {
+                                    self::count(count as u64, "file", "files")
+                                } else {
+                                    self::count(count as u64, "sidecar", "sidecars")
+                                },
                                 request.destination.display()
                             ))
                         }
@@ -431,6 +440,9 @@ fn run_catalog(
                 | IoCommand::IngestPause
                 | IoCommand::IngestResume
                 | IoCommand::IngestCancel
+                | IoCommand::IngestClearQueue
+                | IoCommand::IngestHoldQueue(_)
+                | IoCommand::IngestDequeue(_)
                 | IoCommand::IngestHistory(_)
                 | IoCommand::IngestMarkImported(_)
                 | IoCommand::Eject(_) => {
@@ -440,6 +452,9 @@ fn run_catalog(
                         IoCommand::IngestPause => Ingest::Pause,
                         IoCommand::IngestResume => Ingest::Resume,
                         IoCommand::IngestCancel => Ingest::Cancel,
+                        IoCommand::IngestClearQueue => Ingest::ClearQueue,
+                        IoCommand::IngestHoldQueue(hold) => Ingest::HoldQueue(hold),
+                        IoCommand::IngestDequeue(source) => Ingest::Dequeue(source),
                         IoCommand::IngestHistory(limit) => Ingest::History(limit),
                         IoCommand::IngestMarkImported(ids) => Ingest::MarkImported(ids),
                         IoCommand::Eject(path) => Ingest::Eject(path),
@@ -771,7 +786,7 @@ fn run_catalog(
                     })
                     && !roots.contains(&drive.path)
                 {
-                    let identity = crate::ingest::volume_identity(&drive.path);
+                    let identity = drive.volume.clone();
                     if settings
                         .ingest_volumes
                         .get(&identity)
@@ -785,7 +800,10 @@ fn run_catalog(
                         "auto" => {
                             // Announce the detection first so the UI's queued job is
                             // marked failed by the error if the worker rejects it.
-                            reliable(&events, IoEvent::IngestDetected(drive.path.clone()));
+                            reliable(
+                                &events,
+                                IoEvent::IngestDetected(drive.path.clone(), identity.clone()),
+                            );
                             if let Err(error) =
                                 ingest.send(crate::ingest::worker::Command::ScanCard {
                                     path: drive.path.clone(),
@@ -802,7 +820,10 @@ fn run_catalog(
                                 );
                             }
                         }
-                        _ => reliable(&events, IoEvent::IngestDetected(drive.path.clone())),
+                        _ => reliable(
+                            &events,
+                            IoEvent::IngestDetected(drive.path.clone(), identity),
+                        ),
                     }
                 }
             }
