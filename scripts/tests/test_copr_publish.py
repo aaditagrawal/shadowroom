@@ -34,8 +34,10 @@ class PublisherSafety(unittest.TestCase):
         self.assertEqual(
             publisher.release_chroots("0.1.6", available), [publisher.FEDORA_44]
         )
+        future = ["fedora-46-x86_64", "fedora-rawhide-x86_64", "fedora-46-aarch64"]
+        self.assertEqual(publisher.release_chroots("0.2.0", future), future[:1])
         with self.assertRaises(ValueError):
-            publisher.release_chroots("0.1.7", available[:2])
+            publisher.release_chroots("0.2.0", future[1:])
         current = {
             "enable_net": False,
             "chroot_repos": {publisher.FEDORA_44: "", "extra": ""},
@@ -127,6 +129,16 @@ class PublisherSafety(unittest.TestCase):
         self.assertIsNone(
             publisher.existing_build([self.build(version="0.1.1-1")], "0.1.2-1")
         )
+
+    def test_shared_project_waits_for_unknown_source_then_ignores_other_app(self):
+        unknown = {"id": 43, "state": "importing", "source_package": None}
+        other = {**unknown, "source_package": {"name": "typsmthng"}}
+        with (
+            patch.object(publisher, "all_builds", side_effect=[[unknown], [other]]),
+            patch.object(publisher.time, "sleep") as sleep,
+        ):
+            self.assertIsNone(publisher.find_release_build("0.1.2-1"))
+            sleep.assert_called_once_with(15)
 
     def test_source_run_requires_every_native_job_and_exact_repo_tag(self):
         run, jobs = self.run_and_jobs()

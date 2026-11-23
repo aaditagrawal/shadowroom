@@ -135,7 +135,7 @@ Existing historical tags and releases remain unchanged.
 ## Fedora COPR publication
 
 Native checks calls the reusable Fedora COPR workflow only after its tag publish
-job succeeds and `COPR_PROJECT` names `aaditagrawal/shadowroom`. This explicit call
+job succeeds and `COPR_PROJECT` names `aaditagrawal/apps`. This explicit call
 is necessary because releases created with `GITHUB_TOKEN` do not trigger a second
 release-event workflow. Owner-published release events and default-branch manual
 runs also support an already-published tag.
