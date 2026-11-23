@@ -593,7 +593,6 @@ def main():
             "srpm_sha256": digest[7:],
             "source_archives": archives,
             "project": PROJECT,
-            "chroots": release_chroots(version, public_json("mock-chroots/list")),
             "evr": f"{version}-{rpm_release}",
             "state": "verified",
         }
@@ -604,16 +603,16 @@ def main():
         )
         if not args.submit:
             return
-        owner, project = PROJECT.split("/")
-        configuration = public_json("project", ownername=owner, projectname=project)
-        project_chroots(configuration)
         previous = existing_build(all_builds(), receipt["evr"])
         receipt["reused"] = previous is not None
         if previous:
-            # Resume the submitted target set even after Fedora 43 retires.
+            # The server records the submitted targets even after a chroot retires.
             receipt["chroots"] = release_chroots(version, previous["chroots"])
             build_id = previous["id"]
         else:
+            receipt["chroots"] = release_chroots(
+                version, public_json("mock-chroots/list")
+            )
             secret = os.environ.pop("COPR_CONFIG", "")
             require(secret, "COPR_CONFIG repository secret is required for submission")
             credentials(secret)
