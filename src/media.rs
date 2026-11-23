@@ -4888,11 +4888,13 @@ mod tests {
             pipeline.request(Path::new("current.jpg"), 1, PreviewKind::Fit);
             assert!(std::time::Instant::now() < deadline);
         }
+        // A worker can claim the request before it updates the generation.
+        // Observe the generation and queue under the lock it holds for both.
+        let state = pipeline.shared.state.lock().unwrap();
         assert_eq!(
             pipeline.shared.generation.load(Ordering::Relaxed),
             generation + 1
         );
-        let state = pipeline.shared.state.lock().unwrap();
         assert!(
             state
                 .queue
