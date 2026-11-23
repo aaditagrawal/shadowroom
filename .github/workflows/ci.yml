@@ -422,7 +422,7 @@ jobs:
     if: >-
       always() && !cancelled() && needs.publish.result == 'success' &&
       github.ref_type == 'tag' && startsWith(github.ref_name, 'v') &&
-      github.event_name == 'push' && vars.COPR_PROJECT == 'aaditagrawal/shadowroom'
+      github.event_name == 'push' && vars.COPR_PROJECT == 'aaditagrawal/apps'
     permissions:
       contents: read
       actions: read

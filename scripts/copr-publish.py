@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 REPOSITORY = "aaditagrawal/shadowroom"
-PROJECT = "aaditagrawal/shadowroom"
+PROJECT = "aaditagrawal/apps"
 COPR_URL = "https://copr.fedorainfracloud.org"
 FEDORA_43 = "fedora-43-x86_64"
 FEDORA_44 = "fedora-44-x86_64"
@@ -326,6 +326,10 @@ def inspect_srpm(path, version, release, sha, lock_sha):
     return checksums
 
 
+class PendingSourceImport(ValueError):
+    """COPR is still identifying an upload in the shared project."""
+
+
 def existing_build(builds, version_release):
     matches = []
     for build in builds:
@@ -338,8 +342,12 @@ def existing_build(builds, version_release):
         elif build.get("state") not in {
             "succeeded",
             *TERMINAL_FAILURES,
-        } and not (source.get("name") and source.get("version")):
-            raise ValueError(
+        } and (
+            not source.get("name")
+            or source["name"] == "shadowroom"
+            and not source.get("version")
+        ):
+            raise PendingSourceImport(
                 "An unidentified COPR upload is active; inspect it before submitting"
             )
     require(
@@ -368,6 +376,18 @@ def all_builds():
     raise ValueError(
         "COPR history exceeds the inspection limit; refusing an unchecked submission"
     )
+
+
+def find_release_build(version_release):
+    deadline = time.monotonic() + 600
+    while True:
+        try:
+            return existing_build(all_builds(), version_release)
+        except PendingSourceImport:
+            if time.monotonic() >= deadline:
+                raise
+            print("Waiting for COPR to identify an active source upload", flush=True)
+            time.sleep(15)
 
 
 def write_receipt(path, receipt):
@@ -400,20 +420,18 @@ def credentials(text):
 def release_chroots(version, available):
     if tuple(map(int, version.split("."))) < (0, 1, 7):
         return [FEDORA_44]
-    require(
-        {FEDORA_44, FEDORA_45} <= set(available),
-        "Required COPR release chroots are unavailable",
+    targets = sorted(
+        target for target in available if re.fullmatch(r"fedora-[0-9]+-x86_64", target)
     )
-    return [
-        target for target in (FEDORA_43, FEDORA_44, FEDORA_45) if target in available
-    ]
+    require(targets, "No numbered Fedora x86_64 chroots are available")
+    return targets
 
 
 def project_chroots(configuration):
     enabled = configuration.get("chroot_repos", {})
     require(
-        configuration.get("enable_net") is False and FEDORA_44 in enabled,
-        "COPR project must enable Fedora 44 x86_64 with build networking disabled",
+        configuration.get("enable_net") is False and enabled,
+        "COPR project must have build targets and disable build networking",
     )
     return set(enabled)
 
@@ -603,7 +621,7 @@ def main():
         )
         if not args.submit:
             return
-        previous = existing_build(all_builds(), receipt["evr"])
+        previous = find_release_build(receipt["evr"])
         receipt["reused"] = previous is not None
         if previous:
             # The server records the submitted targets even after a chroot retires.

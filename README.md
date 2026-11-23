@@ -62,9 +62,9 @@ requiring GIO. See [Linux portability](docs/PORTABILITY.md) for the
 experimental Rust media backends and static CPU/X11 browsing prototype.
 
 Fedora 43 (while available), 44 and 45 x86_64 packages are built in the
-[Shadowroom COPR repository](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/).
+[Shadowroom COPR repository](https://copr.fedorainfracloud.org/coprs/aaditagrawal/apps/).
 After its release build succeeds, enable it with `sudo dnf copr enable
-aaditagrawal/shadowroom`, then `sudo dnf install shadowroom`; subsequent versions
+aaditagrawal/apps`, then `sudo dnf install shadowroom`; subsequent versions
 arrive through DNF updates. See [Fedora packaging and publication](docs/FEDORA.md)
 for current build availability and the system-codec differences.
 

@@ -36,7 +36,7 @@ jobs:
     name: Verify and publish Fedora source RPM
     if: >-
       github.repository == 'aaditagrawal/shadowroom' &&
-      vars.COPR_PROJECT == 'aaditagrawal/shadowroom' &&
+      vars.COPR_PROJECT == 'aaditagrawal/apps' &&
       (github.event_name == 'release' || github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04

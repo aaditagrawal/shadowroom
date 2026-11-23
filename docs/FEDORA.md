@@ -12,7 +12,7 @@ Fedora RPMs, separate from the portable glibc 2.28 AppImage and tarball.
 
 ## Fedora repository
 
-The [aaditagrawal/shadowroom COPR project](https://copr.fedorainfracloud.org/coprs/aaditagrawal/shadowroom/)
+The [aaditagrawal/apps COPR project](https://copr.fedorainfracloud.org/coprs/aaditagrawal/apps/)
 builds with binary-build networking disabled. Its
 public Builds/Packages pages show the current package version and publication
 status. GitHub release publication precedes the COPR compilation: a GitHub
@@ -21,10 +21,12 @@ release alone does not mean the Fedora repository build has finished.
 After a successful COPR build, install and receive updates with:
 
 ```sh
-sudo dnf copr enable aaditagrawal/shadowroom
+sudo dnf copr enable aaditagrawal/apps
 sudo dnf install shadowroom
 sudo dnf upgrade shadowroom
 ```
+
+If you previously enabled `aaditagrawal/shadowroom`, enable `aaditagrawal/apps` once to receive subsequent releases.
 
 COPR builds/signs a third-party repository; this is not inclusion in Fedora's
 official repositories. Check the build result for your Fedora version before installing.
@@ -101,10 +103,10 @@ The repository uses:
 
 | GitHub repository setting | Value |
 | --- | --- |
-| Variable `COPR_PROJECT` | `aaditagrawal/shadowroom` |
+| Variable `COPR_PROJECT` | `aaditagrawal/apps` |
 | Secret `COPR_CONFIG` | Complete COPR API INI configuration, supplied securely |
 
-Provision the project, its Fedora 44 target and the GitHub settings before publication. The publisher can add the Fedora 43 and 45 targets to that project. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
+Provision the project, its Fedora 44 target and the GitHub settings before publication. The publisher adds active numbered Fedora x86_64 targets as COPR makes them available. [COPR's setup documentation](https://docs.copr.fedorainfracloud.org/user_documentation.html#quick-start)
 describes obtaining API configuration. Secrets belong in GitHub repository
 secrets, never source files, logs, release assets, or chat. The publisher validates
 the Fedora HTTPS endpoint/owner, writes a temporary mode-600 configuration, and
@@ -120,7 +122,7 @@ Before submitting, [copr-publish.py](../scripts/copr-publish.py) verifies:
   Its package identity, embedded source commit, Cargo.lock, and vendor provenance
   match the released source. Archive contents are inspected without executing or
   extracting them into the project.
-- The COPR project has its Fedora 44 target and disabled build networking.
+- The COPR project has build targets and disabled build networking.
   Public build history contains no competing build for the same version/release
   and no unidentified active upload.
 
