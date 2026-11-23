@@ -2,7 +2,7 @@
 
 Shadowroom uses the version in `Cargo.toml` for native package names. The
 [Native checks workflow](../.github/workflows/ci.yml) checks main-branch pushes and
-pull requests, retains native artifacts, and publishes a preview GitHub Release after
+pull requests, retains native artifacts, and publishes a standard GitHub Release after
 a matching `v<VERSION>` tag has verified native artifacts and all required checks. Ordinary branch pushes and
 pull requests never publish releases.
 
@@ -127,7 +127,7 @@ commit is released without compiling and testing the identical source again.
 Only the publish job receives `contents: write`. GitHub's per-job `GITHUB_TOKEN`
 supplies release access; no personal publishing token is required. After all
 platform jobs pass, it downloads their artifacts, verifies their checksums,
-creates a draft preview release, uploads the archives, then publishes it. A failed
+creates a draft release, uploads the archives, then publishes it as the latest standard release. A failed
 upload leaves a draft which a rerun can resume. Already published release assets
 are refused rather than silently replaced; use a new version for changed bytes.
 Existing historical tags and releases remain unchanged.

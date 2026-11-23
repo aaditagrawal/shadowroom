@@ -407,7 +407,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ needs.preflight.outputs.reuse_run_id || github.run_id }}
         run: uv run --no-project python scripts/ci-plan.py --receipt dist/BUILD-PROVENANCE.json
-      - name: Validate archives and publish preview release
+      - name: Validate archives and publish release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
